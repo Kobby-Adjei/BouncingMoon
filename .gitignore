@@ -1,0 +1,11 @@
+.venv/
+venv/
+venvsource/
+__pycache__/
+*.pyc
+.env
+.DS_Store
+# Accidental venv directories
+\#/
+On/
+Windows/
