@@ -14,25 +14,67 @@ BouncingMoon replaces fine-motor input with **Rhythmic Intent**. Users thump the
 
 ### Input Modalities
 
+Users have two parallel ways to interact — thumps and voice. Both are always active.
+
+#### Desk Thumps
+
 | Input | Trigger | What Happens |
 |-------|---------|--------------|
 | **1 thump** | `TRIGGER_CLICK` | AI identifies the primary button/link on screen and clicks it |
 | **2 thumps** | `TRIGGER_AUTOFILL` | AI detects form fields and fills them from the user profile |
 | **3 thumps** | `TRIGGER_VOICE_COMMAND` | System listens for a spoken command, then executes it |
 
+#### Voice Commands (Always Listening)
+
+Say **"Hey Moon"** followed by a command. No thump needed. Voice works alongside thumps at all times.
+
+**Direct commands** (instant, no AI vision needed):
+
+| Command | What Happens |
+|---------|--------------|
+| "Hey Moon, scroll down" | Scrolls the page down |
+| "Hey Moon, scroll up" | Scrolls the page up |
+| "Hey Moon, go back" | Browser/app back navigation |
+| "Hey Moon, go forward" | Browser/app forward navigation |
+| "Hey Moon, undo" | Undo last action (Cmd+Z) |
+| "Hey Moon, press enter" | Presses Enter key |
+| "Hey Moon, press escape" | Presses Escape key |
+| "Hey Moon, close this" | Closes current window/tab |
+| "Hey Moon, new tab" | Opens a new browser tab |
+| "Hey Moon, copy" / "paste" / "select all" | Clipboard operations |
+| "Hey Moon, open Safari" | Opens an application by name |
+| "Hey Moon, stop" | Cancels whatever is happening |
+
+**Vision commands** (AI looks at the screen first):
+
+| Command | What Happens |
+|---------|--------------|
+| "Hey Moon, click the blue button" | AI finds the element and clicks it |
+| "Hey Moon, type hello in the search box" | AI finds the field and types |
+| "Hey Moon, read the screen" | AI describes what's on screen via voice |
+| "Hey Moon, what do you see" | Same as read the screen |
+
+**Errand commands** (routed to NanoClaw):
+
+| Command | What Happens |
+|---------|--------------|
+| "Hey Moon, send Mom a WhatsApp message" | NanoClaw sends the message |
+| "Hey Moon, email my doctor" | NanoClaw drafts and sends email |
+| "Hey Moon, text my daughter I'm fine" | NanoClaw sends via messaging |
+
 ### The Loop
 
 ```
-Thump → HUD activates → AI sees screen → Action executed → Voice confirms "Done"
+Thump or "Hey Moon" → HUD activates → AI sees screen → Action executed → Voice confirms "Done"
 ```
 
-1. User thumps their desk
-2. The floating Moon HUD switches to "Thinking" state
-3. A screenshot is sent to Claude (Anthropic) for visual understanding
+1. User thumps their desk OR says "Hey Moon" + a command
+2. The floating Moon HUD switches to the appropriate state
+3. If the command needs screen context, a screenshot is sent to Claude
 4. The AI returns coordinates and intent
-5. PyAutoGUI performs the click/type/scroll action
+5. PyAutoGUI performs the action, or NanoClaw handles the errand
 6. ElevenLabs speaks "Task complete"
-7. NanoClaw sends errands (WhatsApp, email, Telegram) if needed
+7. NanoClaw sends messaging errands; AWS SES sends email receipts
 
 ## Tech Stack
 
@@ -104,7 +146,7 @@ source .venv/bin/activate
 python main.py
 ```
 
-The Moon HUD will appear in the top-left corner. Thump your desk to interact.
+The Moon HUD will appear in the top-left corner. Thump your desk or say "Hey Moon" to interact.
 
 ## Module Guide
 
@@ -167,12 +209,15 @@ python vision_agent.py
 
 ### voice_interface.py — The Voice
 
-Two-way voice interface using ElevenLabs. Speaks to the user (TTS) and listens for commands (STT). Automatically detects when the user stops speaking.
+Two-way voice interface using ElevenLabs with two modes:
+
+- **On-demand mode:** `listen()` records a single command (used after thumps)
+- **Always-listening mode:** Continuously monitors for the wake word "Hey Moon", then captures and classifies the command
 
 ```bash
 export ELEVENLABS_API_KEY="your-key"
 python voice_interface.py
-# Speaks a greeting, listens for your response, repeats it back
+# Starts always-listening mode — say "Hey Moon" followed by a command
 ```
 
 **Key methods:**
@@ -181,10 +226,18 @@ python voice_interface.py
 - `voice.speak(text)` — Convert text to speech and play (blocking)
 - `voice.speak_async(text)` — Same but non-blocking
 - `voice.ask(question)` — Speak a question, then listen for answer
+- `voice.start_listening(on_command=fn)` — Start always-listening mode with a callback
+- `voice.pause_listening()` / `voice.resume_listening()` — Pause/resume (used during TTS to avoid echo)
+
+**VoiceCommand classification:** Every voice command is automatically parsed into one of three categories:
+
+- **Direct** (`cmd.is_direct`) — Can be executed instantly without AI vision (scroll, go back, open app, key presses)
+- **Vision** (`cmd.needs_vision`) — Needs a screenshot to understand context (click the blue button, read the screen)
+- **Errand** (`cmd.is_errand`) — Should be routed to NanoClaw for messaging (send a text, email someone)
 
 ### main.py — The Ghost
 
-Wires everything together. Boots the HUD, starts the audio listener, routes events through the pipeline.
+Wires everything together. Boots the HUD, starts the audio listener AND always-listening voice mode, and routes all events through the pipeline. Handles both thump triggers and voice commands through unified routing.
 
 ```bash
 export ANTHROPIC_API_KEY="your-key"
@@ -192,9 +245,17 @@ export ELEVENLABS_API_KEY="your-key"
 python main.py
 ```
 
+**Command routing logic:**
+
+- Direct voice commands (scroll, go back, open app) execute instantly without calling the vision API
+- Vision commands (click something, read the screen) take a screenshot and go through Claude
+- Errand commands (send a message, email someone) are routed to NanoClaw
+- Triple-thump voice commands go through the same routing as wake-word commands
+
 **Safety features:**
 
 - `pyautogui.FAILSAFE = True` — move mouse to any screen corner to abort
+- Say "Hey Moon, stop" at any time to cancel the current action
 - Low-confidence actions trigger a voice confirmation before executing
 - Ambiguous screens (multiple buttons) prompt the user to clarify by voice
 
@@ -221,8 +282,9 @@ The project is split into three ownership areas for parallel development:
 ### Person 1 — The Senses (`audio_ear.py` + `voice_interface.py`)
 
 - Tune thump detection thresholds on real hardware
-- Fix mic contention between thump listener and voice recording
-- Adjust silence detection for slower speech patterns
+- Test that always-listening mode correctly detects "Hey Moon" without too many false positives
+- Adjust silence detection for slower speech patterns (Parkinson's users may speak slower)
+- Prevent mic contention — the always-listening loop pauses during TTS but verify this works smoothly
 - Add audio feedback (chime) when system starts listening
 
 ### Person 2 — The Eyes (`vision_agent.py` + `overlay_hud.py`)
