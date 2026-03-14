@@ -76,6 +76,19 @@ Thump or "Hey Moon" → HUD activates → AI sees screen → Action executed →
 6. ElevenLabs speaks "Task complete"
 7. NanoClaw sends messaging errands; AWS SES sends email receipts
 
+
+## Competitive Landscape
+
+BouncingMoon sits at the intersection of Assistive Hardware and AI Agents.
+
+### The Old Guard (Hardware-Heavy)
+*   **Tobii (Eye-Tracking) / Cognixion (EEG/Head-Tracking):** These systems are the gold standard for high-level disability but come with extreme costs ($15k+) and require users to wear or calibrate bulky hardware.
+*   **The BouncingMoon Edge:** No specialized hardware. It turns a standard $20 microphone and a webcam into a high-precision control suite using equipment the user already owns.
+
+### The New Guard (Vision-First Agents)
+*   **Envision AI / OrCam:** Incredible at describing the world for the visually impaired, but they lack the system-level "hands" to operate a complex desktop OS for motor-impaired users.
+*   **The BouncingMoon Edge:** While others focus on *perception* (what is this?), we focus on *execution* (do this for me). We bridge the gap between "I can see the button" and "I can't physically click it."
+
 ## Tech Stack
 
 | Layer | Technology | Purpose |
