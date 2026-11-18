@@ -105,6 +105,7 @@
 .quick .q { display: grid; justify-items: center; gap: 6px; width: 92px; padding: 12px 8px 10px; border: 0; border-radius: var(--r); background: var(--card);
   box-shadow: var(--shadow); color: var(--accent); font-size: 13px; font-weight: 560; cursor: pointer; }
 .quick .q svg { width: 24px; height: 24px; }
+.quick .q { min-width: 92px; width: auto; padding-inline: 12px; white-space: nowrap; }
 .pill-tag { display: inline-block; font-size: 12px; font-weight: 620; padding: 3px 10px; border-radius: 999px; background: var(--accent-soft); color: var(--accent); }
 .inlineform { display: grid; gap: 10px; padding: 4px 16px 16px; }
 .inlineform .row .btn { flex: 1; }
@@ -131,6 +132,146 @@
   text-align: center; animation: rise .45s var(--ease) both; }
 .notice:empty { display: none; }
 @media (min-width: 900px) { .title { font-size: 38px; } }
+
+/* instant replies */
+.fieldlabel { font-size: 14px; color: var(--ink2); margin: 4px 8px -4px; }
+.steps .opener { justify-self: start; text-decoration: none; }
+.wakeon .sticky-status { position: static; justify-self: center; }
+.advanced { border-top: .5px solid var(--sep); padding-top: 6px; }
+.advanced > summary { list-style: none; cursor: pointer; color: var(--ink2); font-size: 15px; font-weight: 500; text-align: center; padding: 10px; border-radius: 999px; }
+.advanced > summary::-webkit-details-marker { display: none; }
+.advanced > summary::after { content: ""; display: inline-block; width: 7px; height: 7px; margin: 0 0 3px 9px; border: solid currentColor;
+  border-width: 0 1.6px 1.6px 0; transform: rotate(45deg); transition: transform .3s var(--ease); }
+.advanced[open] > summary::after { transform: rotate(-135deg); margin-bottom: -1px; }
+.advanced > summary:hover { color: var(--ink); }
+
+/* ---------------------------------------------------------------- desktop and tablet: a real app shell.
+   Below 680px none of this applies and the phone layout above is the whole story. */
+.rail, .listpane, .detail { display: none; }
+@media (min-width: 680px) {
+  :root { --barh: 60px; --rail: 80px; --list: clamp(260px, 32vw, 300px); }
+  body:has(.shell) { overflow: hidden; }
+  .bar { background: var(--bg); backdrop-filter: none; -webkit-backdrop-filter: none; border-bottom: 0; }
+  .bar-in { max-width: none; height: var(--barh); margin: 0; padding: 0 20px 0 27px; grid-template-columns: auto 1fr; }
+  #back, #topseg { display: none !important; }
+  #brandmini { display: inline-flex !important; }
+  .brandmini { gap: 10px; font-size: 19px; }
+  .brandmini .mark { width: 26px; height: 26px; }
+  .brandmini .word { display: inline; }
+  .mebtn { display: grid; border-radius: 50%; transition: box-shadow .25s var(--ease); }
+  .mebtn:hover { box-shadow: 0 0 0 4px var(--fill2); }
+
+  .shell { display: grid; grid-template-columns: var(--rail) var(--list) minmax(0, 1fr); height: calc(100vh - var(--barh));
+    height: calc(100dvh - var(--barh)); }
+  .rail, .listpane, .detail { display: flex; }
+
+  /* rail: icons with a small label underneath; the full rail comes at 1024px */
+  .rail { flex-direction: column; align-items: center; gap: 4px; padding: 6px 0 16px; }
+  .railadd { width: 52px; height: 52px; margin-bottom: 14px; border: 0; border-radius: 16px; background: var(--accent); color: var(--on-accent);
+    display: grid; place-items: center; cursor: pointer; font-weight: 620; font-size: 15px; }
+  .railadd svg { width: 22px; height: 22px; }
+  .railadd .lbl { display: none; }
+  .railadd:hover { box-shadow: var(--shadow-lift); }
+  .railitem { display: grid; justify-items: center; gap: 4px; width: 72px; padding: 2px 0 8px; border: 0; background: none; color: var(--ink2);
+    font-size: 12px; font-weight: 560; letter-spacing: 0; cursor: pointer; }
+  .railitem .ic { width: 56px; height: 32px; border-radius: 999px; display: grid; place-items: center; transition: background-color .25s var(--ease), color .25s var(--ease); }
+  .railitem svg { width: 22px; height: 22px; }
+  .railitem:hover .ic { background: var(--fill); }
+  .railitem:hover { color: var(--ink); }
+  .railitem[aria-current] { color: var(--ink); font-weight: 650; }
+  .railitem[aria-current] .ic { background: var(--accent-soft); color: var(--accent); }
+
+  /* the list: a white sheet, rows instead of a card of cells */
+  .listpane { flex-direction: column; min-height: 0; overflow-y: auto; overscroll-behavior: contain; background: var(--card);
+    border-radius: 18px 18px 0 0; box-shadow: 0 0 0 .5px var(--sep); }
+  .listpane > .page { max-width: none; margin: 0; padding: 0 8px 32px; }
+  .listpane .head { position: sticky; top: 0; z-index: 2; background: var(--card); margin: 0; padding: 18px 10px 12px 12px; min-height: 66px; }
+  .listpane .title { font-size: 22px; letter-spacing: -.025em; }
+  .listpane .head .btn.small { height: 34px; padding: 0 14px 0 11px; font-size: 14px; gap: 6px; }
+  .listpane .head .btn.small svg { width: 16px; height: 16px; }
+  .listpane .group { background: none; box-shadow: none; border-radius: 0; overflow: visible; display: grid; gap: 2px; }
+  .listpane .cell { border-radius: 12px; min-height: 62px; padding: 9px 12px; gap: 12px; }
+  .listpane .cell::before { display: none; }
+  .listpane .cell .t { font-size: 15px; }
+  .listpane .cell .s { font-size: 13px; }
+  .listpane .people .av { --s: 40px !important; }
+  .listpane .chev { display: none; }
+  .listpane button.cell:hover { background: var(--fill); }
+  .listpane .cell[aria-current], .listpane .cell[aria-current]:hover { background: var(--accent-soft); }
+  .listpane .conv .cell { min-height: 72px; padding-top: 10px; padding-bottom: 10px; }
+  .listpane .conv .stackav { width: 48px; }
+  .listpane .conv .stackav .av { --s: 40px !important; }
+  .listpane .conv .stackav .av + .av { --s: 32px !important; margin-left: -18px; margin-top: 14px; }
+  .listpane .conv .when { font-size: 12px; }
+  .listpane .empty { text-align: left; padding: 8px 12px; font-size: 14px; }
+  .listpane .press:active { transform: none; }
+
+  /* the detail pane: its own scroller; content keeps a readable width and sits in the middle of the pane */
+  .detail { flex-direction: column; min-width: 0; min-height: 0; container: pane / inline-size; --cap: 720px; --gut: max(28px, calc((100% - var(--cap)) / 2)); }
+  .detail > .page { flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain; max-width: none; margin: 0;
+    padding: 28px var(--gut) 64px; }
+  .detail[data-page=addname], .detail[data-page=key], .detail[data-page=added] { --cap: 460px; }
+  .detail[data-page=connect], .detail[data-page=invite], .detail[data-page=wake] { --cap: 600px; }
+  .detail[data-page=thread] { --cap: 760px; }
+  .detail[data-page=add], .detail[data-page=new] { --cap: 760px; }
+  .detail .title { font-size: 30px; }
+  .detail .hero .title { font-size: 28px; }
+  .detail .head { margin: 6px 0 22px; }
+  .detail .btn:not(.small):not(.send) { height: 50px; font-size: 16px; }
+  .paneback { display: inline-flex; align-items: center; gap: 6px; margin: -14px 0 6px -4px; padding: 6px 4px; }
+  .paneback svg { width: 8px; height: 14px; }
+  .detail .sticky-status { top: 0; }
+
+  /* nothing open */
+  .detail[data-page=pick] > .page { display: grid; place-items: center; padding-bottom: 96px; }
+  .detail[data-page=pick] .blank { padding: 0; }
+  .detail[data-page=pick] .blank .t { font-size: 17px; font-weight: 560; color: var(--ink2); }
+
+  /* a profile reads left to right on a big screen: picture, name, actions */
+  .detail .profile { grid-template-columns: auto minmax(0, 1fr) auto; justify-items: start; align-items: center; text-align: left;
+    column-gap: 20px; row-gap: 2px; margin: 4px 0 28px; }
+  .detail .profile > .av { grid-row: 1 / span 2; --s: 76px !important; }
+  .detail .profile > .title { grid-column: 2; align-self: end; margin: 0; font-size: 30px; }
+  .detail .profile > :nth-child(3) { grid-column: 2; align-self: start; }
+  .detail .profile > .quick { grid-column: 3; grid-row: 1 / span 2; margin: 0; gap: 8px; align-self: center; }
+  .detail .quick .q { display: flex; align-items: center; gap: 8px; width: auto; height: 40px; padding: 0 16px 0 13px; border-radius: 999px; font-size: 15px; }
+  .detail .quick .q:first-child { background: var(--accent); color: var(--on-accent); box-shadow: none; }
+  .detail .quick .q svg { width: 18px; height: 18px; }
+  .detail[data-page=me] .btn.danger { width: auto; justify-self: start; padding: 0 22px; height: 44px; font-size: 15px; }
+  .detail .pick { grid-template-columns: repeat(auto-fill, minmax(132px, 1fr)); }
+
+  /* a conversation: toolbar, messages, and the reply box pinned to the bottom of the pane */
+  .detail > .panehead { flex: none; margin: 0; padding: 12px var(--gut); min-height: 68px; border-bottom: .5px solid var(--sep); }
+  .detail > .panehead .title { font-size: 19px; letter-spacing: -.02em; }
+  .detail > .panehead .lede { font-size: 14px; margin-top: 2px; }
+  .detail > .p-thread { padding-top: 12px; padding-bottom: 20px; }
+  .detail .msg { max-width: 76%; }
+  .detail > .composer { position: static; flex: none; padding: 12px var(--gut) 18px; background: var(--bg); border-top: .5px solid var(--sep);
+    backdrop-filter: none; -webkit-backdrop-filter: none; animation: fade .3s var(--ease) both; }
+  .detail > .composer form { max-width: none; margin: 0; padding: 0; }
+  .detail > .composer textarea { min-height: 46px; padding: 12px 18px; font-size: 15px; }
+  .detail > .composer .send { width: 46px; height: 46px; }
+}
+/* a narrow detail pane (tablets, a 1024px window): the actions drop under the name */
+@container pane (max-width: 579px) {
+  .detail .profile > .quick { grid-column: 1 / -1; grid-row: 3; margin-top: 16px; flex-wrap: wrap; justify-content: flex-start; }
+  .detail .profile > .av { --s: 64px !important; }
+  .detail .profile > .title { font-size: 26px; }
+}
+@media (min-width: 1024px) {
+  :root { --rail: 228px; --list: 340px; }
+  .bar-in { padding-left: 24px; }
+  .rail { align-items: stretch; padding: 6px 12px 16px; gap: 2px; }
+  .railadd { display: inline-flex; align-self: flex-start; gap: 10px; width: auto; height: 50px; padding: 0 22px 0 14px; margin-bottom: 16px; }
+  .railadd svg { width: 20px; height: 20px; }
+  .railadd .lbl { display: inline; }
+  .railitem { display: flex; align-items: center; gap: 14px; width: auto; height: 42px; padding: 0 14px 0 12px; border-radius: 999px; font-size: 15px; }
+  .railitem .ic { width: auto; height: auto; background: none !important; }
+  .railitem:hover { background: var(--fill); }
+  .railitem[aria-current] { background: var(--accent-soft); }
+  .railitem[aria-current] .ic { color: var(--accent); }
+}
+@media (min-width: 1280px) { :root { --list: 380px; } }
 </style>
 </head>
 <body>
