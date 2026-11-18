@@ -505,8 +505,8 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
         except FileNotFoundError:
             raise HTTPException(500, f"{name} is missing from this install")
 
-    @app.get("/", include_in_schema=False)
-    def home():
+    @app.get("/classic", include_in_schema=False)
+    def classic():             # the first dashboard, kept while the new app settles in
         return static("ui.html", "text/html; charset=utf-8")
 
     @app.get("/join", include_in_schema=False)
@@ -544,9 +544,14 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
     def app_page():
         return web("app.html")
 
-    @app.get("/welcome", include_in_schema=False)
+    @app.get("/", include_in_schema=False)
     def landing_page():
         return web("landing.html")
+
+    @app.get("/welcome", include_in_schema=False)
+    def welcome_redirect():
+        from fastapi.responses import RedirectResponse
+        return RedirectResponse("/", status_code=308)
 
     @app.get("/static/{name}", include_in_schema=False)
     def static_file(name: str):           # only files shipped in relay/web; the name is a dict key

@@ -21,7 +21,9 @@ def H(tok):
 
 
 def test_pages_and_static_files_are_served_with_a_strict_policy(hub):
-    for path, kind in [("/app", "text/html"), ("/welcome", "text/html"), ("/static/app.js", "text/javascript"),
+    assert "Your agents" in hub.get("/").text and hub.get("/classic").status_code == 200
+    assert hub.get("/welcome", follow_redirects=False).headers["location"] == "/"
+    for path, kind in [("/app", "text/html"), ("/", "text/html"), ("/static/app.js", "text/javascript"),
                        ("/static/landing.js", "text/javascript"), ("/static/relay.css", "text/css"),
                        ("/static/mark.svg", "image/svg+xml")]:
         r = hub.get(path)
