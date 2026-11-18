@@ -21,23 +21,24 @@
 }
 
 /* ---------------------------------------------------------------- words */
-.sp-text { min-width: 0; }
-.sp-name { display: flex; align-items: center; gap: 10px; margin: 0; font: 700 28px/1.1 var(--display); letter-spacing: -.035em; }
+.sp-text { min-width: 0; border-top: 1px solid var(--line, var(--sep)); padding-top: 22px; }
+.sp-name { display: flex; align-items: center; gap: 10px; margin: 0; font: 680 26px/1.1 var(--display); letter-spacing: -.035em; }
 .sp-mark { width: 26px; height: 26px; flex: none; fill: var(--sp); }
-.sp-promise { margin: 10px 0 14px; font-size: 19px; line-height: 1.4; color: var(--ink2); max-width: 26ch; text-wrap: balance; }
-.sp-feature .sp-name { font-size: clamp(28px, 3.2vw, 36px); }
-.sp-feature .sp-mark { width: clamp(26px, 3vw, 32px); height: clamp(26px, 3vw, 32px); }
-.sp-feature .sp-promise { font-size: clamp(19px, 2vw, 22px); }
-.sp-pair .sp-name { font-size: 24px; } .sp-pair .sp-mark { width: 22px; height: 22px; }
-.sp-pair .sp-promise { font-size: 17px; margin: 8px 0 12px; }
+.sp-promise { margin: 10px 0 16px; font-size: 18px; line-height: 1.4; color: var(--ink2); max-width: 26ch; text-wrap: balance; }
+.sp-feature .sp-name { font-size: clamp(26px, 2.8vw, 32px); }
+.sp-feature .sp-mark { width: clamp(24px, 2.6vw, 28px); height: clamp(24px, 2.6vw, 28px); }
+.sp-feature .sp-promise { font-size: clamp(18px, 1.8vw, 20px); }
+.sp-pair .sp-name { font-size: 22px; } .sp-pair .sp-mark { width: 20px; height: 20px; }
+.sp-pair .sp-promise { font-size: 16px; margin: 8px 0 14px; }
 .sp-state { display: inline-flex; align-items: center; gap: 7px; font-size: 13px; font-weight: 620; letter-spacing: .01em; }
 .sp-state::before { content: ""; width: 7px; height: 7px; border-radius: 50%; }
 .sp-state.is-live { color: var(--green-ink); } .sp-state.is-live::before { background: var(--green); }
 .sp-state.is-soon { color: var(--ink2); } .sp-state.is-soon::before { box-shadow: inset 0 0 0 1.5px var(--ink3); }
 @media (max-width: 560px) {
   .sp-item { gap: 14px; }
-  .sp-name, .sp-feature .sp-name, .sp-pair .sp-name { font-size: 24px; }
-  .sp-promise, .sp-feature .sp-promise, .sp-pair .sp-promise { font-size: 17px; margin: 6px 0 10px; }
+  .sp-name, .sp-feature .sp-name, .sp-pair .sp-name { font-size: 22px; }
+  .sp-text { padding-top: 18px; }
+  .sp-promise, .sp-feature .sp-promise, .sp-pair .sp-promise { font-size: 16px; margin: 6px 0 12px; }
 }
 
 /* ---------------------------------------------------------------- the stage */
@@ -45,7 +46,7 @@
   font: inherit; text-align: left; -webkit-user-select: none; user-select: none; }
 button.sp-stage { cursor: pointer; }
 .sp-stage svg { display: block; width: 100%; height: auto; overflow: visible; }
-.sp-stage:focus-visible { outline: 3px solid var(--accent-line); outline-offset: 6px; border-radius: 12px; }
+.sp-stage:focus-visible { outline: 2px solid var(--accent); outline-offset: 6px; border-radius: 12px; }
 .sp-replay { display: none; position: absolute; right: 0; top: 0; width: 20px; height: 20px; color: var(--ink3);
   transition: color .25s var(--ease); }
 .sp-on .sp-replay { display: block; }
@@ -55,6 +56,7 @@ button.sp-stage { cursor: pointer; }
 /* drawing */
 .sp-stage text { font-family: var(--font); letter-spacing: -.01em; }
 .sp-card { fill: var(--card); stroke: var(--sep); stroke-width: 1; }
+.sp-tile { fill: var(--raise, var(--bg2)); }
 .sp-hair { fill: none; stroke: var(--sep); stroke-width: 1; }
 .sp-ln { fill: var(--ink3); opacity: .75; } .sp-ln2 { fill: var(--fill2); }
 .sp-accbar, .sp-fill, .sp-frame, .sp-dot { fill: var(--sp); }

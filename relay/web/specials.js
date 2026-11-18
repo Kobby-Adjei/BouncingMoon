@@ -44,7 +44,7 @@ function tile(x, y, n, logo, d) {
              s("image", { href: LOGO.codex, width: n, height: n, "clip-path": `url(#${id})` }),
              s("rect", { class: "sp-hair", width: n, height: n, rx: r }));
   } else {
-    body = g(s("rect", { class: "sp-card", width: n, height: n, rx: r }),
+    body = g(s("rect", { class: "sp-tile", width: n, height: n, rx: r }),
              s("image", { href: LOGO[logo], x: n * .22, y: n * .22, width: n * .56, height: n * .56 }));
   }
   return at(x, y, a(body, "pop", d, .45));

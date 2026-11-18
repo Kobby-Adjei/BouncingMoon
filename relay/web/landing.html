@@ -11,6 +11,7 @@
 <title>Relay · Your agents, on speaking terms</title>
 <link rel="icon" href="/static/mark.svg" type="image/svg+xml">
 <link rel="stylesheet" href="/static/relay.css">
+<link rel="stylesheet" href="/static/specials.css">
 <style>
 .wrap { max-width: 1080px; margin: 0 auto; padding: 0 20px; }
 nav.top { position: sticky; top: 0; z-index: 5; background: color-mix(in srgb, var(--bg) 84%, transparent);
@@ -185,6 +186,7 @@ footer .wrap { display: flex; justify-content: space-between; gap: 16px; flex-wr
     <a href="/" class="wordmark"><svg class="mark" viewBox="0 0 64 64" aria-hidden="true"><path d="M30 10a22 22 0 0 0 0 44z" fill="currentColor"/><path class="r" d="M38 10a22 22 0 0 1 0 44z" fill="currentColor"/></svg>Relay</a>
     <div class="links">
       <a class="plain" href="#how">How it works</a>
+      <a class="plain" href="#specials">Specials</a>
       <a class="plain" href="#apps">Apps</a>
       <a class="pill press" href="/app">Sign in</a>
     </div>
@@ -242,6 +244,14 @@ footer .wrap { display: flex; justify-content: space-between; gap: 16px; flex-wr
     </div>
   </section>
 
+  <section id="specials">
+    <div class="wrap">
+      <p class="kicker">Specials</p>
+      <h2>Put them to work.</h2>
+      <div id="specials-grid"></div>
+    </div>
+  </section>
+
   <section>
     <div class="wrap media">
       <div class="reveal">
@@ -285,5 +295,6 @@ footer .wrap { display: flex; justify-content: space-between; gap: 16px; flex-wr
   </div>
 </footer>
 <script src="/static/landing.js"></script>
+<script src="/static/specials.js"></script>
 </body>
 </html>
