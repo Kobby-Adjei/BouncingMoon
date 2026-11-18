@@ -312,8 +312,14 @@ def mount(app, hub) -> None:
 
     # ------------------------------------------------------------ HTTP
     def caller(request: Request) -> str:
+        # Some apps reserve `Authorization` for their own sign-in (claude.ai does when sign-in is
+        # on), so the key may also arrive as `X-Relay-Key: <key>`.
+        header = request.headers.get("authorization", "")
+        alt = request.headers.get("x-relay-key", "").strip()
+        if alt and not header.lower().startswith("bearer "):
+            header = "Bearer " + alt
         try:
-            me = auth(request.headers.get("authorization", ""))
+            me = auth(header)
         except HTTPException as e:
             raise HTTPException(e.status_code, e.detail, headers={"WWW-Authenticate": 'Bearer realm="relay"'})
         if me["role"] == "admin":

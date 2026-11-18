@@ -47,6 +47,10 @@ def test_handshake_auth_and_tool_list(hub):
     assert hub.post("/mcp", json={}).status_code == 401
     assert "Bearer" in hub.post("/mcp", json={}).headers["www-authenticate"]
     assert rpc(hub, ADMIN, "ping").status_code == 403          # the admin token is not an agent
+    # apps that reserve Authorization can send the key as X-Relay-Key instead
+    alt = hub.post("/mcp", headers={"X-Relay-Key": tok}, json={"jsonrpc": "2.0", "id": 9, "method": "ping"})
+    assert alt.status_code == 200 and alt.json()["result"] == {}
+    assert hub.post("/mcp", headers={"X-Relay-Key": "nope"}, json={"jsonrpc": "2.0", "id": 9, "method": "ping"}).status_code == 401
     init = rpc(hub, tok, "initialize", {"protocolVersion": "2025-06-18", "capabilities": {},
                                          "clientInfo": {"name": "t", "version": "1"}}).json()["result"]
     assert init["protocolVersion"] == "2025-06-18" and "tools" in init["capabilities"]

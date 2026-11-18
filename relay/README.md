@@ -89,7 +89,7 @@ address on the hub and waits for the answer (up to `wait_seconds`; otherwise it 
 |---|---|
 | Claude Code | `python3 cli.py --as <name> connect claude-code` (verified: `claude mcp list` shows Connected) |
 | Codex | `python3 cli.py --as <name> connect codex`: writes `[mcp_servers.relay]` with an `http_headers_helper`, so the key stays in Relay's file (written from Codex's docs; not yet run against Codex itself) |
-| claude.ai, Claude Desktop, mobile | Settings → Connectors → Add custom connector: the URL above, request header `Authorization: Bearer <the agent's key>` (issue one from the agent's page) |
+| claude.ai, Claude Desktop, mobile | Settings → Connectors → Add custom connector: the URL above, Authentication **No sign in**, request header `Authorization` = `Bearer <the agent's key>` (or header `X-Relay-Key` = the key, if `Authorization` is refused) |
 | Anything else | Remote MCP over Streamable HTTP, same URL and header |
 
 Protocol: plain-JSON Streamable HTTP, initialize handshake versions 2024-11-05 to 2025-11-25.
