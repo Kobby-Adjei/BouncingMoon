@@ -35,7 +35,7 @@ from contextlib import contextmanager
 from typing import Any, Optional
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel, Field
 
 SCHEMA = """
@@ -64,9 +64,14 @@ CREATE INDEX IF NOT EXISTS jobs_queue ON jobs(status, kind, created);
 CREATE TABLE IF NOT EXISTS artifacts(
   id TEXT PRIMARY KEY, name TEXT, mime TEXT, size INTEGER, created_by TEXT,
   created REAL, meta TEXT NOT NULL DEFAULT '{}', parent TEXT, kind TEXT);
+CREATE TABLE IF NOT EXISTS invites(
+  id TEXT PRIMARY KEY, code_hash TEXT UNIQUE NOT NULL, handle TEXT NOT NULL,
+  role TEXT NOT NULL, caps TEXT NOT NULL DEFAULT '[]', note TEXT,
+  created REAL NOT NULL, expires REAL NOT NULL, claimed REAL, revoked REAL);
 """
 
 HANDLE_RE = re.compile(r"^[a-z0-9][a-z0-9_.-]{0,31}$")
+PROVIDER_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,23}$")   # "claude", "openai", "gemini", ... (display only)
 RESERVED = {"relay", "admin"}
 SYSTEM = "relay"            # sender name for messages the hub writes itself
 MEDIA_PREFIXES = ("video/", "audio/")
@@ -113,6 +118,10 @@ class Store:
             cols = {r["name"] for r in c.execute("PRAGMA table_info(jobs)")}
             if "not_before" not in cols:
                 c.execute("ALTER TABLE jobs ADD COLUMN not_before REAL")
+            if "provider" not in {r["name"] for r in c.execute("PRAGMA table_info(agents)")}:
+                c.execute("ALTER TABLE agents ADD COLUMN provider TEXT")
+            if "provider" not in {r["name"] for r in c.execute("PRAGMA table_info(invites)")}:
+                c.execute("ALTER TABLE invites ADD COLUMN provider TEXT")
         finally:
             c.close()
 
@@ -182,6 +191,20 @@ class AgentIn(BaseModel):
     handle: str
     caps: list[str] = Field(default_factory=list)
     role: str = "agent"            # "agent" | "human"
+    provider: Optional[str] = None
+
+
+class InviteIn(BaseModel):
+    handle: str
+    caps: list[str] = Field(default_factory=list)
+    role: str = "agent"
+    provider: Optional[str] = None
+    hours: float = 24
+    note: Optional[str] = None
+
+
+class ClaimInviteIn(BaseModel):
+    code: str
 
 
 class CapsIn(BaseModel):
@@ -381,6 +404,79 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
         return j
 
     # ---------------------------------------------------------------- health
+    def need_admin(me: dict) -> None:
+        if me["role"] != "admin":
+            raise HTTPException(403, "admin token required")
+
+    def check_provider(provider: Optional[str]) -> Optional[str]:
+        if provider in (None, ""):
+            return None
+        if not PROVIDER_RE.match(provider):
+            raise HTTPException(400, "provider must be a short lowercase name like claude or openai")
+        return provider
+
+    def check_new_agent(handle: str, role: str) -> None:
+        if not HANDLE_RE.match(handle) or handle in RESERVED:
+            raise HTTPException(400, "name must be lowercase letters, digits, . _ - (max 32), not reserved")
+        if role not in ("agent", "human"):
+            raise HTTPException(400, "role must be agent or human")
+
+    def invite_out(r: sqlite3.Row) -> dict:
+        now = _now()
+        state = ("claimed" if r["claimed"] else "revoked" if r["revoked"]
+                 else "expired" if r["expires"] <= now else "pending")
+        return {"id": r["id"], "handle": r["handle"], "role": r["role"],
+                "caps": _loads(r["caps"], []), "provider": r["provider"], "note": r["note"], "created": r["created"],
+                "expires": r["expires"], "claimed": r["claimed"], "state": state}
+
+    # ---------------------------------------------------------------- web page
+    # The dashboard is static: one HTML file and one script, no third-party code.
+    # Tokens live in the browser tab's sessionStorage and go only in the
+    # Authorization header, never in a URL or cookie.
+    here = os.path.dirname(os.path.abspath(__file__))
+    page_headers = {
+        "Content-Security-Policy": ("default-src 'none'; script-src 'self'; connect-src 'self'; "
+                                    "style-src 'self' 'unsafe-inline'; img-src 'self' data:; "
+                                    "base-uri 'none'; form-action 'none'; frame-ancestors 'none'"),
+        "X-Content-Type-Options": "nosniff",
+        "Referrer-Policy": "no-referrer",
+        "Cache-Control": "no-store",
+    }
+
+    def static(name: str, mime: str) -> Response:
+        try:
+            with open(os.path.join(here, name), "rb") as f:
+                return Response(f.read(), media_type=mime, headers=page_headers)
+        except FileNotFoundError:
+            raise HTTPException(500, f"{name} is missing from this install")
+
+    @app.get("/", include_in_schema=False)
+    def home():
+        return static("ui.html", "text/html; charset=utf-8")
+
+    @app.get("/join", include_in_schema=False)
+    def join_page():           # the invite code travels in the #fragment, never the path
+        return static("ui.html", "text/html; charset=utf-8")
+
+    @app.get("/ui.js", include_in_schema=False)
+    def ui_js():
+        return static("ui.js", "text/javascript; charset=utf-8")
+
+    logos = {f[:-4] for f in os.listdir(os.path.join(here, "logos"))
+             if f.endswith(".svg")} if os.path.isdir(os.path.join(here, "logos")) else set()
+
+    @app.get("/logos/{name}.svg", include_in_schema=False)
+    def logo(name: str):       # only files that shipped with the hub; no path from the request
+        if name not in logos:
+            raise HTTPException(404, "no such logo")
+        with open(os.path.join(here, "logos", name + ".svg"), "rb") as f:
+            return Response(f.read(), media_type="image/svg+xml",
+                            headers={**page_headers, "Cache-Control": "public, max-age=86400"})
+
+    @app.get("/cli.py", include_in_schema=False)
+    def cli_py():              # public: it is the open client, and holds no secrets
+        return static("cli.py", "text/x-python; charset=utf-8")
+
     @app.get("/health")
     def health():
         return {"ok": True, "version": "0.1.0"}
@@ -390,27 +486,125 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
     def register(body: AgentIn, me: dict = Depends(auth)):
         if me["role"] != "admin":
             raise HTTPException(403, "only the admin token can register agents")
-        if not HANDLE_RE.match(body.handle) or body.handle in RESERVED:
-            raise HTTPException(400, "handle must be lowercase, 1-32 chars, not reserved")
-        if body.role not in ("agent", "human"):
-            raise HTTPException(400, "role must be agent or human")
+        check_new_agent(body.handle, body.role)
+        provider = check_provider(body.provider)
         token = "rly_" + secrets.token_urlsafe(32)
         with store.tx() as c:
             if c.execute("SELECT 1 FROM agents WHERE handle=?", (body.handle,)).fetchone():
                 raise HTTPException(409, f"@{body.handle} already registered")
-            c.execute("INSERT INTO agents(handle,token_hash,caps,role,created) VALUES (?,?,?,?,?)",
+            c.execute("INSERT INTO agents(handle,token_hash,caps,role,created,provider) VALUES (?,?,?,?,?,?)",
                       (body.handle, _hash(token), json.dumps(sorted(set(body.caps))),
-                       body.role, _now()))
+                       body.role, _now(), provider))
             c.execute("INSERT OR IGNORE INTO cursors(agent,last) VALUES (?,0)", (body.handle,))
         # the only time this token is ever returned
         return {"handle": body.handle, "token": token, "caps": sorted(set(body.caps)),
                 "role": body.role}
 
+    @app.put("/agents/{handle}/provider")
+    def set_provider(handle: str, body: dict, me: dict = Depends(auth)):
+        """Admin: say which provider an agent runs on (display only)."""
+        need_admin(me)
+        provider = check_provider(body.get("provider"))
+        with store.tx() as c:
+            if not c.execute("SELECT 1 FROM agents WHERE handle=?", (handle,)).fetchone():
+                raise HTTPException(404, f"no agent @{handle}")
+            c.execute("UPDATE agents SET provider=? WHERE handle=?", (provider, handle))
+        return {"handle": handle, "provider": provider}
+
+    @app.post("/agents/{handle}/token")
+    def reset_token(handle: str, me: dict = Depends(auth)):
+        """Admin: issue a new token for an agent. The old one stops working at once."""
+        need_admin(me)
+        token = "rly_" + secrets.token_urlsafe(32)
+        with store.tx() as c:
+            if not c.execute("SELECT 1 FROM agents WHERE handle=?", (handle,)).fetchone():
+                raise HTTPException(404, f"no agent @{handle}")
+            c.execute("UPDATE agents SET token_hash=? WHERE handle=?", (_hash(token), handle))
+        return {"handle": handle, "token": token}
+
+    # ---------------------------------------------------------------- invites
+    # An invite lets a new agent join without anyone handling its token: the admin
+    # makes a one-time code, the agent's own machine trades it for a token
+    # (`cli.py join`), and the token never passes through a browser or a chat.
+    @app.post("/invites")
+    def new_invite(body: InviteIn, me: dict = Depends(auth)):
+        need_admin(me)
+        check_new_agent(body.handle, body.role)
+        provider = check_provider(body.provider)
+        if not 0.1 <= body.hours <= 168:
+            raise HTTPException(400, "hours must be between 0.1 and 168")
+        code = "inv_" + secrets.token_urlsafe(24)
+        iid = "i_" + uuid.uuid4().hex[:12]
+        now = _now()
+        with store.tx() as c:
+            if c.execute("SELECT 1 FROM agents WHERE handle=?", (body.handle,)).fetchone():
+                raise HTTPException(409, f"@{body.handle} already exists")
+            if c.execute("SELECT 1 FROM invites WHERE handle=? AND claimed IS NULL AND revoked IS NULL"
+                         " AND expires>?", (body.handle, now)).fetchone():
+                raise HTTPException(409, f"@{body.handle} already has an open invite; revoke it first")
+            c.execute("INSERT INTO invites(id,code_hash,handle,role,caps,provider,note,created,expires)"
+                      " VALUES (?,?,?,?,?,?,?,?,?)",
+                      (iid, _hash(code), body.handle, body.role,
+                       json.dumps(sorted(set(body.caps))), provider, body.note, now,
+                       now + body.hours * 3600))
+            out = invite_out(c.execute("SELECT * FROM invites WHERE id=?", (iid,)).fetchone())
+        out["code"] = code          # the only time the code is ever returned
+        return out
+
+    @app.get("/invites")
+    def list_invites(me: dict = Depends(auth)):
+        need_admin(me)
+        with store.ro() as c:
+            return [invite_out(r) for r in
+                    c.execute("SELECT * FROM invites ORDER BY created DESC LIMIT 100")]
+
+    @app.delete("/invites/{iid}")
+    def revoke_invite(iid: str, me: dict = Depends(auth)):
+        need_admin(me)
+        with store.tx() as c:
+            r = c.execute("SELECT * FROM invites WHERE id=?", (iid,)).fetchone()
+            if not r:
+                raise HTTPException(404, "no such invite")
+            if r["claimed"]:
+                raise HTTPException(409, "already used; reset the agent's token instead")
+            c.execute("UPDATE invites SET revoked=COALESCE(revoked, ?) WHERE id=?", (_now(), iid))
+            return invite_out(c.execute("SELECT * FROM invites WHERE id=?", (iid,)).fetchone())
+
+    @app.post("/invites/peek")
+    def peek_invite(body: ClaimInviteIn):
+        """No auth: what an invite is for, so the join page can show it. Does not use it up."""
+        with store.ro() as c:
+            r = c.execute("SELECT * FROM invites WHERE code_hash=?", (_hash(body.code.strip()),)).fetchone()
+        if not r:
+            raise HTTPException(404, "invite is not valid: it was used, revoked, expired or mistyped")
+        out = invite_out(r)
+        return {"handle": out["handle"], "role": out["role"], "caps": out["caps"],
+                "provider": out["provider"], "expires": out["expires"], "state": out["state"]}
+
+    @app.post("/invites/claim")
+    def claim_invite(body: ClaimInviteIn):
+        """No auth: the code is the credential. Single use, checked in one transaction."""
+        now = _now()
+        with store.tx() as c:
+            r = c.execute("SELECT * FROM invites WHERE code_hash=?", (_hash(body.code.strip()),)).fetchone()
+            if not r or r["claimed"] or r["revoked"] or r["expires"] <= now:
+                raise HTTPException(404, "invite is not valid: it was used, revoked, expired or mistyped")
+            if c.execute("SELECT 1 FROM agents WHERE handle=?", (r["handle"],)).fetchone():
+                raise HTTPException(409, f"@{r['handle']} already exists")
+            token = "rly_" + secrets.token_urlsafe(32)
+            c.execute("INSERT INTO agents(handle,token_hash,caps,role,created,provider) VALUES (?,?,?,?,?,?)",
+                      (r["handle"], _hash(token), r["caps"], r["role"], now, r["provider"]))
+            c.execute("INSERT OR IGNORE INTO cursors(agent,last) VALUES (?,0)", (r["handle"],))
+            c.execute("UPDATE invites SET claimed=? WHERE id=?", (now, r["id"]))
+            post(c, SYSTEM, f"@{r['handle']} joined the hub", channel="general")
+        return {"handle": r["handle"], "token": token, "role": r["role"],
+                "caps": _loads(r["caps"], [])}
+
     @app.get("/agents")
     def agents(me: dict = Depends(auth)):
         with store.ro() as c:
             return [{"handle": r["handle"], "caps": _loads(r["caps"], []), "role": r["role"],
-                     "last_seen": r["last_seen"]}
+                     "provider": r["provider"], "last_seen": r["last_seen"]}
                     for r in c.execute("SELECT * FROM agents ORDER BY handle")]
 
     @app.get("/agents/me")
@@ -437,15 +631,17 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
     @app.get("/messages")
     def read(channel: Optional[str] = None, thread: Optional[int] = None,
              after: int = 0, limit: int = Query(50, ge=1, le=200),
-             me: dict = Depends(auth)):
+             latest: bool = False, me: dict = Depends(auth)):
+        """Oldest first from `after`; with latest=true, the newest `limit` (still oldest first)."""
         q, a = "SELECT * FROM messages WHERE id>?", [after]
         if channel:
             q += " AND channel=?"; a.append(channel)
         if thread:
             q += " AND thread=?"; a.append(thread)
-        q += " ORDER BY id LIMIT ?"; a.append(limit)
+        q += " ORDER BY id DESC LIMIT ?" if latest else " ORDER BY id LIMIT ?"; a.append(limit)
         with store.ro() as c:
-            return [msg_out(r) for r in c.execute(q, a)]
+            rows = [msg_out(r) for r in c.execute(q, a)]
+        return rows[::-1] if latest else rows
 
     @app.get("/inbox")
     def inbox(limit: int = Query(20, ge=1, le=200), me: dict = Depends(auth)):

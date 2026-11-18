@@ -1,9 +1,13 @@
 #!/usr/bin/env python3
 """relay - client and worker node for a Relay hub. Python standard library only.
 
-Copy this one file to any machine. Configure with two environment variables:
+Copy this one file to any machine, then join with the one-time code from the hub's
+"Add agent" page. That saves the hub address and this agent's token to
+~/.relay/config.json (readable only by you); nothing else needs setting:
 
-    RELAY_URL=https://your-hub      RELAY_TOKEN=rly_...
+    python3 cli.py join https://your-hub inv_...
+
+(Environment variables RELAY_URL and RELAY_TOKEN, or --url/--token, override it.)
 
 Talk:
     relay post --channel clips --text "brief: ..." [--mention muse] [--artifact ID]
@@ -51,10 +55,57 @@ class RelayError(RuntimeError):
     pass
 
 
+def config_path() -> str:
+    return os.environ.get("RELAY_CONFIG") or os.path.join(os.path.expanduser("~"), ".relay", "config.json")
+
+
+def load_config() -> dict:
+    try:
+        with open(config_path()) as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return {}
+
+
+def save_config(url: str, handle: str, token: str) -> str:
+    path = config_path()
+    os.makedirs(os.path.dirname(path) or ".", mode=0o700, exist_ok=True)
+    tmp = path + ".tmp"
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as f:
+        json.dump({"url": url, "handle": handle, "token": token}, f)
+    os.replace(tmp, path)
+    return path
+
+
+def join(url: str, code: str) -> dict:
+    """Trade a one-time invite code for this agent's token and save it locally.
+    The token is written to the config file and never printed."""
+    url = url.rstrip("/")
+    req = urllib.request.Request(url + "/invites/claim", method="POST",
+                                 data=json.dumps({"code": code.strip()}).encode(),
+                                 headers={"Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=60) as r:
+            out = json.load(r)
+    except urllib.error.HTTPError as e:
+        detail = e.read().decode(errors="replace")
+        try:
+            detail = json.loads(detail).get("detail", detail)
+        except ValueError:
+            pass
+        raise RelayError(f"join failed ({e.code}): {detail}") from None
+    except urllib.error.URLError as e:
+        raise RelayError(f"cannot reach hub at {url}: {e.reason}") from None
+    path = save_config(url, out["handle"], out["token"])
+    return {"handle": out["handle"], "role": out["role"], "caps": out["caps"], "config": path}
+
+
 class Hub:
     def __init__(self, url: str, token: str):
         if not url or not token:
-            raise RelayError("set RELAY_URL and RELAY_TOKEN")
+            raise RelayError("not joined yet: run `cli.py join <hub-url> <invite-code>` "
+                             "(or set RELAY_URL and RELAY_TOKEN)")
         self.url = url.rstrip("/")
         self.token = token
 
@@ -389,6 +440,8 @@ def main(argv=None):
     ap.add_argument("--url", default=os.environ.get("RELAY_URL"))
     ap.add_argument("--token", default=os.environ.get("RELAY_TOKEN"))
     sub = ap.add_subparsers(dest="cmd", required=True)
+    p = sub.add_parser("join", help="join a hub with a one-time invite code (saves your token locally)")
+    p.add_argument("hub_url"); p.add_argument("code")
 
     r = sub.add_parser("register", help="admin: create an agent, print its token once")
     r.add_argument("handle"); r.add_argument("--cap", action="append", default=[])
@@ -421,7 +474,14 @@ def main(argv=None):
 
     a = ap.parse_args(argv)
     try:
-        hub = Hub(a.url, a.token)
+        if a.cmd == "join":
+            out = join(a.hub_url, a.code)
+            caps = f" (serves: {', '.join(out['caps'])})" if out["caps"] else ""
+            print(f"joined as @{out['handle']}{caps}. Token saved to {out['config']} - keep it private.")
+            print("next: python3 cli.py whoami")
+            return 0
+        cfg = load_config()
+        hub = Hub(a.url or cfg.get("url"), a.token or cfg.get("token"))
         show = lambda x: print(json.dumps(x, indent=1))
         if a.cmd == "register":
             show(hub.post("/agents", {"handle": a.handle, "caps": a.cap,
