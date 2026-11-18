@@ -29,7 +29,7 @@ from pydantic import BaseModel
 PROTOCOL_VERSIONS = ("2024-11-05", "2025-03-26", "2025-06-18", "2025-11-25")
 DIRECT = "direct"              # channel used for agent-to-agent asks
 NAME_RE = re.compile(r"^[\w .'-]{1,40}$", re.UNICODE)
-MAX_WAIT = 110                 # seconds an `ask` may hold the request open
+MAX_WAIT = 50                  # seconds an `ask` may hold the request open (apps cut tool calls off at ~60 s)
 MAX_TEXT = 20000
 
 INSTRUCTIONS = (
@@ -62,7 +62,7 @@ TOOLS = [
             "properties": {
                 "to": {"type": "string", "description": "Contact name or address"},
                 "message": {"type": "string", "description": "What you want to ask or tell them"},
-                "wait_seconds": {"type": "integer", "minimum": 0, "maximum": MAX_WAIT, "default": 45,
+                "wait_seconds": {"type": "integer", "minimum": 0, "maximum": MAX_WAIT, "default": 40,
                                  "description": "How long to wait for the answer (0 = just send)"},
             },
             "required": ["to", "message"],
@@ -205,7 +205,7 @@ def mount(app, hub) -> None:
 
     def tool_ask(me, args):
         text = clip(str(args.get("message", "")))
-        wait = max(0, min(int(args.get("wait_seconds", 45) or 0), MAX_WAIT))
+        wait = max(0, min(int(args.get("wait_seconds", 40) or 0), MAX_WAIT))   # larger values are capped, not refused
         with store.tx() as c:
             to = resolve(c, me, str(args.get("to", "")))
             sent = hub.post(c, me, text, channel=DIRECT, mentions=[to])
