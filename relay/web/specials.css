@@ -85,10 +85,9 @@ button.sp-stage { cursor: pointer; }
 .sp-you { fill: var(--ink); font-size: 17px; font-weight: 680; }
 .sp-box { fill: none; stroke: var(--sp); stroke-width: 2; }
 .sp-env { fill: none; stroke: var(--ink2); stroke-width: 1.6; stroke-linejoin: round; stroke-linecap: round; }
-.sp-ping { fill: none; stroke: var(--sp); stroke-width: 2; }
 
 /* end states of the things that leave */
-.sp-stage .sp-out, .sp-stage .sp-ping, .sp-stage .sp-fly { opacity: 0; }
+.sp-stage .sp-out, .sp-stage .sp-fly { opacity: 0; }
 .sp-stage .sp-dim { opacity: .5; }
 
 /* ---------------------------------------------------------------- motion (plays once, from the start) */
@@ -103,7 +102,6 @@ button.sp-stage { cursor: pointer; }
 .sp-on .sp-glide { animation-name: sp-glide; }
 .sp-on .sp-move { animation-name: sp-move; animation-timing-function: cubic-bezier(.6, 0, .25, 1); }
 .sp-on .sp-press { animation-name: sp-press; }
-.sp-on .sp-ping { animation-name: sp-ping; }
 .sp-on .sp-fly { animation-name: sp-fly; animation-timing-function: cubic-bezier(.55, 0, .3, 1); }
 .sp-on .sp-dim { animation-name: sp-dim; }
 @keyframes sp-in { from { opacity: 0; } }
@@ -115,7 +113,6 @@ button.sp-stage { cursor: pointer; }
 @keyframes sp-glide { from { opacity: 0; transform: translate(var(--x), var(--y)); } }
 @keyframes sp-move { from { transform: translate(var(--x), var(--y)); } }
 @keyframes sp-press { 0%, 100% { transform: none; } 45% { transform: scale(.9); } }
-@keyframes sp-ping { 0% { opacity: 0; transform: none; } 12% { opacity: .85; transform: none; } 100% { opacity: 0; transform: scale(1.12, 1.45); } }
 @keyframes sp-fly { 0% { opacity: 0; transform: translate(var(--x), var(--y)) scale(.85); }
   15% { opacity: 1; transform: translate(var(--x), var(--y)); } 80% { opacity: 1; transform: scale(.9); }
   100% { opacity: 0; transform: scale(.5); } }

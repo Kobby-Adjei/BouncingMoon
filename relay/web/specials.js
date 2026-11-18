@@ -66,8 +66,8 @@ function gate(cx, cy, w, label, d, press) {
     a(s("path", { class: "sp-gate-k", d: `M${tx} 0.5l4 4 7.5 -8`, pathLength: 1 }), "draw", press + .14, .3));
   return at(cx, cy, a(g(a(g(pill), "press", press, .32)), "pop", d, .4));
 }
-function ping(cx, cy, w, hh, r, d) {       // one ring that says "this one", then fades
-  return at(cx, cy, a(s("rect", { class: "sp-ping", x: -w / 2, y: -hh / 2, width: w, height: hh, rx: r }), "ping", d, .9));
+function ping() {                           // no pulse rings: the owner's rule is no pulsing; the cursor press carries it
+  return s("g", {});
 }
 function cursor(x, y, d, press) {           // the tip rests at (x, y)
   return at(x, y, a(g(a(g(s("path", { class: "sp-cur", d: "M0 0l15 8.6-6.4 1.6L5.2 17z" })), "press", press, .32)),
