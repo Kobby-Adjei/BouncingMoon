@@ -7,6 +7,18 @@ Supabase directly (the page's policy only allows the hub), so the hub relays two
 
   POST {SUPABASE_URL}/auth/v1/otp?redirect_to=<hub>/app   send the link (only to emails on this hub)
   GET  {SUPABASE_URL}/auth/v1/user                        check the token the link handed back
+  POST {SUPABASE_URL}/auth/v1/verify                      check a code (or token hash) from the email
+
+Why a code as well as a link: work and school mail gateways open every link in an incoming
+email within seconds (seen live: a headless Chrome on AWS opened each link ~13s after it was
+sent). A Supabase link works once, so the scanner used it up and the person's own click
+failed. A code typed into /app, or a link to /app#token_hash=… that only acts when the person
+presses "Sign in", can't be used up by a scanner. That needs {{ .Token }} / {{ .TokenHash }}
+in the Supabase email templates (Authentication > Emails in the Supabase dashboard).
+
+When Supabase refuses to send, the hub logs why (address masked) and tells the page when the
+person can do something about it. Emails that aren't on the hub still get {"sent": true} and
+no call to Supabase, so the page can't be used to find out who is on the hub.
 
 A good token for an email that belongs to a person here becomes a hub session
 (`rly_sess_…`), stored hashed, valid for 30 days, ended by /auth/signout.
@@ -37,9 +49,59 @@ class SessionIn(BaseModel):
     access_token: str
 
 
+class VerifyIn(BaseModel):
+    email: Optional[str] = None
+    code: Optional[str] = None
+    token_hash: Optional[str] = None
+
+
 class PersonIn(BaseModel):
     handle: str
     email: str
+
+
+def mask_email(email: str) -> str:
+    """k***@example.com: enough to tell addresses apart in a log, not enough to collect them."""
+    local, _, domain = (email or "").partition("@")
+    return f"{local[:1]}***@{domain}" if domain else "***"
+
+
+def scrub(text: str) -> str:
+    return EMAIL_ANY.sub(lambda m: mask_email(m.group(0)), text or "")
+
+
+EMAIL_ANY = re.compile(r"[^@\s\"'<>(),;:]+@[^@\s\"'<>(),;:]+")
+CODE_RE = re.compile(r"^[0-9]{6,10}$")
+SEND_REFUSED = {
+    # Supabase error_code -> (status for the page, what the person can do about it)
+    "over_email_send_rate_limit": (429, "Too many emails right now. Try again in a few minutes."),
+    "over_request_rate_limit": (429, "Too many emails right now. Try again in a few minutes."),
+    "email_address_not_authorized": (503, "This hub's email sender isn't set up for outside addresses yet. "
+                                          "Ask the hub's owner to set up email sending, or sign in with a key."),
+}
+SEND_FAILED = (502, "The email couldn't be sent just now. Try again in a minute, or sign in with a key.")
+CODE_TRIES, CODE_WINDOW = 5, 900          # wrong codes allowed per email per 15 minutes
+
+
+def supabase_error(status: int, body: bytes) -> tuple:
+    """(error_code, message) from a Supabase Auth error body; tolerant of every shape it uses."""
+    try:
+        d = json.loads(body or b"{}")
+    except ValueError:
+        d = {}
+    if not isinstance(d, dict):
+        d = {}
+    code = d.get("error_code") or d.get("code") or d.get("error") or ""
+    msg = d.get("msg") or d.get("message") or d.get("error_description") or ""
+    if not isinstance(code, str):
+        code = str(code)
+    if status == 429 and not code.startswith("over_"):
+        code = code or "over_request_rate_limit"
+    return code, str(msg)
+
+
+def log(line: str) -> None:
+    print("relay.people: " + scrub(line), flush=True)
 
 
 def norm_email(email: str) -> str:
@@ -63,13 +125,21 @@ class Supabase:
                 return r.status, r.read()
         except urllib.error.HTTPError as e:
             return e.code, e.read()
+        except (urllib.error.URLError, OSError) as e:     # unreachable, timed out: no answer at all
+            return 0, json.dumps({"error_code": "unreachable", "msg": str(e)}).encode()
 
-    def send_link(self, email: str, redirect_to: str) -> int:
+    def send_link(self, email: str, redirect_to: str) -> tuple:
+        """(status, body) from Supabase; the email carries a link and, if the template has it, a code."""
         q = urllib.parse.urlencode({"redirect_to": redirect_to})
-        status, _ = self.send("POST", f"{self.url}/auth/v1/otp?{q}",
-                              {"apikey": self.key, "Content-Type": "application/json"},
-                              json.dumps({"email": email, "create_user": True}).encode())
-        return status
+        return self.send("POST", f"{self.url}/auth/v1/otp?{q}",
+                         {"apikey": self.key, "Content-Type": "application/json"},
+                         json.dumps({"email": email, "create_user": True}).encode())
+
+    def verify(self, payload: dict) -> tuple:
+        """Trade a code (email + token) or a token hash for a Supabase session: (status, body)."""
+        return self.send("POST", f"{self.url}/auth/v1/verify",
+                         {"apikey": self.key, "Content-Type": "application/json"},
+                         json.dumps({"type": "email", **payload}).encode())
 
     def user(self, access_token: str) -> Optional[dict]:
         status, body = self.send("GET", f"{self.url}/auth/v1/user",
@@ -84,6 +154,7 @@ class Supabase:
 
 def mount(app, hub, supabase: Optional[Supabase]) -> None:
     store, auth = hub.store, hub.auth
+    wrong_codes: dict = {}          # email -> times of recent wrong codes (in memory; a restart forgets)
 
     def need_owner(me):
         if me["role"] != "admin" and not me.get("owner"):
@@ -119,14 +190,69 @@ def mount(app, hub, supabase: Optional[Supabase]) -> None:
             known = c.execute("SELECT 1 FROM people_emails WHERE email=?", (email,)).fetchone()
         if known:
             origin = f"{request.url.scheme}://{request.url.netloc}"
-            supabase.send_link(email, origin + "/app")
+            status, raw = supabase.send_link(email, origin + "/app")
+            if not 200 <= status < 300:
+                code, msg = supabase_error(status, raw)
+                log(f"Supabase refused to send a sign-in email to {mask_email(email)}: "
+                    f"status={status} code={code or '-'} msg={msg[:200] or '-'}")
+                raise HTTPException(*SEND_REFUSED.get(code, SEND_FAILED))
         return {"sent": True}
 
     @app.post("/auth/session")
     def auth_session(body: SessionIn):
         if supabase is None:
             raise HTTPException(404, "email sign-in isn't set up on this hub")
-        u = supabase.user(body.access_token.strip())
+        return start_session(supabase.user(body.access_token.strip()))
+
+    @app.post("/auth/verify")
+    def auth_verify(body: VerifyIn):
+        """Sign in with the code from the email (with the email it went to), or with the token hash
+        from a link that points at /app (the page only sends it when the person presses Sign in)."""
+        if supabase is None:
+            raise HTTPException(404, "email sign-in isn't set up on this hub")
+        bad = HTTPException(401, "That code didn't work. Check it, or ask for a new email.")
+        if body.token_hash:
+            payload, email = {"token_hash": body.token_hash.strip()}, None
+            bad = HTTPException(401, "That sign-in link has expired or was already used. Ask for a new one.")
+        else:
+            email = norm_email(body.email or "")
+            code = re.sub(r"\s+", "", body.code or "")
+            if not CODE_RE.match(code):
+                raise HTTPException(400, "Type the code from the email.")
+            now = time.time()
+            recent = [t for t in wrong_codes.get(email, []) if now - t < CODE_WINDOW]
+            wrong_codes[email] = recent
+            if len(recent) >= CODE_TRIES:
+                raise HTTPException(429, "Too many wrong codes. Ask for a new email in a few minutes.")
+            with store.ro() as c:
+                known = c.execute("SELECT 1 FROM people_emails WHERE email=?", (email,)).fetchone()
+            if not known:                   # same answer as a wrong code; Supabase isn't asked
+                recent.append(now)
+                raise bad
+            payload = {"email": email, "token": code}
+        status, raw = supabase.verify(payload)
+        if not 200 <= status < 300:
+            err, msg = supabase_error(status, raw)
+            log(f"Supabase didn't accept a sign-in {'code' if email else 'link'}"
+                f"{' for ' + mask_email(email) if email else ''}: status={status} code={err or '-'} msg={msg[:200] or '-'}")
+            if email:
+                wrong_codes.setdefault(email, []).append(time.time())
+            if err.startswith("over_"):
+                raise HTTPException(429, "Too many tries right now. Wait a few minutes and try again.")
+            raise bad
+        try:
+            got = json.loads(raw)
+        except ValueError:
+            got = {}
+        u = got.get("user") if isinstance(got, dict) else None
+        if not u and isinstance(got, dict) and got.get("access_token"):
+            u = supabase.user(got["access_token"])
+        if email:
+            wrong_codes.pop(email, None)
+        return start_session(u)
+
+    def start_session(u: Optional[dict]) -> dict:
+        """A hub session for a confirmed Supabase user whose email is on this hub."""
         if not u or not u.get("email") or not (u.get("email_confirmed_at") or u.get("confirmed_at")):
             raise HTTPException(401, "that sign-in link didn't check out; ask for a new one")
         email = u["email"].strip().lower()

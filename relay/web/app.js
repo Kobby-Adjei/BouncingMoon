@@ -316,22 +316,59 @@ function envelope() {
   return s;
 }
 function checkEmail(email) {
-  let left = 30;
+  let left = 60;     // Supabase sends to one address at most once a minute
   const resend = h("button", { class: "link sm", type: "button", disabled: true });
   const note = h("p", { class: "hint center", style: "margin:0", role: "status" });
   const paint = () => { resend.textContent = left > 0 ? `Resend in ${left}s` : "Resend"; resend.disabled = left > 0; };
-  const count = () => { clearInterval(timer); left = 30; paint(); timer = setInterval(() => { left--; paint(); if (left <= 0) { clearInterval(timer); timer = null; } }, 1000); };
+  const count = () => { clearInterval(timer); left = 60; paint(); timer = setInterval(() => { left--; paint(); if (left <= 0) { clearInterval(timer); timer = null; } }, 1000); };
   resend.addEventListener("click", async () => {
     resend.disabled = true;
     try { await api("POST", "/auth/email", { email }, null); note.textContent = "Sent again."; count(); }
     catch (x) { note.textContent = x.message; resend.disabled = false; }
   });
   const addr = h("p", { class: "lede", style: "margin:0;color:var(--ink);font-weight:600;overflow-wrap:anywhere", text: email });
+  // a code can't be used up by a mail scanner opening links before you do
+  const code = h("input", { class: "field", type: "text", inputmode: "numeric", autocomplete: "one-time-code", maxlength: "12",
+                             placeholder: "Code from the email", spellcheck: "false", "aria-label": "Code from the email" });
+  const go = h("button", { class: "btn press", type: "submit" }, "Sign in");
+  const err = h("p", { class: "err", role: "alert" });
+  const form = h("form", { class: "stack tight", onsubmit: async (e) => {
+    e.preventDefault();
+    const v = code.value.replace(/\s+/g, ""); if (!v) { err.textContent = "Type the code from the email."; return; }
+    go.disabled = true; err.textContent = "";
+    try { await signedIn(await api("POST", "/auth/verify", { email, code: v }, null)); }
+    catch (x) { err.textContent = x.message; go.disabled = false; }
+  } }, code, go, err);
   welcomeView(h("div", { class: "brandline" }, envelope(), h("h1", { class: "title", text: "Check your email" }), addr,
-      h("p", { class: "lede", style: "margin:0", text: "Tap the link to sign in." })),
+      h("p", { class: "lede", style: "margin:0", text: "Type the code from the email, or open its link on this device." })),
+    form,
     h("div", { class: "stack tight center" }, h("div", { class: "alt" }, resend), note,
       h("div", { class: "alt" }, h("button", { class: "link sm muted", type: "button", onclick: () => { clearInterval(timer); timer = null; signin(null, "key"); } }, "Use a key instead"))));
   count();
+}
+
+async function signedIn(r) {      // a hub session from /auth/session or /auth/verify
+  clearInterval(timer); timer = null;
+  ME = await api("GET", "/agents/me", undefined, r.token); KEY = r.token;
+  store.set(r.token, store.remember());
+  goTab(agents);
+}
+// Mail scanners open links (and run this page) before people do, so a link only signs in on a press.
+function finishLink(link) {
+  const go = h("button", { class: "btn press", type: "button" }, "Sign in");
+  const err = h("p", { class: "err", role: "alert" });
+  go.addEventListener("click", async () => {
+    go.disabled = true; err.textContent = "";
+    try {
+      await signedIn(link.hash ? await api("POST", "/auth/verify", { token_hash: link.hash }, null)
+                               : await api("POST", "/auth/session", { access_token: link.token }, null));
+    } catch (x) {
+      if (x.status === 403) return signin(x.message || "That email isn't on this hub yet. Ask the owner to add you.", "email");
+      err.textContent = x.message; go.disabled = false;
+    }
+  });
+  welcomeView(brand("Sign in to Relay"), h("div", { class: "stack tight" }, go, err));
+  go.focus();
 }
 
 // first sign-in with the admin token: make the hub yours, then forget the token
@@ -861,24 +898,17 @@ brandmini.append(mark(), h("span", { class: "word", text: "Relay" }));
 (async function start() {
   // back from an emailed sign-in link: read the fragment, then wipe it from the address bar before anything else
   let link = null;
-  if (location.hash.length > 1) {
-    const q = new URLSearchParams(location.hash.slice(1));
-    if (q.has("access_token") || q.has("error") || q.has("error_description")) {
-      link = { token: q.get("access_token"), error: q.get("error_description") || q.get("error") };
+  if (location.hash.length > 1 || location.search.includes("token_hash=")) {
+    const q = new URLSearchParams(location.hash.length > 1 ? location.hash.slice(1) : location.search.slice(1));
+    if (q.has("access_token") || q.has("token_hash") || q.has("error") || q.has("error_description")) {
+      link = { token: q.get("access_token"), hash: q.get("token_hash"), error: q.get("error_description") || q.get("error") };
+      if (q.get("error_code") === "otp_expired")
+        link.error = "That link was already used or has expired. Mail scanners sometimes open links before you do. Ask for a new email and type its code.";
       history.replaceState(null, "", "/app");
     }
   }
   try { const c = await api("GET", "/auth/config", undefined, null); AUTH = { email: !!(c && c.email) }; } catch { AUTH = { email: false }; }
-  if (link && link.token) {
-    try {
-      const r = await api("POST", "/auth/session", { access_token: link.token }, null);
-      ME = await api("GET", "/agents/me", undefined, r.token); KEY = r.token;
-      store.set(r.token, store.remember());
-      return goTab(agents);
-    } catch (x) {
-      return signin(x.status === 403 ? (x.message || "That email isn't on this hub yet. Ask the owner to add you.") : x.message, AUTH.email ? "email" : "key");
-    }
-  }
+  if (link && (link.token || link.hash)) return finishLink(link);
   if (link && link.error) return signin(link.error, AUTH.email ? "email" : "key");
   const saved = store.get();
   if (saved) {
