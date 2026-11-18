@@ -1011,6 +1011,7 @@ async function wake(handle) {
   try { a = (await api("GET", "/agents")).find((x) => x.handle === handle); } catch {}
   if (!fresh(tk)) return;
   if (!a) return nav("agents", { replace: true });
+  if (a.role === "human") return nav(`agents/${enc(a.handle)}`, { replace: true });    // people answer for themselves
   const path = `/agents/${encodeURIComponent(a.handle)}/wake`;
   try { cur = await api("GET", path); } catch {}
   if (!fresh(tk)) return;
@@ -1208,15 +1209,19 @@ async function thread(id, people) {
   const tk = ticket();
   if (!people) {        // opened from the address bar: who is in it comes from the messages
     const set = new Set();
+    let found = -1;
     try {
-      for (const m of await api("GET", `/messages?thread=${id}&limit=200`)) {
+      const msgs = await api("GET", `/messages?thread=${id}&limit=200`);
+      found = msgs.length;
+      for (const m of msgs) {
         if (m.from !== "relay") set.add(m.from);
         for (const x of m.mentions || []) set.add(x);
       }
     } catch {}
+    if (!fresh(tk)) return;
+    if (found === 0) return nav("activity", { replace: true });     // no such conversation (or not yours)
     set.delete(ME.handle);
     people = [...set];
-    if (!fresh(tk)) return;
   }
   const list = h("div", { class: "chat" }, id ? h("div", { class: "empty", text: "Loading…" }) : h("div", { class: "sysmsg", text: "Say hello. With instant replies on, they answer right away." }));
   const canPost = ME.role !== "admin";
