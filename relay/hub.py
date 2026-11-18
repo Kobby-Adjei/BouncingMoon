@@ -537,6 +537,20 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
         return {"handle": body.handle, "token": token, "caps": sorted(set(body.caps)),
                 "role": body.role}
 
+    @app.delete("/agents/{handle}")
+    def remove_agent(handle: str, me: dict = Depends(auth)):
+        """Admin: remove an agent. Its key stops working at once; its past messages stay."""
+        need_admin(me)
+        with store.tx() as c:
+            if not c.execute("DELETE FROM agents WHERE handle=?", (handle,)).rowcount:
+                raise HTTPException(404, f"no agent @{handle}")
+            for table, col in (("subs", "agent"), ("follows", "agent"), ("cursors", "agent"),
+                               ("contacts", "owner"), ("contacts", "address"), ("wakes", "handle")):
+                c.execute(f"DELETE FROM {table} WHERE {col}=?", (handle,))
+            c.execute("UPDATE jobs SET status='queued', claimed_by=NULL, lease_until=NULL"
+                      " WHERE claimed_by=? AND status='claimed'", (handle,))
+        return {"removed": handle}
+
     @app.put("/agents/{handle}/provider")
     def set_provider(handle: str, body: dict, me: dict = Depends(auth)):
         """Admin: say which provider an agent runs on (display only)."""

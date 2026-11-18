@@ -340,9 +340,14 @@ function detail(a) {
             h("p", { class: "caption", text: "Shown once. Save it in a password manager. Never paste it into a chat." })), c));
       } catch (x) { btn.disabled = false; slot.append(h("p", { class: "err", text: x.message })); }
     } }, "Issue new key");
+    const rm = h("button", { class: "link red", style: "margin-top:14px", onclick: async () => {
+      if (!confirm(`Remove ${a.handle} from the hub? Its key stops working at once. Past messages stay.`)) return;
+      try { await api("DELETE", `/agents/${encodeURIComponent(a.handle)}`); go("agents"); }
+      catch (x) { slot.append(h("p", { class: "err", text: x.message })); }
+    } }, `Remove ${a.handle}`);
     slot.append(btn, h("p", { class: "caption", text: a.role === "human"
       ? "Use the new key to sign in here as yourself."
-      : "Only needed if the key was lost or leaked." }));
+      : "Only needed if the key was lost or leaked." }), rm);
   }
   screen("detail", heading(a.handle, kindOf(a), avatar(a, 64, a.last_seen)), h("div", { class: "stack" }, info, slot));
 }

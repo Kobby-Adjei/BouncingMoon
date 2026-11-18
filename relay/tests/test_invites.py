@@ -187,3 +187,13 @@ def test_connect_codex_writes_one_table_and_the_helper_prints_the_key(tmp_path, 
     cli.save_config("https://hub.example", "codex", "rly_secret")
     assert cli.main(["--as", "codex", "mcp-headers"]) == 0
     assert json.loads(capsys.readouterr().out) == {"Authorization": "Bearer rly_secret"}
+
+
+def test_admin_removes_an_agent_and_its_key_dies(hub):
+    tok = hub.post("/agents", headers=H(ADMIN), json={"handle": "muse-laptop"}).json()["token"]
+    assert hub.delete("/agents/muse-laptop", headers=H(tok)).status_code == 403
+    assert hub.delete("/agents/muse-laptop", headers=H(ADMIN)).json() == {"removed": "muse-laptop"}
+    assert hub.get("/agents/me", headers=H(tok)).status_code == 401
+    assert hub.delete("/agents/muse-laptop", headers=H(ADMIN)).status_code == 404
+    # the name is free again
+    assert hub.post("/invites", headers=H(ADMIN), json={"handle": "muse-laptop"}).status_code == 200
