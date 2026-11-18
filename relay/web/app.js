@@ -675,7 +675,7 @@ async function addName(a) {
   const btn = h("button", { class: "btn press", type: "submit" }, byEmail ? "Add" : "Continue");
   const works = h("button", { type: "button", class: "switch", role: "switch", "aria-checked": "false", "aria-label": "Does work for others",
     onclick: () => works.setAttribute("aria-checked", String(works.getAttribute("aria-checked") !== "true")) });
-  const extra = a.style === "invite" ? h("div", { class: "group" }, h("div", { class: "cell" },
+  const extra = a.style === "invite" ? h("div", { class: "group info" }, h("div", { class: "cell" },
     h("div", { class: "grow" }, h("div", { class: "t plain", text: "Does work for others" }),
       h("div", { class: "s", text: "Fetches and cuts videos. Needs yt-dlp + ffmpeg." })), works)) : null;
   const form = h("form", { class: "stack tight", onsubmit: async (e) => {
@@ -711,9 +711,9 @@ const finish = (handle) => () => { if (listRefresh) listRefresh(); nav(WIDE ? `a
 function personAdded(r) {
   screen("added", ticket(), heroHead(bigTick(), `${r.handle} is in`, null),
     h("div", { class: "stack" },
-      h("div", { class: "group" }, h("div", { class: "cell" }, avatar("person", 40), h("div", { class: "grow" },
+      h("div", { class: "group info" }, h("div", { class: "cell" }, avatar("person", 40), h("div", { class: "grow" },
         h("div", { class: "t", text: r.handle }), h("div", { class: "s", text: r.email || "" })))),
-      h("div", { class: "stack tight" }, h("p", { class: "hint", style: "margin:0 8px", text: "They sign in here with that email:" }), copyField("Sign-in page", `${ORIGIN}/app`)),
+      h("div", { class: "stack tight" }, h("p", { class: "hint", style: "margin:0", text: "They sign in here with that email:" }), copyField("Sign-in page", `${ORIGIN}/app`)),
       h("button", { class: "btn press", type: "button", onclick: finish(r.handle) }, "Done")));
 }
 
@@ -809,8 +809,8 @@ function inviteGuide(a, inv) {
   const done = h("button", { class: "btn ghost press", type: "button", onclick: finish(handle) }, "Done");
   let status = stickyStatus(`Waiting for ${handle}…`);
   const body = person
-    ? h("div", { class: "stack tight" }, h("p", { class: "hint", style: "margin:0 8px", text: "Send privately. Works once, for 24 h." }), copyField("Invite link", link))
-    : h("div", { class: "stack tight" }, h("p", { class: "hint", style: "margin:0 8px", text: `Paste into ${a.label}. It sets itself up. Code works once, for 24 h.` }),
+    ? h("div", { class: "stack tight" }, h("p", { class: "hint", style: "margin:0", text: "Send privately. Works once, for 24 h." }), copyField("Invite link", link))
+    : h("div", { class: "stack tight" }, h("p", { class: "hint", style: "margin:0", text: `Paste into ${a.label}. It sets itself up. Code works once, for 24 h.` }),
         copyBlock(agentPrompt(inv, code, a.connect), "Copy message"));
   const view = screen("invite", tk, h("div", { class: "hero" }, diagram, h("h1", { class: "title", text: person ? `Invite ${handle}` : `Bring in ${a.label}` })),
     h("div", { class: "stack" }, status, body, done));
@@ -868,13 +868,13 @@ async function profile(handle) {
   const quick = h("div", { class: "quick" },
     h("button", { class: "q press", type: "button", onclick: () => nav(`activity/to/${enc(a.handle)}`) }, icon("chat"), "Message"),
     isOwner() && a.role !== "human" ? h("button", { class: "q press", type: "button", onclick: () => nav(`agents/${enc(a.handle)}/wake`) }, icon("bell"), "Instant replies") : null);
-  const info = h("div", { class: "group" },
+  const info = h("div", { class: "group info" },
     a.role !== "human" ? runsOn(a) : null,
     (a.caps || []).length ? h("div", { class: "cell" }, h("div", { class: "grow t plain" }, "Does work"), h("span", { class: "v", text: a.caps.join(", ") })) : null,
     a.role === "human" && isOwner() && (AUTH.email || a.email) ? emailRow(a) : null,
-    h("div", { class: "cell" }, h("div", { class: "grow t plain" }, "Address"), h("span", { class: "v", style: "font-family:var(--mono);font-size:14px", text: a.handle })),
+    h("div", { class: "cell" }, h("div", { class: "grow t plain" }, "Address"), h("span", { class: "v", style: "font-family:var(--mono);font-size:.92em;letter-spacing:0", text: a.handle })),
     a.client ? h("div", { class: "cell" }, h("div", { class: "grow t plain" }, "Connected from"), h("span", { class: "v", text: a.client })) : null);
-  const danger = isOwner() && a.handle !== ME.handle ? h("div", { class: "spread", style: "margin:2px 8px" },
+  const danger = isOwner() && a.handle !== ME.handle ? h("div", { class: "spread danger-row" },
     h("button", { class: "link sm press", type: "button", onclick: () => newKey(a) }, "Issue new key"),
     h("button", { class: "link sm red press", type: "button", onclick: async () => {
       if (!confirm(`Remove ${a.handle}? Its key stops working at once. Past messages stay.`)) return;
@@ -884,7 +884,7 @@ async function profile(handle) {
     h("span", { text: `${a.role === "human" ? "Person" : PROVIDER_NAMES[p] || "Agent"} · ${ago(a.last_seen)}` }));
   screen("profile", tk,
     h("div", { class: "profile" }, avatar(a, 88), h("h1", { class: "title", text: a.handle }), sub, quick),
-    h("div", { class: "stack" }, info, danger));
+    h("div", { class: "stack" }, h("section", { class: "facts" }, h("h2", { class: "label", text: "Details" }), info), danger));
 }
 
 // you: your email sign-in and sign out
@@ -892,7 +892,8 @@ async function meScreen() {
   const tk = ticket();
   let mine = { handle: ME.handle, role: "human", email: null };
   try { mine = (await api("GET", "/agents")).find((x) => x.handle === ME.handle) || mine; } catch {}
-  const rows = isOwner() && AUTH.email ? h("div", { class: "group" }, emailRow(mine, "Email sign-in")) : null;
+  const rows = isOwner() && AUTH.email ? h("section", { class: "facts" }, h("h2", { class: "label", text: "Signing in" }),
+    h("div", { class: "group info" }, emailRow(mine, "Email sign-in"))) : null;
   screen("me", tk,
     h("div", { class: "profile" }, avatar({ handle: ME.handle, role: "human" }, 88), h("h1", { class: "title", text: ME.handle }),
       ME.owner ? h("span", { class: "pill-tag", text: "Owner" }) : null),
@@ -903,7 +904,7 @@ async function meScreen() {
 function runsOn(a) {
   const val = h("span", { class: "v" + (isOwner() ? " blue" : ""), text: PROVIDER_NAMES[providerOf(a)] || "Other" });
   if (!isOwner()) return h("div", { class: "cell" }, h("div", { class: "grow t plain" }, "Runs on"), val);
-  const tiles = h("div", { class: "pick hidden", style: "padding:4px 16px 16px" });
+  const tiles = h("div", { class: "pick hidden", style: "padding:2px 0 14px" });
   for (const k of ["claude", "codex", "muse", "gemini", "cursor", "copilot", "other"]) {
     tiles.append(h("button", { class: "opt press", type: "button", "aria-checked": String(providerOf(a) === k), onclick: async (e) => {
       const picked = e.currentTarget;
@@ -1175,7 +1176,7 @@ async function activity() {
         rows.push(h("button", { class: "cell press", type: "button", "data-key": `activity/${t.id}`, onclick: () => nav(`activity/${t.id}`, { data: others }) },
           h("span", { class: "stackav" }, ...faces),
           h("div", { class: "grow" },
-            h("div", { class: "spread", style: "gap:8px" }, h("div", { class: "t", text: others.join(", ") || "Relay" }), h("span", { class: "when", text: clock(last.time) })),
+            h("div", { class: "spread", style: "gap:8px" }, h("div", { class: "t", text: others.join(", ") || "Relay" }), h("span", { class: "when tnum", text: clock(last.time) })),
             h("div", { class: "s preview", text: `${last.from === ME.handle ? "You" : last.from}: ${last.text}` }))));
       }
       if (rows.length) {

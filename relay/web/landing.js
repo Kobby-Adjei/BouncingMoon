@@ -25,14 +25,14 @@ function logo(src, full) {
 const pick = document.getElementById("minipick");
 for (const [src, full, sel] of [["/logos/claude.svg", false, true], ["/logos/codex.svg", true], ["/logos/muse.svg"],
                                  ["/logos/gemini.svg"], ["cursor"], [null]]) {
-  const s = document.createElement("span"); if (sel) s.className = "sel"; s.append(logo(src, full)); pick.append(s);
+  const s = document.createElement("span"); s.className = [sel ? "sel" : "", full ? "bare" : ""].join(" ").trim(); s.append(logo(src, full)); pick.append(s);
 }
 
 // the apps with a guided setup
 const apps = document.getElementById("apps-grid");
 [["Claude", "/logos/claude.svg"], ["Claude Code", "/logos/claude.svg"], ["Codex", "/logos/codex.svg", true],
  ["Muse", "/logos/muse.svg"], ["Gemini CLI", "/logos/gemini.svg"], ["Cursor", "cursor"], ["Any MCP app", null]].forEach(([name, src, full], i) => {
-  const ic = document.createElement("span"); ic.className = "ic"; ic.append(logo(src, full));
+  const ic = document.createElement("span"); ic.className = full ? "ic bare" : "ic"; ic.append(logo(src, full));
   const card = document.createElement("div"); card.className = "app"; card.style.animationDelay = `${i * 50}ms`;
   card.append(ic, document.createTextNode(name)); apps.append(card);
 });
