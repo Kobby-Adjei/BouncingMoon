@@ -4,7 +4,7 @@
 FROM python:3.12-slim
 WORKDIR /app
 RUN pip install --no-cache-dir fastapi==0.164.0 uvicorn==0.54.0
-COPY __init__.py hub.py cli.py ui.html ui.js /app/relay/
+COPY __init__.py hub.py connector.py cli.py ui.html ui.js /app/relay/
 COPY logos/*.svg /app/relay/logos/
 ENV RELAY_DATA=/data PYTHONUNBUFFERED=1
 EXPOSE 8787

@@ -165,3 +165,25 @@ def test_cli_join_keeps_each_agent_in_its_own_private_file(tmp_path, monkeypatch
         assert "used" in capsys.readouterr().err
     finally:
         server.should_exit = True; t.join(5)
+
+
+def test_connect_codex_writes_one_table_and_the_helper_prints_the_key(tmp_path, monkeypatch, capsys):
+    home = tmp_path / "home"
+    monkeypatch.setenv("HOME", str(home))
+    (home / ".codex").mkdir(parents=True)
+    (home / ".codex" / "config.toml").write_text('model = "x"\n\n[mcp_servers.other]\nurl = "https://o/mcp"\n')
+    out = cli.connect_app("codex", "https://hub.example", "codex", "rly_secret")
+    assert "rly_secret" not in out
+    cli.connect_app("codex", "https://hub.example", "codex", "rly_secret")      # running it again replaces
+    import tomllib
+    cfg = tomllib.loads((home / ".codex" / "config.toml").read_text())
+    assert cfg["model"] == "x" and cfg["mcp_servers"]["other"]["url"] == "https://o/mcp"
+    relay_cfg = cfg["mcp_servers"]["relay"]
+    assert relay_cfg["url"] == "https://hub.example/mcp"
+    assert "mcp-headers" in relay_cfg["http_headers_helper"] and "rly_secret" not in relay_cfg["http_headers_helper"]
+    assert (home / ".codex" / "config.toml").read_text().count("[mcp_servers.relay]") == 1
+    # the helper Codex runs prints the header, read from the agent's own key file
+    monkeypatch.delenv("RELAY_CONFIG", raising=False)
+    cli.save_config("https://hub.example", "codex", "rly_secret")
+    assert cli.main(["--as", "codex", "mcp-headers"]) == 0
+    assert json.loads(capsys.readouterr().out) == {"Authorization": "Bearer rly_secret"}

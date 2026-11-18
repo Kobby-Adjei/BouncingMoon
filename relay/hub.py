@@ -68,6 +68,9 @@ CREATE TABLE IF NOT EXISTS invites(
   id TEXT PRIMARY KEY, code_hash TEXT UNIQUE NOT NULL, handle TEXT NOT NULL,
   role TEXT NOT NULL, caps TEXT NOT NULL DEFAULT '[]', note TEXT,
   created REAL NOT NULL, expires REAL NOT NULL, claimed REAL, revoked REAL);
+CREATE TABLE IF NOT EXISTS contacts(
+  owner TEXT NOT NULL, name TEXT NOT NULL, address TEXT NOT NULL, created REAL,
+  PRIMARY KEY(owner, name));
 """
 
 HANDLE_RE = re.compile(r"^[a-z0-9][a-z0-9_.-]{0,31}$")
@@ -346,6 +349,22 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
         if sender != SYSTEM:
             c.execute("INSERT OR IGNORE INTO follows(agent,thread) VALUES (?,?)", (sender, thread))
         return msg_out(c.execute("SELECT * FROM messages WHERE id=?", (mid,)).fetchone())
+
+    def inbox_for(c, h: str, limit: int = 20) -> dict:
+        cur = c.execute("SELECT last FROM cursors WHERE agent=?", (h,)).fetchone()
+        last = cur["last"] if cur else 0
+        rows = c.execute(
+            "SELECT m.* FROM messages m WHERE m.id>? AND m.sender!=? AND ("
+            " EXISTS (SELECT 1 FROM json_each(m.mentions) WHERE value=?)"
+            " OR m.channel IN (SELECT channel FROM subs WHERE agent=?)"
+            " OR m.thread IN (SELECT thread FROM follows WHERE agent=?))"
+            " ORDER BY m.id LIMIT ?", (last, h, h, h, h, limit)).fetchall()
+        msgs = [msg_out(r) for r in rows]
+        return {"messages": msgs, "cursor": msgs[-1]["id"] if msgs else last}
+
+    def ack_to(c, h: str, cursor: int) -> None:
+        c.execute("INSERT INTO cursors(agent,last) VALUES (?,?) ON CONFLICT(agent)"
+                  " DO UPDATE SET last=MAX(last, excluded.last)", (h, cursor))
 
     def is_agent(c, handle) -> bool:
         return bool(c.execute("SELECT 1 FROM agents WHERE handle=?", (handle,)).fetchone())
@@ -648,25 +667,14 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
         """What is waiting for me: mentions, my channels, threads I follow.
         At-least-once: nothing is consumed until I ack the cursor."""
         need_agent(me)
-        h = me["handle"]
         with store.ro() as c:
-            cur = c.execute("SELECT last FROM cursors WHERE agent=?", (h,)).fetchone()
-            last = cur["last"] if cur else 0
-            rows = c.execute(
-                "SELECT m.* FROM messages m WHERE m.id>? AND m.sender!=? AND ("
-                " EXISTS (SELECT 1 FROM json_each(m.mentions) WHERE value=?)"
-                " OR m.channel IN (SELECT channel FROM subs WHERE agent=?)"
-                " OR m.thread IN (SELECT thread FROM follows WHERE agent=?))"
-                " ORDER BY m.id LIMIT ?", (last, h, h, h, h, limit)).fetchall()
-        msgs = [msg_out(r) for r in rows]
-        return {"messages": msgs, "cursor": msgs[-1]["id"] if msgs else last}
+            return inbox_for(c, me["handle"], limit)
 
     @app.post("/inbox/ack")
     def ack(body: AckIn, me: dict = Depends(auth)):
         need_agent(me)
         with store.tx() as c:
-            c.execute("INSERT INTO cursors(agent,last) VALUES (?,?) ON CONFLICT(agent)"
-                      " DO UPDATE SET last=MAX(last, excluded.last)", (me["handle"], body.cursor))
+            ack_to(c, me["handle"], body.cursor)
         return {"ok": True, "cursor": body.cursor}
 
     @app.post("/subscriptions")
@@ -876,6 +884,12 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
                 "SELECT * FROM artifacts WHERE parent=? ORDER BY created", (aid,))]
             return out
 
+    # ---------------------------------------------------------------- contacts + connector
+    from types import SimpleNamespace
+    from . import connector
+    connector.mount(app, SimpleNamespace(
+        store=store, auth=auth, post=post, inbox_for=inbox_for, ack_to=ack_to,
+        msg_out=msg_out, now=_now, loads=_loads, handle_re=HANDLE_RE))
     return app
 
 

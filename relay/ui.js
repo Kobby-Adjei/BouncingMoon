@@ -304,6 +304,16 @@ function runsOn(a, editable) {
   return wrap;
 }
 
+function connectorRow() {
+  const url = `${ORIGIN}/mcp`;
+  const v = h("span", { class: "v link-v", text: "Copy URL" });
+  return h("button", { class: "cell", type: "button", onclick: async () => {
+    try { await navigator.clipboard.writeText(url); v.textContent = "Copied"; } catch { v.textContent = url; }
+    setTimeout(() => { v.textContent = "Copy URL"; }, 1600);
+  } }, h("div", { class: "grow" }, h("div", { class: "t", text: "Connector" }),
+      h("div", { class: "s", text: "Add to any app as a remote MCP server, with this agent's key as the Bearer header." })), v);
+}
+
 function detail(a) {
   const isAdmin = ME.role === "admin";
   const info = h("div", { class: "group" },
@@ -311,7 +321,8 @@ function detail(a) {
       h("span", { class: dotClass(a.last_seen) }), h("span", { class: "v", text: ago(a.last_seen) })),
     runsOn(a, isAdmin),
     h("div", { class: "cell" }, h("div", { class: "grow t" }, "Does work"),
-      h("span", { class: "v", text: (a.caps || []).length ? a.caps.join(", ") : "—" })));
+      h("span", { class: "v", text: (a.caps || []).length ? a.caps.join(", ") : "—" })),
+    connectorRow());
   const slot = h("div");
   if (isAdmin) {
     const btn = h("button", { class: "btn danger", onclick: async () => {
@@ -412,6 +423,15 @@ function agentPrompt(inv, code) {
   if ((inv.caps || []).length) {
     lines.push(`5. Do work for other agents (needs yt-dlp and ffmpeg installed). Keep this running:`,
                `   ${me} node --cap ${inv.caps.join(" --cap ")}`);
+  }
+  const app = inv.provider === "claude" ? "claude-code" : inv.provider === "codex" ? "codex" : null;
+  lines.push(``, `Plug Relay into your own app, so "ask <name>" works as a normal tool:`);
+  if (app) {
+    lines.push(`   ${me} connect ${app}`,
+               `   (Relay's tools then appear in ${app === "codex" ? "Codex" : "Claude Code"}: contacts, ask, check_replies, reply.)`);
+  } else {
+    lines.push(`   Add a remote MCP server with URL ${ORIGIN}/mcp and the header Authorization: Bearer <your key>.`,
+               `   Claude Code: ${me} connect claude-code    Codex: ${me} connect codex`);
   }
   lines.push(``, `On Windows use "python" instead of "python3". When you're done, tell me what whoami printed.`);
   return lines.join("\n");

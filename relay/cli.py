@@ -132,6 +132,47 @@ def join(url: str, code: str) -> dict:
     return {"handle": out["handle"], "role": out["role"], "caps": out["caps"], "config": path}
 
 
+def connect_app(app: str, url: str, handle: str, token: str) -> str:
+    """Add this hub as a connector (MCP server) in a local agent app, using this agent's key.
+    The key is handed to the app's own config, never printed."""
+    mcp_url = url.rstrip("/") + "/mcp"
+    if app == "claude-code":
+        exe = shutil.which("claude")
+        if not exe:
+            raise RelayError("the `claude` command isn't installed on this computer")
+        subprocess.run([exe, "mcp", "remove", "--scope", "user", "relay"],
+                       capture_output=True, text=True)          # replace an older entry, if any
+        r = subprocess.run([exe, "mcp", "add", "--scope", "user", "--transport", "http", "relay", mcp_url,
+                            "--header", f"Authorization: Bearer {token}"], capture_output=True, text=True)
+        if r.returncode != 0:
+            raise RelayError(f"claude mcp add failed: {(r.stderr or r.stdout).strip()[:300]}")
+        return f"Relay added to Claude Code (all projects) as @{handle}. Check with: claude mcp list"
+    if app == "codex":
+        # Codex asks a local command for headers at connect time, so the key stays in our file
+        path = os.path.join(os.path.expanduser("~"), ".codex", "config.toml")
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        try:
+            with open(path) as f:
+                text = f.read()
+        except OSError:
+            text = ""
+        helper = f"{sys.executable} {os.path.abspath(__file__)} --as {handle} mcp-headers"
+        block = (f'[mcp_servers.relay]\nurl = "{mcp_url}"\n'
+                 f'http_headers_helper = {json.dumps(helper)}\n')
+        out, skip = [], False
+        for line in text.splitlines(keepends=True):              # drop an older [mcp_servers.relay] table
+            if line.strip().startswith("["):
+                skip = line.strip() == "[mcp_servers.relay]"
+            if not skip:
+                out.append(line)
+        text = "".join(out).rstrip("\n")
+        with open(path, "w") as f:
+            f.write((text + "\n\n" if text else "") + block)
+        return f"Relay added to Codex as @{handle} in {path}. Check with: codex mcp list"
+    raise RelayError("supported apps: claude-code, codex (for claude.ai and the Claude apps, "
+                     "add a custom connector in Settings → Connectors)")
+
+
 class Hub:
     def __init__(self, url: str, token: str):
         if not url or not token:
@@ -476,6 +517,9 @@ def main(argv=None):
     p = sub.add_parser("join", help="join a hub with a one-time invite code (saves your token locally)")
     p.add_argument("hub_url"); p.add_argument("code")
 
+    p = sub.add_parser("connect", help="add this hub as a connector in a local app: claude-code or codex")
+    p.add_argument("app", choices=["claude-code", "codex"])
+    sub.add_parser("mcp-headers", help="print this agent's Authorization header as JSON (for app header helpers)")
     r = sub.add_parser("register", help="admin: create an agent, print its token once")
     r.add_argument("handle"); r.add_argument("--cap", action="append", default=[])
     r.add_argument("--human", action="store_true")
@@ -515,6 +559,13 @@ def main(argv=None):
             return 0
         cfg = {} if (a.url and a.token) else load_config(a.agent)
         hub = Hub(a.url or cfg.get("url"), a.token or cfg.get("token"))
+        if a.cmd == "connect":
+            me = hub.get("/agents/me")                            # proves the key works first
+            print(connect_app(a.app, hub.url, me["handle"], hub.token))
+            return 0
+        if a.cmd == "mcp-headers":
+            print(json.dumps({"Authorization": f"Bearer {hub.token}"}))
+            return 0
         show = lambda x: print(json.dumps(x, indent=1))
         if a.cmd == "register":
             show(hub.post("/agents", {"handle": a.handle, "caps": a.cap,
