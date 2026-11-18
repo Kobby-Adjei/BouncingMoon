@@ -68,6 +68,10 @@ CREATE TABLE IF NOT EXISTS invites(
   id TEXT PRIMARY KEY, code_hash TEXT UNIQUE NOT NULL, handle TEXT NOT NULL,
   role TEXT NOT NULL, caps TEXT NOT NULL DEFAULT '[]', note TEXT,
   created REAL NOT NULL, expires REAL NOT NULL, claimed REAL, revoked REAL);
+CREATE TABLE IF NOT EXISTS people_emails(
+  email TEXT PRIMARY KEY, handle TEXT NOT NULL, created REAL);
+CREATE TABLE IF NOT EXISTS sessions(
+  token_hash TEXT PRIMARY KEY, handle TEXT NOT NULL, created REAL, expires REAL NOT NULL, last_used REAL);
 CREATE TABLE IF NOT EXISTS contacts(
   owner TEXT NOT NULL, name TEXT NOT NULL, address TEXT NOT NULL, created REAL,
   PRIMARY KEY(owner, name));
@@ -277,7 +281,9 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
                max_upload_mb: Optional[int] = None,
                retry_base_seconds: Optional[float] = None,
                allow_private_fetch: Optional[bool] = None,
-               wake_opener=None, wake_check_url: bool = True, wake_cooldown: Optional[float] = None) -> FastAPI:
+               wake_opener=None, wake_check_url: bool = True, wake_cooldown: Optional[float] = None,
+               supabase_url: Optional[str] = None, supabase_key: Optional[str] = None,
+               supabase_send=None) -> FastAPI:
     data_dir = data_dir or os.environ.get("RELAY_DATA", "./relay-data")
     os.makedirs(data_dir, exist_ok=True)
     admin_token = admin_token or os.environ.get("RELAY_ADMIN_TOKEN")
@@ -327,7 +333,14 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
         if secrets.compare_digest(tok, admin_token):
             return {"handle": "admin", "role": "admin", "caps": []}
         with store.tx() as c:
-            r = c.execute("SELECT * FROM agents WHERE token_hash=?", (_hash(tok),)).fetchone()
+            if tok.startswith("rly_sess_"):          # a person signed in by email
+                sess = c.execute("SELECT handle FROM sessions WHERE token_hash=? AND expires>?",
+                                 (_hash(tok), _now())).fetchone()
+                r = c.execute("SELECT * FROM agents WHERE handle=?", (sess["handle"],)).fetchone() if sess else None
+                if r:
+                    c.execute("UPDATE sessions SET last_used=? WHERE token_hash=?", (_now(), _hash(tok)))
+            else:
+                r = c.execute("SELECT * FROM agents WHERE token_hash=?", (_hash(tok),)).fetchone()
             if not r:
                 raise HTTPException(401, "unknown token")
             c.execute("UPDATE agents SET last_seen=? WHERE handle=?", (_now(), r["handle"]))
@@ -612,7 +625,8 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
             if not c.execute("DELETE FROM agents WHERE handle=?", (handle,)).rowcount:
                 raise HTTPException(404, f"no agent @{handle}")
             for table, col in (("subs", "agent"), ("follows", "agent"), ("cursors", "agent"),
-                               ("contacts", "owner"), ("contacts", "address"), ("wakes", "handle")):
+                               ("contacts", "owner"), ("contacts", "address"), ("wakes", "handle"),
+                               ("people_emails", "handle"), ("sessions", "handle")):
                 c.execute(f"DELETE FROM {table} WHERE {col}=?", (handle,))
             c.execute("UPDATE jobs SET status='queued', claimed_by=NULL, lease_until=NULL"
                       " WHERE claimed_by=? AND status='claimed'", (handle,))
@@ -752,9 +766,13 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
 
     @app.get("/agents")
     def agents(me: dict = Depends(auth)):
+        sees_emails = me["role"] == "admin" or me.get("owner")
         with store.ro() as c:
+            emails = {r["handle"]: r["email"] for r in c.execute("SELECT handle, email FROM people_emails")} \
+                if sees_emails else {}
             return [{"handle": r["handle"], "caps": _loads(r["caps"], []), "role": r["role"],
-                     "provider": r["provider"], "last_seen": r["last_seen"], "owner": bool(r["owner"])}
+                     "provider": r["provider"], "last_seen": r["last_seen"], "owner": bool(r["owner"]),
+                     "email": emails.get(r["handle"])}
                     for r in c.execute("SELECT * FROM agents ORDER BY handle")]
 
     @app.get("/agents/me")
@@ -1029,6 +1047,12 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
     connector.mount(app, SimpleNamespace(
         store=store, auth=auth, post=post, inbox_for=inbox_for, ack_to=ack_to,
         msg_out=msg_out, now=_now, loads=_loads, handle_re=HANDLE_RE))
+    from . import people
+    sb_url = supabase_url or os.environ.get("SUPABASE_URL")
+    sb_key = supabase_key or os.environ.get("SUPABASE_PUBLISHABLE_KEY")
+    people.mount(app, SimpleNamespace(store=store, auth=auth, now=_now, hash=_hash,
+                                      check_new_agent=check_new_agent),
+                 people.Supabase(sb_url, sb_key, send=supabase_send) if sb_url and sb_key else None)
     return app
 
 
