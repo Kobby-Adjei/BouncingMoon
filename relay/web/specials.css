@@ -1,0 +1,119 @@
+/* Specials: four crews, each a short scene. One flat accent per special, content on the page surface.
+   Base styles are always a scene's last frame; motion exists only under .sp-on, which the script adds
+   when it can play it, so reduced motion and no-script both show how each story ends. */
+.sp-item { --sp: var(--accent); --sp-on: var(--on-accent); min-width: 0; }
+.sp-clips { --sp: var(--sun); --sp-on: var(--on-sun); }
+.sp-code { --sp: var(--accent); --sp-on: var(--on-accent); }
+.sp-council { --sp: var(--orange); --sp-on: #18171d; }
+.sp-desk { --sp: var(--green); --sp-on: var(--on-green); }
+
+/* ---------------------------------------------------------------- layout */
+.sp-list { display: grid; gap: clamp(64px, 9vw, 112px); }
+.sp-item { display: grid; gap: 20px; align-content: start; }
+.sp-pair { display: grid; gap: clamp(64px, 9vw, 112px); }
+@media (min-width: 861px) {
+  .sp-feature { grid-template-columns: minmax(0, 4fr) minmax(0, 7fr); align-items: center; gap: 64px; }
+  .sp-feature .sp-text { order: -1; }
+  .sp-feature.sp-flip { grid-template-columns: minmax(0, 7fr) minmax(0, 4fr); }
+  .sp-feature.sp-flip .sp-text { order: 0; }
+  .sp-pair { grid-template-columns: 1fr 1fr; gap: 64px; }
+  .sp-pair .sp-stage { max-width: 440px; }
+}
+
+/* ---------------------------------------------------------------- words */
+.sp-text { min-width: 0; }
+.sp-name { display: flex; align-items: center; gap: 10px; margin: 0; font: 700 28px/1.1 var(--display); letter-spacing: -.035em; }
+.sp-mark { width: 26px; height: 26px; flex: none; fill: var(--sp); }
+.sp-promise { margin: 10px 0 14px; font-size: 19px; line-height: 1.4; color: var(--ink2); max-width: 26ch; text-wrap: balance; }
+.sp-feature .sp-name { font-size: clamp(28px, 3.2vw, 36px); }
+.sp-feature .sp-mark { width: clamp(26px, 3vw, 32px); height: clamp(26px, 3vw, 32px); }
+.sp-feature .sp-promise { font-size: clamp(19px, 2vw, 22px); }
+.sp-pair .sp-name { font-size: 24px; } .sp-pair .sp-mark { width: 22px; height: 22px; }
+.sp-pair .sp-promise { font-size: 17px; margin: 8px 0 12px; }
+.sp-state { display: inline-flex; align-items: center; gap: 7px; font-size: 13px; font-weight: 620; letter-spacing: .01em; }
+.sp-state::before { content: ""; width: 7px; height: 7px; border-radius: 50%; }
+.sp-state.is-live { color: var(--green-ink); } .sp-state.is-live::before { background: var(--green); }
+.sp-state.is-soon { color: var(--ink2); } .sp-state.is-soon::before { box-shadow: inset 0 0 0 1.5px var(--ink3); }
+@media (max-width: 560px) {
+  .sp-item { gap: 14px; }
+  .sp-name, .sp-feature .sp-name, .sp-pair .sp-name { font-size: 24px; }
+  .sp-promise, .sp-feature .sp-promise, .sp-pair .sp-promise { font-size: 17px; margin: 6px 0 10px; }
+}
+
+/* ---------------------------------------------------------------- the stage */
+.sp-stage { position: relative; display: block; width: 100%; padding: 0; margin: 0; border: 0; background: none; color: inherit;
+  font: inherit; text-align: left; -webkit-user-select: none; user-select: none; }
+button.sp-stage { cursor: pointer; }
+.sp-stage svg { display: block; width: 100%; height: auto; overflow: visible; }
+.sp-stage:focus-visible { outline: 3px solid var(--accent-line); outline-offset: 6px; border-radius: 12px; }
+.sp-replay { display: none; position: absolute; right: 0; top: 0; width: 20px; height: 20px; color: var(--ink3);
+  transition: color .25s var(--ease); }
+.sp-on .sp-replay { display: block; }
+.sp-stage:hover .sp-replay { color: var(--ink2); }
+.sp-replay svg { width: 100%; height: 100%; }
+
+/* drawing */
+.sp-stage text { font-family: var(--font); letter-spacing: -.01em; }
+.sp-card { fill: var(--card); stroke: var(--sep); stroke-width: 1; }
+.sp-hair { fill: none; stroke: var(--sep); stroke-width: 1; }
+.sp-ln { fill: var(--ink3); opacity: .75; } .sp-ln2 { fill: var(--fill2); }
+.sp-accbar, .sp-fill, .sp-frame, .sp-dot { fill: var(--sp); }
+.sp-on-fill { fill: var(--sp-on); }
+.sp-wire { fill: none; stroke: var(--sp); stroke-width: 2.5; stroke-linecap: round; stroke-linejoin: round; }
+.sp-spark { fill: none; stroke: var(--sp); stroke-width: 3; stroke-linecap: round; stroke-linejoin: round; }
+.sp-ok { fill: var(--green); }
+.sp-okk { fill: none; stroke: var(--card); stroke-width: 2.4; stroke-linecap: round; stroke-linejoin: round; }
+.sp-film { fill: var(--ink); } .sp-hole { fill: var(--bg); }
+.sp-phone { fill: var(--card); stroke: var(--ink); stroke-width: 2.5; }
+.sp-screen { fill: var(--bg2); } .sp-notch { fill: var(--ink); }
+.sp-add { fill: var(--green-soft); } .sp-add-m { fill: var(--green); }
+.sp-del { fill: var(--red); opacity: .12; } .sp-del-m { fill: var(--red); }
+.sp-gate-o { fill: var(--card); stroke: var(--sp); stroke-width: 2; }
+.sp-gate-f { fill: var(--sp); }
+.sp-gate-t { fill: var(--ink); font-size: 18px; font-weight: 680; }
+.sp-gate-ft { fill: var(--sp-on); font-size: 18px; font-weight: 680; }
+.sp-gate-k { fill: none; stroke: var(--sp-on); stroke-width: 2.6; stroke-linecap: round; stroke-linejoin: round; }
+.sp-cur { fill: var(--ink); stroke: var(--bg); stroke-width: 1.6; stroke-linejoin: round; }
+.sp-q { fill: var(--ink); font-size: 18px; font-weight: 680; }
+.sp-chip { fill: var(--card); stroke: var(--sep); stroke-width: 1; }
+.sp-chip-t { fill: var(--ink); font-size: 15px; font-weight: 600; }
+.sp-chip-hit { fill: var(--sp-on); font-size: 15px; font-weight: 680; }
+.sp-ring { fill: none; stroke: var(--sp); stroke-width: 2; }
+.sp-person { fill: var(--sun-soft); } .sp-ink { fill: var(--ink); }
+.sp-you { fill: var(--ink); font-size: 17px; font-weight: 680; }
+.sp-box { fill: none; stroke: var(--sp); stroke-width: 2; }
+.sp-ping { fill: none; stroke: var(--sp); stroke-width: 2; }
+
+/* end states of the things that leave */
+.sp-stage .sp-out, .sp-stage .sp-ping, .sp-stage .sp-fly { opacity: 0; }
+.sp-stage .sp-dim { opacity: .5; }
+
+/* ---------------------------------------------------------------- motion (plays once, from the start) */
+.sp-on .sp-a { animation: var(--t, .45s) var(--ease) var(--d, 0s) both paused; transform-box: fill-box; transform-origin: center; }
+.sp-on.sp-play .sp-a { animation-play-state: running; }
+.sp-on .sp-in { animation-name: sp-in; }
+.sp-on .sp-out { animation-name: sp-out; }
+.sp-on .sp-rise { animation-name: sp-rise; }
+.sp-on .sp-pop { animation-name: sp-pop; }
+.sp-on .sp-grow { animation-name: sp-grow; transform-origin: left center; }
+.sp-on .sp-draw { animation-name: sp-draw; stroke-dasharray: 1; }
+.sp-on .sp-glide { animation-name: sp-glide; }
+.sp-on .sp-move { animation-name: sp-move; animation-timing-function: cubic-bezier(.6, 0, .25, 1); }
+.sp-on .sp-press { animation-name: sp-press; }
+.sp-on .sp-ping { animation-name: sp-ping; }
+.sp-on .sp-fly { animation-name: sp-fly; animation-timing-function: cubic-bezier(.55, 0, .3, 1); }
+.sp-on .sp-dim { animation-name: sp-dim; }
+@keyframes sp-in { from { opacity: 0; } }
+@keyframes sp-out { from { opacity: 1; } to { opacity: 0; } }
+@keyframes sp-rise { from { opacity: 0; transform: translateY(12px); } }
+@keyframes sp-pop { from { opacity: 0; transform: scale(.82); } }
+@keyframes sp-grow { from { transform: scaleX(0); } }
+@keyframes sp-draw { 0% { stroke-dashoffset: 1; stroke-opacity: 0; } 3% { stroke-opacity: 1; } 100% { stroke-dashoffset: 0; } }
+@keyframes sp-glide { from { opacity: 0; transform: translate(var(--x), var(--y)); } }
+@keyframes sp-move { from { transform: translate(var(--x), var(--y)); } }
+@keyframes sp-press { 0%, 100% { transform: none; } 45% { transform: scale(.9); } }
+@keyframes sp-ping { 0% { opacity: 0; transform: none; } 12% { opacity: .85; transform: none; } 100% { opacity: 0; transform: scale(1.12, 1.45); } }
+@keyframes sp-fly { 0% { opacity: 0; transform: translate(var(--x), var(--y)) scale(.85); }
+  15% { opacity: 1; transform: translate(var(--x), var(--y)); } 80% { opacity: 1; transform: scale(.9); }
+  100% { opacity: 0; transform: scale(.5); } }
+@keyframes sp-dim { from { opacity: 1; } to { opacity: .5; } }
