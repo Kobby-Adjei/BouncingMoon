@@ -156,6 +156,16 @@ def mount(app, hub, supabase: Optional[Supabase]) -> None:
     store, auth = hub.store, hub.auth
     wrong_codes: dict = {}          # email -> times of recent wrong codes (in memory; a restart forgets)
 
+    # One-time cleanup, Nov 18 2026: before sign-in links waited for a press of "Sign in", a mail
+    # scanner that opened Kobby's links was handed two email sessions. Every email session made
+    # before the fix is ended once, here; keys are untouched. A marker keeps it from running again.
+    with store.tx() as c:
+        c.execute("CREATE TABLE IF NOT EXISTS hub_flags(name TEXT PRIMARY KEY, done REAL)")
+        if not c.execute("SELECT 1 FROM hub_flags WHERE name='purge-scanner-sessions-2026-11-18'").fetchone():
+            gone = c.execute("DELETE FROM sessions").rowcount      # runs once, at the first start after the fix
+            c.execute("INSERT INTO hub_flags(name,done) VALUES ('purge-scanner-sessions-2026-11-18',?)", (hub.now(),))
+            print(f"[relay] ended {gone} email session(s) issued before the scanner-safe sign-in", flush=True)
+
     def need_owner(me):
         if me["role"] != "admin" and not me.get("owner"):
             raise HTTPException(403, "only the hub's owner can do this")

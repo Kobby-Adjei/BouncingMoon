@@ -172,3 +172,27 @@ def test_a_token_hash_link_signs_in_only_for_people_on_the_hub(setup):
     used = c.post("/auth/verify", json={"token_hash": "hash-good"})
     assert used.status_code == 401 and "already used" in used.json()["detail"]
     assert c.post("/auth/verify", json={"token_hash": "hash-stranger"}).status_code == 403
+
+
+def test_email_sessions_from_before_the_scanner_fix_are_ended_once(tmp_path):
+    from relay.hub import create_app as mk
+    sb = FakeSupabase()
+    kw = dict(data_dir=str(tmp_path), admin_token=ADMIN, supabase_url="https://sb.example",
+              supabase_key="sb_publishable_test", supabase_send=sb)
+    c = TestClient(mk(**kw), base_url="https://hub.example")
+    owner = c.post("/owner", headers=H(ADMIN), json={"handle": "kobby"}).json()["token"]
+    store = c.app.state.store
+    with store.tx() as db:                      # a session left over from before the fix
+        db.execute("DELETE FROM hub_flags")
+        db.execute("INSERT INTO sessions(token_hash,handle,created,expires,last_used) VALUES ('h','kobby',1,9e12,1)")
+    c2 = TestClient(mk(**kw), base_url="https://hub.example")      # the next start ends it, once
+    with store.ro() as db:
+        assert db.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 0
+        db_flag = db.execute("SELECT COUNT(*) FROM hub_flags").fetchone()[0]
+    assert db_flag == 1
+    with store.tx() as db:                      # sessions made after the fix survive later restarts
+        db.execute("INSERT INTO sessions(token_hash,handle,created,expires,last_used) VALUES ('h2','kobby',2,9e12,2)")
+    mk(**kw)
+    with store.ro() as db:
+        assert db.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 1
+    assert c2.get("/agents/me", headers=H(owner)).json()["handle"] == "kobby"   # keys untouched
