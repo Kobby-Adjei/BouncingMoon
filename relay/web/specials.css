@@ -82,6 +82,7 @@ button.sp-stage { cursor: pointer; }
 .sp-person { fill: var(--sun-soft); } .sp-ink { fill: var(--ink); }
 .sp-you { fill: var(--ink); font-size: 17px; font-weight: 680; }
 .sp-box { fill: none; stroke: var(--sp); stroke-width: 2; }
+.sp-env { fill: none; stroke: var(--ink2); stroke-width: 1.6; stroke-linejoin: round; stroke-linecap: round; }
 .sp-ping { fill: none; stroke: var(--sp); stroke-width: 2; }
 
 /* end states of the things that leave */

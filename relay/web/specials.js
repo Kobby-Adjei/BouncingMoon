@@ -171,7 +171,8 @@ function council() {
 // ------------------------------------------------------------------ Relay Desk
 // an email arrives, becomes a task, goes to an agent, the reply waits for your OK, then it's handled
 function desk() {
-  const row = () => g(card(168, 50), s("circle", { class: "sp-ln", cx: 24, cy: 25, r: 11 }),
+  const row = () => g(card(168, 50), s("rect", { class: "sp-env", x: 12, y: 17, width: 22, height: 16, rx: 3 }),
+                      s("path", { class: "sp-env", d: "M13.5 19l9.5 7 9.5-7" }),
                       bar(44, 15, 72, 7), bar(44, 29, 100, 6, "sp-ln2"));
   const old = (y, d) => at(12, y, a(g(a(g(row()), "move", .55, .4, { x: "0px", y: "-58px" })), "in", d, .4));
   return scene(400, 300,
