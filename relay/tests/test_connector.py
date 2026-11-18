@@ -167,3 +167,20 @@ def test_official_mcp_client_asks_and_gets_the_answer(tmp_path):
         assert "Codex here. You asked: ping from claude" in res.content[0].text
     finally:
         server.should_exit = True; t.join(5)
+
+
+def test_the_app_an_agent_connects_from_sets_its_logo_unless_the_owner_chose(hub):
+    muse = reg(hub, "muse", provider="claude")          # picked wrongly when it was invited
+    init = {"protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "Meta Muse", "version": "1"}}
+    assert rpc(hub, muse, "initialize", init).status_code == 200
+    seen = {a["handle"]: a for a in hub.get("/agents", headers=H(muse)).json()}
+    assert seen["muse"]["provider"] == "muse" and seen["muse"]["client"] == "Meta Muse"
+    # the owner's own choice is final: a later connection doesn't override it
+    hub.put("/agents/muse/provider", headers=H(ADMIN), json={"provider": "claude"})
+    rpc(hub, muse, "initialize", init)
+    assert {a["handle"]: a for a in hub.get("/agents", headers=H(muse)).json()}["muse"]["provider"] == "claude"
+    # an app we don't recognise is remembered but changes nothing
+    codex = reg(hub, "codex", provider="codex")
+    rpc(hub, codex, "initialize", {**init, "clientInfo": {"name": "some-new-agent"}})
+    c = {a["handle"]: a for a in hub.get("/agents", headers=H(codex)).json()}["codex"]
+    assert c["provider"] == "codex" and c["client"] == "some-new-agent"

@@ -130,6 +130,10 @@ class Store:
                 c.execute("ALTER TABLE agents ADD COLUMN provider TEXT")
             if "owner" not in agent_cols:
                 c.execute("ALTER TABLE agents ADD COLUMN owner INTEGER NOT NULL DEFAULT 0")
+            if "client" not in agent_cols:          # the app it connects from, as that app names itself
+                c.execute("ALTER TABLE agents ADD COLUMN client TEXT")
+            if "provider_source" not in agent_cols:  # 'invite' | 'detected' | 'owner'
+                c.execute("ALTER TABLE agents ADD COLUMN provider_source TEXT")
             if "provider" not in {r["name"] for r in c.execute("PRAGMA table_info(invites)")}:
                 c.execute("ALTER TABLE invites ADD COLUMN provider TEXT")
         finally:
@@ -640,7 +644,8 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
         with store.tx() as c:
             if not c.execute("SELECT 1 FROM agents WHERE handle=?", (handle,)).fetchone():
                 raise HTTPException(404, f"no agent @{handle}")
-            c.execute("UPDATE agents SET provider=? WHERE handle=?", (provider, handle))
+            # the owner's own choice is final: a detected app never overrides it
+            c.execute("UPDATE agents SET provider=?, provider_source='owner' WHERE handle=?", (provider, handle))
         return {"handle": handle, "provider": provider}
 
     # ---------------------------------------------------------------- wake-ups
@@ -771,7 +776,8 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
             emails = {r["handle"]: r["email"] for r in c.execute("SELECT handle, email FROM people_emails")} \
                 if sees_emails else {}
             return [{"handle": r["handle"], "caps": _loads(r["caps"], []), "role": r["role"],
-                     "provider": r["provider"], "last_seen": r["last_seen"], "owner": bool(r["owner"]),
+                     "provider": r["provider"], "client": r["client"], "last_seen": r["last_seen"],
+                     "owner": bool(r["owner"]),
                      "email": emails.get(r["handle"])}
                     for r in c.execute("SELECT * FROM agents ORDER BY handle")]
 

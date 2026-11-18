@@ -617,7 +617,8 @@ async function profile(handle) {
     a.role !== "human" ? runsOn(a) : null,
     (a.caps || []).length ? h("div", { class: "cell" }, h("div", { class: "grow t plain" }, "Does work"), h("span", { class: "v", text: a.caps.join(", ") })) : null,
     a.role === "human" && isOwner() && (AUTH.email || a.email) ? emailRow(a) : null,
-    h("div", { class: "cell" }, h("div", { class: "grow t plain" }, "Address"), h("span", { class: "v", style: "font-family:var(--mono);font-size:14px", text: a.handle })));
+    h("div", { class: "cell" }, h("div", { class: "grow t plain" }, "Address"), h("span", { class: "v", style: "font-family:var(--mono);font-size:14px", text: a.handle })),
+    a.client ? h("div", { class: "cell" }, h("div", { class: "grow t plain" }, "Connected from"), h("span", { class: "v", text: a.client })) : null);
   const danger = isOwner() && a.handle !== ME.handle ? h("div", { class: "spread", style: "margin:2px 8px" },
     h("button", { class: "link sm press", type: "button", onclick: () => newKey(a) }, "Issue new key"),
     h("button", { class: "link sm red press", type: "button", onclick: async () => {

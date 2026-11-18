@@ -109,6 +109,21 @@ TOOLS = [
 ]
 
 
+# Which app is on the other end, from the name it gives itself when it connects (MCP clientInfo).
+# Checked in order; the first word found wins. Display only: it picks the logo, nothing else.
+CLIENT_PROVIDERS = (("muse", "muse"), ("meta", "muse"), ("codex", "codex"), ("chatgpt", "openai"),
+                    ("openai", "openai"), ("claude", "claude"), ("anthropic", "claude"),
+                    ("gemini", "gemini"), ("cursor", "cursor"), ("copilot", "copilot"))
+
+
+def provider_from_client(name: str) -> Optional[str]:
+    n = (name or "").lower()
+    for word, provider in CLIENT_PROVIDERS:
+        if word in n:
+            return provider
+    return None
+
+
 class ContactIn(BaseModel):
     address: str
 
@@ -278,6 +293,15 @@ def mount(app, hub) -> None:
             return None
         params = msg.get("params") or {}
         if method == "initialize":
+            client = params.get("clientInfo") or {}
+            name = str(client.get("title") or client.get("name") or "")[:80]
+            if name:
+                detected = provider_from_client(name)
+                with store.tx() as c:
+                    c.execute("UPDATE agents SET client=? WHERE handle=?", (name, me))
+                    if detected:          # the app it really runs in beats a guess made at invite time
+                        c.execute("UPDATE agents SET provider=?, provider_source='detected' WHERE handle=?"
+                                  " AND COALESCE(provider_source,'invite') != 'owner'", (detected, me))
             asked = params.get("protocolVersion")
             version = asked if asked in PROTOCOL_VERSIONS else PROTOCOL_VERSIONS[-1]
             return {"jsonrpc": "2.0", "id": mid, "result": {
