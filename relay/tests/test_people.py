@@ -115,6 +115,7 @@ CONFIRMED = "2026-11-18T00:00:00Z"
 @pytest.mark.parametrize("refusal, status, words", [
     ((429, b'{"code":429,"error_code":"over_email_send_rate_limit","msg":"email rate limit exceeded"}'), 429, "Too many emails"),
     ((429, b'{"code":429,"error_code":"over_request_rate_limit","msg":"For security purposes, you can only request this after 41 seconds."}'), 429, "Too many emails"),
+    ((429, b'{"code":429,"msg":"email rate limit exceeded"}'), 429, "Too many emails"),
     ((400, b'{"code":400,"error_code":"email_address_not_authorized","msg":"Email address \\"kobby@example.com\\" not authorized"}'), 503, "isn't set up for outside addresses"),
     ((500, b'{"code":500,"error_code":"unexpected_failure","msg":"Error sending magic link email to kobby@example.com"}'), 502, "couldn't be sent"),
     ((0, b'{"error_code":"unreachable","msg":"timed out"}'), 502, "couldn't be sent"),

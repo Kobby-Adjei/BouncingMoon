@@ -96,7 +96,7 @@ def supabase_error(status: int, body: bytes) -> tuple:
     if not isinstance(code, str):
         code = str(code)
     if status == 429 and not code.startswith("over_"):
-        code = code or "over_request_rate_limit"
+        code = "over_request_rate_limit"           # any 429 is a rate limit, whatever the body says
     return code, str(msg)
 
 
