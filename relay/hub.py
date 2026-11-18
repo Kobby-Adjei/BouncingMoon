@@ -31,7 +31,7 @@ import tempfile
 import time
 import urllib.parse
 import uuid
-from contextlib import contextmanager
+from contextlib import asynccontextmanager, contextmanager
 from typing import Any, Optional
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
@@ -121,8 +121,11 @@ class Store:
             cols = {r["name"] for r in c.execute("PRAGMA table_info(jobs)")}
             if "not_before" not in cols:
                 c.execute("ALTER TABLE jobs ADD COLUMN not_before REAL")
-            if "provider" not in {r["name"] for r in c.execute("PRAGMA table_info(agents)")}:
+            agent_cols = {r["name"] for r in c.execute("PRAGMA table_info(agents)")}
+            if "provider" not in agent_cols:
                 c.execute("ALTER TABLE agents ADD COLUMN provider TEXT")
+            if "owner" not in agent_cols:
+                c.execute("ALTER TABLE agents ADD COLUMN owner INTEGER NOT NULL DEFAULT 0")
             if "provider" not in {r["name"] for r in c.execute("PRAGMA table_info(invites)")}:
                 c.execute("ALTER TABLE invites ADD COLUMN provider TEXT")
         finally:
@@ -204,6 +207,10 @@ class InviteIn(BaseModel):
     provider: Optional[str] = None
     hours: float = 24
     note: Optional[str] = None
+
+
+class OwnerIn(BaseModel):
+    handle: str
 
 
 class WakeIn(BaseModel):
@@ -294,7 +301,16 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
                      else os.environ.get("RELAY_ALLOW_PRIVATE_FETCH") == "1")
 
     store = Store(data_dir)
-    app = FastAPI(title="Relay", version="0.1.0")
+
+    @asynccontextmanager
+    async def lifespan(_app):
+        # `ask` and `/inbox?wait` hold a worker thread while they wait; give them room
+        import anyio.to_thread
+        anyio.to_thread.current_default_thread_limiter().total_tokens = int(
+            os.environ.get("RELAY_THREADS", 200))
+        yield
+
+    app = FastAPI(title="Relay", version="0.1.0", lifespan=lifespan)
     app.state.store = store
     from .wake import Waker, WakeError
     waker = Waker(store, admin_token, os.environ.get("RELAY_SECRET_KEY"), opener=wake_opener,
@@ -315,7 +331,8 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
             if not r:
                 raise HTTPException(401, "unknown token")
             c.execute("UPDATE agents SET last_seen=? WHERE handle=?", (_now(), r["handle"]))
-        return {"handle": r["handle"], "role": r["role"], "caps": _loads(r["caps"], [])}
+        return {"handle": r["handle"], "role": r["role"], "caps": _loads(r["caps"], []),
+                "owner": bool(r["owner"])}
 
     def need_agent(me: dict) -> None:
         if me["role"] == "admin":
@@ -442,8 +459,9 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
 
     # ---------------------------------------------------------------- health
     def need_admin(me: dict) -> None:
-        if me["role"] != "admin":
-            raise HTTPException(403, "admin token required")
+        # the hub's owner (a person who signed in as themselves) can do everything the admin token can
+        if me["role"] != "admin" and not me.get("owner"):
+            raise HTTPException(403, "only the hub's owner can do this")
 
     def check_provider(provider: Optional[str]) -> Optional[str]:
         if provider in (None, ""):
@@ -510,6 +528,30 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
             return Response(f.read(), media_type="image/svg+xml",
                             headers={**page_headers, "Cache-Control": "public, max-age=86400"})
 
+    web_dir = os.path.join(here, "web")
+    web_files = {f: f for f in (os.listdir(web_dir) if os.path.isdir(web_dir) else [])}
+    web_types = {".html": "text/html; charset=utf-8", ".css": "text/css; charset=utf-8",
+                 ".js": "text/javascript; charset=utf-8", ".svg": "image/svg+xml", ".png": "image/png"}
+
+    def web(name: str) -> Response:
+        if name not in web_files:
+            raise HTTPException(404, "not found")
+        mime = web_types.get(os.path.splitext(name)[1], "application/octet-stream")
+        with open(os.path.join(web_dir, name), "rb") as f:
+            return Response(f.read(), media_type=mime, headers=page_headers)
+
+    @app.get("/app", include_in_schema=False)
+    def app_page():
+        return web("app.html")
+
+    @app.get("/welcome", include_in_schema=False)
+    def landing_page():
+        return web("landing.html")
+
+    @app.get("/static/{name}", include_in_schema=False)
+    def static_file(name: str):           # only files shipped in relay/web; the name is a dict key
+        return web(name)
+
     @app.get("/cli.py", include_in_schema=False)
     def cli_py():              # public: it is the open client, and holds no secrets
         return static("cli.py", "text/x-python; charset=utf-8")
@@ -521,8 +563,7 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
     # ---------------------------------------------------------------- agents
     @app.post("/agents")
     def register(body: AgentIn, me: dict = Depends(auth)):
-        if me["role"] != "admin":
-            raise HTTPException(403, "only the admin token can register agents")
+        need_admin(me)
         check_new_agent(body.handle, body.role)
         provider = check_provider(body.provider)
         token = "rly_" + secrets.token_urlsafe(32)
@@ -536,6 +577,27 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
         # the only time this token is ever returned
         return {"handle": body.handle, "token": token, "caps": sorted(set(body.caps)),
                 "role": body.role}
+
+    @app.post("/owner")
+    def become_owner(body: OwnerIn, me: dict = Depends(auth)):
+        """Admin token only, once per person: make `handle` (a person) the hub's owner and return
+        their own key. From then on they sign in as themselves and the admin token can go back
+        in the drawer. Re-running it for the same person issues them a fresh key."""
+        if me["role"] != "admin":
+            raise HTTPException(403, "use the admin token for this")
+        check_new_agent(body.handle, "human")
+        token = "rly_" + secrets.token_urlsafe(32)
+        with store.tx() as c:
+            r = c.execute("SELECT role FROM agents WHERE handle=?", (body.handle,)).fetchone()
+            if r and r["role"] != "human":
+                raise HTTPException(409, f"@{body.handle} is an agent; pick your own name")
+            if r:
+                c.execute("UPDATE agents SET token_hash=?, owner=1 WHERE handle=?", (_hash(token), body.handle))
+            else:
+                c.execute("INSERT INTO agents(handle,token_hash,caps,role,created,owner) VALUES (?,?,?,?,?,1)",
+                          (body.handle, _hash(token), "[]", "human", _now()))
+                c.execute("INSERT OR IGNORE INTO cursors(agent,last) VALUES (?,0)", (body.handle,))
+        return {"handle": body.handle, "token": token, "owner": True}
 
     @app.delete("/agents/{handle}")
     def remove_agent(handle: str, me: dict = Depends(auth)):
@@ -687,7 +749,7 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
     def agents(me: dict = Depends(auth)):
         with store.ro() as c:
             return [{"handle": r["handle"], "caps": _loads(r["caps"], []), "role": r["role"],
-                     "provider": r["provider"], "last_seen": r["last_seen"]}
+                     "provider": r["provider"], "last_seen": r["last_seen"], "owner": bool(r["owner"])}
                     for r in c.execute("SELECT * FROM agents ORDER BY handle")]
 
     @app.get("/agents/me")
