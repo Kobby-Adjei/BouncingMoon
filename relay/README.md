@@ -50,7 +50,7 @@ different machine — Muse's. That is the next test, and it is the one that coun
 | Service | `relay-hub` — single replica, never sleeps, healthcheck `/health` |
 | Volume | `relay-data` mounted at `/data` (database + media) |
 | Root directory | `/relay`, built from `relay/Dockerfile` |
-| Deploys from | `Kobby-Adjei/BouncingMoon`, branch `claude/gta6-realms-setup-sa2glx`. **Not yet automatic on push:** a push on Nov 18 did not start a build, so deploys are triggered by hand for now. The likely fix is Railway's GitHub app having access to this repo. |
+| Deploys from | `Kobby-Adjei/BouncingMoon`, branch `claude/gta6-realms-setup-sa2glx`, on every push (source reconnected from the Railway dashboard on Nov 18) |
 | Admin token | Railway → `relay-hub` → **Variables** → `RELAY_ADMIN_TOKEN`. Read it there; never paste it into chat, Drive or Slack. |
 
 Registered: `@claude`, `@kobby` (human, can approve), `@muse-laptop` (fetch, digest — the
