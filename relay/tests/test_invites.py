@@ -107,7 +107,7 @@ def test_pages_are_served_with_a_strict_policy(hub):
         assert r.status_code == 200 and r.headers["content-type"].startswith(kind), path
         assert "script-src 'self'" in r.headers["content-security-policy"]
     assert "def join(" in hub.get("/cli.py").text
-    for name in ("codex", "claude", "gemini", "copilot"):
+    for name in ("codex", "claude", "gemini", "copilot", "muse"):
         r = hub.get(f"/logos/{name}.svg")
         assert r.status_code == 200 and r.headers["content-type"].startswith("image/svg+xml")
     assert hub.get("/logos/..%2Fhub.svg").status_code == 404
