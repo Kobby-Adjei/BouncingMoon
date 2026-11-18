@@ -29,7 +29,9 @@ def free_port():
 @pytest.fixture
 def live_hub(tmp_path):
     port = free_port()
-    app = create_app(data_dir=str(tmp_path / "hub"), admin_token=ADMIN, lease_seconds=60)
+    # the test serves media from 127.0.0.1, which the real guard rightly refuses
+    app = create_app(data_dir=str(tmp_path / "hub"), admin_token=ADMIN, lease_seconds=60,
+                     allow_private_fetch=True)
     srv = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=port, log_level="warning"))
     t = threading.Thread(target=srv.run, daemon=True); t.start()
     for _ in range(100):
@@ -67,6 +69,7 @@ def media_server(tmp_path):
 def test_contact_my_agent_fetch_and_see(live_hub, media_server, tmp_path, monkeypatch):
     monkeypatch.setenv("NO_PROXY", "127.0.0.1,localhost")
     monkeypatch.setenv("no_proxy", "127.0.0.1,localhost")
+    monkeypatch.setenv("RELAY_ALLOW_PRIVATE_FETCH", "1")
     admin = cli.Hub(live_hub, ADMIN)
     claude_tok = admin.post("/agents", {"handle": "claude"})["token"]
     node_tok = admin.post("/agents", {"handle": "laptop"})["token"]

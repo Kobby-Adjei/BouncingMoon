@@ -28,10 +28,12 @@ from __future__ import annotations
 
 import argparse
 import glob
+import ipaddress
 import json
 import mimetypes
 import os
 import shutil
+import socket
 import subprocess
 import sys
 import tempfile
@@ -79,6 +81,8 @@ class Hub:
             except Exception:
                 pass
             raise RelayError(f"{method} {path} -> {e.code}: {detail}") from None
+        except urllib.error.URLError as e:
+            raise RelayError(f"cannot reach hub at {self.url}: {e.reason}") from None
 
     def get(self, path, **params):
         return self.call("GET", path, params=params or None)
@@ -104,6 +108,8 @@ class Hub:
                     return json.loads(r.read())
             except urllib.error.HTTPError as e:
                 raise RelayError(f"upload -> {e.code}: {e.read().decode(errors='replace')}") from None
+            except urllib.error.URLError as e:
+                raise RelayError(f"cannot reach hub at {self.url}: {e.reason}") from None
 
     def download(self, aid, dest) -> str:
         req = self._req("GET", f"/artifacts/{aid}")
@@ -112,6 +118,8 @@ class Hub:
                 shutil.copyfileobj(r, f, CHUNK)
         except urllib.error.HTTPError as e:
             raise RelayError(f"download -> {e.code}") from None
+        except urllib.error.URLError as e:
+            raise RelayError(f"cannot reach hub at {self.url}: {e.reason}") from None
         return dest
 
 
@@ -219,12 +227,30 @@ def transcribe(path) -> dict:
 
 
 # --------------------------------------------------------------------------- job handlers
+def assert_public(url: str) -> None:
+    """Refuse to fetch anything that resolves to this machine or its private network.
+    The hub checks literal addresses; this checks what the name actually resolves to,
+    on the machine doing the fetching - which is the one that matters."""
+    if os.environ.get("RELAY_ALLOW_PRIVATE_FETCH") == "1":
+        return
+    host = urllib.parse.urlparse(url).hostname or ""
+    try:
+        infos = socket.getaddrinfo(host, None)
+    except socket.gaierror as e:
+        raise RelayError(f"cannot resolve {host}: {e}") from None
+    for info in infos:
+        ip = ipaddress.ip_address(info[4][0])
+        if not ip.is_global:
+            raise RelayError(f"refusing to fetch {host}: it resolves to a non-public address")
+
+
 def handle_fetch(hub: Hub, job: dict, work: str):
     """Fetch one URL. Fixed argv, no shell, no arbitrary commands: the only input a
     requester controls is the URL, and it is passed after `--`."""
     url = job["params"]["url"]
     if not url.startswith(("http://", "https://")):
         raise RelayError("fetch only accepts http(s) URLs")
+    assert_public(url)
     d = tempfile.mkdtemp(dir=work, prefix="fetch_")
     p = subprocess.run(
         ["yt-dlp", "--no-playlist", "--no-warnings", "--no-progress",

@@ -21,6 +21,7 @@ One process. SQLite for state, the filesystem for blobs.
 from __future__ import annotations
 
 import hashlib
+import ipaddress
 import json
 import os
 import re
@@ -28,6 +29,7 @@ import secrets
 import sqlite3
 import tempfile
 import time
+import urllib.parse
 import uuid
 from contextlib import contextmanager
 from typing import Any, Optional
@@ -57,7 +59,7 @@ CREATE TABLE IF NOT EXISTS jobs(
   lease_until REAL, attempts INTEGER NOT NULL DEFAULT 0, result TEXT,
   artifacts TEXT NOT NULL DEFAULT '[]', error TEXT, thread INTEGER,
   requires_approval INTEGER NOT NULL DEFAULT 0, approved_by TEXT,
-  parent_job TEXT, created REAL, updated REAL);
+  parent_job TEXT, not_before REAL, created REAL, updated REAL);
 CREATE INDEX IF NOT EXISTS jobs_queue ON jobs(status, kind, created);
 CREATE TABLE IF NOT EXISTS artifacts(
   id TEXT PRIMARY KEY, name TEXT, mime TEXT, size INTEGER, created_by TEXT,
@@ -68,6 +70,20 @@ HANDLE_RE = re.compile(r"^[a-z0-9][a-z0-9_.-]{0,31}$")
 RESERVED = {"relay", "admin"}
 SYSTEM = "relay"            # sender name for messages the hub writes itself
 MEDIA_PREFIXES = ("video/", "audio/")
+
+
+def private_host(host: str) -> bool:
+    """True for hosts a fetch must never be pointed at: loopback, private ranges,
+    link-local (including cloud metadata at 169.254.169.254), and bare local names.
+    Literal checks only - the node re-checks after DNS resolution."""
+    h = (host or "").strip("[]").lower()
+    if not h or h == "localhost" or h.endswith((".localhost", ".local", ".internal")):
+        return True
+    try:
+        ip = ipaddress.ip_address(h)
+    except ValueError:
+        return "." not in h            # single-label names resolve on the local network
+    return not ip.is_global
 
 
 def _now() -> float:
@@ -94,6 +110,9 @@ class Store:
         c = self._connect()
         try:
             c.executescript(SCHEMA)
+            cols = {r["name"] for r in c.execute("PRAGMA table_info(jobs)")}
+            if "not_before" not in cols:
+                c.execute("ALTER TABLE jobs ADD COLUMN not_before REAL")
         finally:
             c.close()
 
@@ -147,6 +166,7 @@ def job_out(r: sqlite3.Row) -> dict:
             "artifacts": _loads(r["artifacts"], []), "error": r["error"],
             "thread": r["thread"], "requires_approval": bool(r["requires_approval"]),
             "approved_by": r["approved_by"], "parent_job": r["parent_job"],
+            "not_before": r["not_before"],
             "created": r["created"], "updated": r["updated"]}
 
 
@@ -215,7 +235,9 @@ class FailIn(BaseModel):
 def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None,
                lease_seconds: Optional[float] = None,
                max_attempts: Optional[int] = None,
-               max_upload_mb: Optional[int] = None) -> FastAPI:
+               max_upload_mb: Optional[int] = None,
+               retry_base_seconds: Optional[float] = None,
+               allow_private_fetch: Optional[bool] = None) -> FastAPI:
     data_dir = data_dir or os.environ.get("RELAY_DATA", "./relay-data")
     os.makedirs(data_dir, exist_ok=True)
     admin_token = admin_token or os.environ.get("RELAY_ADMIN_TOKEN")
@@ -233,6 +255,10 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
     lease = float(lease_seconds or os.environ.get("RELAY_LEASE_SECONDS", 300))
     max_att = int(max_attempts or os.environ.get("RELAY_MAX_ATTEMPTS", 3))
     max_upload = int(max_upload_mb or os.environ.get("RELAY_MAX_UPLOAD_MB", 4096)) * 2**20
+    retry_base = float(retry_base_seconds if retry_base_seconds is not None
+                       else os.environ.get("RELAY_RETRY_BASE_SECONDS", 30))
+    allow_private = (allow_private_fetch if allow_private_fetch is not None
+                     else os.environ.get("RELAY_ALLOW_PRIVATE_FETCH") == "1")
 
     store = Store(data_dir)
     app = FastAPI(title="Relay", version="0.1.0")
@@ -325,6 +351,8 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
             url = str(params.get("url", ""))
             if not url.startswith(("http://", "https://")):
                 raise HTTPException(400, "fetch needs params.url (http or https)")
+            if not allow_private and private_host(urllib.parse.urlparse(url).hostname or ""):
+                raise HTTPException(400, "fetch may not target local or private network addresses")
         if kind == "digest":
             if not c.execute("SELECT 1 FROM artifacts WHERE id=?",
                              (params.get("artifact", ""),)).fetchone():
@@ -501,7 +529,8 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
             requeue_expired(c)
             marks = ",".join("?" * len(kinds))
             j = c.execute(f"SELECT * FROM jobs WHERE status='queued' AND kind IN ({marks})"
-                          " ORDER BY created LIMIT 1", sorted(kinds)).fetchone()
+                          " AND (not_before IS NULL OR not_before<=?)"
+                          " ORDER BY created LIMIT 1", [*sorted(kinds), _now()]).fetchone()
             if not j:
                 return {"job": None}
             c.execute("UPDATE jobs SET status='claimed', claimed_by=?, lease_until=?,"
@@ -568,9 +597,13 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
         with store.tx() as c:
             j = mine(c, jid, me)
             again = body.retry and j["attempts"] < max_att
+            # back off before a retry, so one bad moment (a site's bot check, a dropped
+            # connection) doesn't burn every attempt in the same second
+            wait = retry_base * (2 ** (j["attempts"] - 1)) if again else None
             c.execute("UPDATE jobs SET status=?, claimed_by=NULL, lease_until=NULL, error=?,"
-                      " updated=? WHERE id=?",
-                      ("queued" if again else "failed", body.error[:4000], _now(), jid))
+                      " not_before=?, updated=? WHERE id=?",
+                      ("queued" if again else "failed", body.error[:4000],
+                       (_now() + wait) if again else None, _now(), jid))
             j = get_job(c, jid)
             if not again:
                 notify(c, j, f"job {jid} [{j['kind']}] failed: {body.error[:800]}")
