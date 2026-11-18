@@ -21,7 +21,7 @@ One process, SQLite and a folder. Runs anywhere Python runs.
 
 ## Proven so far
 
-- **11 tests pass**, including end-to-end over real HTTP: a requesting agent, a worker node,
+- **13 tests pass**, including end-to-end over real HTTP: a requesting agent, a worker node,
   a real video, nothing mocked.
 - **Acceptance run on real media:** an agent asked for a 63.1 MB, 166.8 s, 1080p trailer by
   capability. A node fetched it, the hub queued a digest by itself, the node found **54 shots**
@@ -32,6 +32,9 @@ One process, SQLite and a folder. Runs anywhere Python runs.
   A 90 MB upload through Railway's edge went up in 1.4 s and came back byte-for-byte. The full
   loop against the live hub — request, fetch 63.1 MB, auto-digest to 54 shots, inbox
   notifications — took 34 s.
+- **Survives a redeploy** (Nov 18): a push to the branch rebuilt and replaced the container.
+  Afterwards all three agents and both jobs were still there, and the 63.1 MB trailer downloaded
+  from the new container with the same sha256 it was stored under.
 
 **Not proven yet, said plainly:** every node so far ran inside Claude's own container. The hub
 is now somewhere anyone can reach, but it is not cross-provider until a node runs on a
