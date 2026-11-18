@@ -25,7 +25,8 @@ def test_pages_and_static_files_are_served_with_a_strict_policy(hub):
     assert hub.get("/welcome", follow_redirects=False).headers["location"] == "/"
     for path, kind in [("/app", "text/html"), ("/", "text/html"), ("/static/app.js", "text/javascript"),
                        ("/static/landing.js", "text/javascript"), ("/static/relay.css", "text/css"),
-                       ("/static/mark.svg", "image/svg+xml")]:
+                       ("/static/mark.svg", "image/svg+xml"), ("/static/specials.js", "text/javascript"),
+                       ("/static/specials.css", "text/css")]:
         r = hub.get(path)
         assert r.status_code == 200 and r.headers["content-type"].startswith(kind), path
         assert "script-src 'self'" in r.headers["content-security-policy"], path
@@ -41,7 +42,7 @@ def test_no_script_writes_html():
 
 
 def test_landing_page_never_calls_the_api():
-    src = open(os.path.join(WEB, "landing.js")).read() + open(os.path.join(WEB, "landing.html")).read()
+    src = "".join(open(os.path.join(WEB, f)).read() for f in ("landing.js", "landing.html", "specials.js"))
     assert "fetch(" not in src and "XMLHttpRequest" not in src
 
 

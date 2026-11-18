@@ -65,7 +65,7 @@ button.sp-stage { cursor: pointer; }
 .sp-spark { fill: none; stroke: var(--sp); stroke-width: 3; stroke-linecap: round; stroke-linejoin: round; }
 .sp-ok { fill: var(--green); }
 .sp-okk { fill: none; stroke: var(--card); stroke-width: 2.4; stroke-linecap: round; stroke-linejoin: round; }
-.sp-film { fill: var(--ink); } .sp-hole { fill: var(--bg); }
+.sp-film { fill: #18171d; stroke: var(--line, var(--sep)); stroke-width: 1; } .sp-hole { fill: #f6f4ef; }
 .sp-phone { fill: var(--card); stroke: var(--ink); stroke-width: 2.5; }
 .sp-screen { fill: var(--bg2); } .sp-notch { fill: var(--ink); }
 .sp-add { fill: var(--green-soft); } .sp-add-m { fill: var(--green); }

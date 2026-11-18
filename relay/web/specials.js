@@ -87,7 +87,7 @@ function clips() {
   const frames = [6, 37, 68].map((x, i) => a(s("rect", { class: "sp-frame", x, y: 14, width: 26, height: 36, rx: 3,
                                                        }), "pop", 2.72 + i * .1, .3));
   const screen = "sp-clip-" + (++uid);
-  return scene(560, 320,
+  return scene(560, 260,
     a(wire("M82 50H148"), "draw", .98, .35),
     a(wire("M208 50H274"), "draw", 2.22, .35),
     a(wire("M334 50H386a12 12 0 0 1 12 12V132"), "draw", 3.0, .4),
