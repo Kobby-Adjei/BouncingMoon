@@ -1,17 +1,17 @@
 // Relay app. No dependencies, no build step, no globals (everything lives in this function).
-// Anything that came from the hub is inserted as text, never as HTML: agents write those
+// Anything that came from the hub is inserted as text, never as markup: agents write those
 // strings, and this tab holds a key that can act on the hub.
 (function () {
 "use strict";
 
 const ORIGIN = location.origin;
-const HOST = location.host;
 const $ = (id) => document.getElementById(id);
-const app = $("app"), bar = $("bar"), back = $("back"), topseg = $("topseg"), brandmini = $("brandmini");
+const app = $("app"), bar = $("bar"), back = $("back"), topseg = $("topseg"), brandmini = $("brandmini"), barRight = $("bar-right");
 const SVGNS = "http://www.w3.org/2000/svg";
 
-let KEY = null;          // the signed-in key (owner's or a person's); the admin token is never stored
+let KEY = null;          // the signed-in key or email session (owner's or a person's); the admin token is never stored
 let ME = null;           // { handle, role, owner }
+let AUTH = { email: false };   // what this hub offers for signing in
 let timer = null;
 const trail = [];        // in-app back stack
 
@@ -44,6 +44,16 @@ function mark(cls = "mark") {      // the Relay mark: one half passing to the ot
     { d: "M30 10a22 22 0 0 0 0 44z", fill: "currentColor" },
     { d: "M38 10a22 22 0 0 1 0 44z", fill: "currentColor", opacity: ".38" }], cls);
 }
+const stroke = { fill: "none", stroke: "currentColor", "stroke-width": "1.9", "stroke-linecap": "round", "stroke-linejoin": "round" };
+const ICONS = {
+  plus: "M12 5v14M5 12h14",
+  chat: "M4 6.5A2.5 2.5 0 0 1 6.5 4h11A2.5 2.5 0 0 1 20 6.5v8a2.5 2.5 0 0 1-2.5 2.5H10l-4.5 3.5V17H6.5A2.5 2.5 0 0 1 4 14.5z",
+  bell: "M12 3a6 6 0 0 0-6 6v3.5L4.5 15h15L18 12.5V9a6 6 0 0 0-6-6zM9.5 18a2.5 2.5 0 0 0 5 0",
+  send: "M12 19V5M6 11l6-6 6 6",
+  mail: "M4 6.5h16v11H4zM4.5 7l7.5 6 7.5-6",
+};
+const icon = (name, sw) => svg("0 0 24 24", [{ d: ICONS[name], ...stroke, ...(sw ? { "stroke-width": sw } : {}) }]);
+const chev = () => svg("0 0 8 14", [{ d: "M1.5 1.5L6.5 7l-5 5.5", fill: "none", stroke: "currentColor", "stroke-width": "2", "stroke-linecap": "round", "stroke-linejoin": "round" }], "chev");
 
 const store = {
   get() { try { return localStorage.getItem("relay_key") || sessionStorage.getItem("relay_key"); } catch { return null; } },
@@ -52,6 +62,11 @@ const store = {
           (remember ? sessionStorage : localStorage).removeItem("relay_key"); } catch {}
   },
   clear() { try { localStorage.removeItem("relay_key"); sessionStorage.removeItem("relay_key"); } catch {} },
+  // the "keep me signed in" choice must survive the trip through the email link, which may open a new tab
+  remember(v) {
+    try { if (v === undefined) return localStorage.getItem("relay_remember") !== "0"; localStorage.setItem("relay_remember", v ? "1" : "0"); } catch {}
+    return v === undefined ? true : v;
+  },
 };
 
 async function api(method, path, body, key = KEY) {
@@ -64,7 +79,7 @@ async function api(method, path, body, key = KEY) {
   if (!r.ok) {
     const e = new Error((data && typeof data.detail === "string") ? data.detail : `Something went wrong (${r.status})`);
     e.status = r.status;
-    if (r.status === 401 && key && key === KEY) signOut();
+    if (r.status === 401 && key && key === KEY) signOut(key.startsWith("rly_sess_") ? "Your session ended. Sign in again." : undefined);
     throw e;
   }
   return data;
@@ -90,6 +105,7 @@ function presence(t) {
   return s < 120 ? "on" : s < 86400 ? "recent" : "off";
 }
 const isOwner = () => ME && (ME.owner || ME.role === "admin");
+const slug = (input) => input.addEventListener("input", () => { const v = input.value.toLowerCase().replace(/\s+/g, "-"); if (v !== input.value) input.value = v; });
 
 async function copy(text, btn, label = "Copy") {
   try { await navigator.clipboard.writeText(text); }
@@ -107,10 +123,17 @@ function copyField(k, value, { secret = false } = {}) {
     h("div", { class: "grow" }, h("div", { class: "k", text: k }),
       h("div", { class: "val", text: secret ? value.slice(0, 10) + "•".repeat(14) : value })), b);
 }
+// a long message to paste: folded preview, one big copy button
 function copyBlock(text, label = "Copy") {
-  const b = h("button", { class: "btn quiet press", type: "button" }, label);
+  const b = h("button", { class: "btn press", type: "button" }, label);
   b.addEventListener("click", () => copy(text, b, label));
-  return h("div", { class: "stack tight" }, h("pre", { class: "block", text }), b);
+  const lines = text.split("\n").length;
+  const card = h("div", { class: "msgcard" + (lines > 5 ? " folded" : "") });
+  const more = lines > 5 ? h("button", { class: "link sm", type: "button", onclick: () => {
+    card.classList.toggle("folded"); more.textContent = card.classList.contains("folded") ? "Show all" : "Fold";
+  } }, "Show all") : null;
+  card.append(h("pre", { class: "block", text }), ...(more ? [h("div", { class: "top" }, more)] : []), b);
+  return card;
 }
 function seg(options, value, onChange) {
   const box = h("div", { class: "seg", role: "group" });
@@ -119,14 +142,13 @@ function seg(options, value, onChange) {
   set(value);
   return box;
 }
-function tick() {
-  return svg("0 0 24 24", [{ tag: "circle", cx: "12", cy: "12", r: "11" }, { d: "M7 12.5l3.2 3.2L17 9" }], "tick");
+function tick(cls = "tick") {
+  return svg("0 0 24 24", [{ tag: "circle", cx: "12", cy: "12", r: "11" }, { d: "M7 12.5l3.2 3.2L17 9" }], cls);
 }
+function bigTick() { return h("span", { class: "burst" }, tick("tick big")); }
 function statusLine(text, ok = false) {
-  const el = h("div", { class: "status" + (ok ? " ok" : "") }, ok ? tick() : h("span", { class: "dot wait" }), h("span", { text }));
-  return el;
+  return h("div", { class: "status" + (ok ? " ok" : "") }, ok ? tick() : h("span", { class: "dot wait" }), h("span", { text }));
 }
-function setStatus(el, text, ok) { el.replaceWith(statusLine(text, ok)); }
 
 // ------------------------------------------------------------------ provider marks
 // Logos belong to their owners and say only which provider an agent runs on (see logos/NOTICE.md).
@@ -146,10 +168,11 @@ function providerOf(a) {
   return "other";
 }
 function avatar(a, size = 40, withPresence = false) {
-  const p = typeof a === "string" ? a : providerOf(a);
-  const tile = h("span", { class: "av" + (p === "person" ? " person" : ""), style: `--s:${size}px` });
+  const p = typeof a === "string" ? a : (a.handle === "relay" ? "relay" : providerOf(a));
+  const tile = h("span", { class: "av" + (p === "person" ? " person" : p === "relay" ? " relay" : ""), style: `--s:${size}px` });
   const logo = LOGOS[p];
-  if (logo && logo.src) {
+  if (p === "relay") tile.append(mark(""));
+  else if (logo && logo.src) {
     if (logo.full) tile.classList.add("full");
     tile.append(h("img", { src: logo.src, alt: "", draggable: "false" }));
   } else if (logo) {
@@ -165,11 +188,27 @@ function avatar(a, size = 40, withPresence = false) {
   if (withPresence && typeof a !== "string") tile.append(h("span", { class: "badge dot " + presence(a.last_seen) }));
   return tile;
 }
+const appAvatar = (a, size) => avatar(a.id === "person" ? "person" : a.id === "other" ? "other" : a.provider, size);
+
+// app ---- relay: dashed while waiting, draws solid with a tick when the first call lands
+function linkup(left) {
+  const relay = avatar("relay", 64);
+  const line = svg("0 0 100 40", [{ tag: "line", x1: "4", y1: "20", x2: "96", y2: "20", class: "base" },
+    { tag: "line", x1: "4", y1: "20", x2: "96", y2: "20", class: "live", pathLength: "100" }], "line");
+  line.setAttribute("preserveAspectRatio", "none");
+  const node = h("span", { class: "node" }, h("span", { class: "dot wait" }));
+  const el = h("div", { class: "linkup" }, left, h("div", { class: "wire" }, line, node), relay);
+  el.connect = () => { if (el.classList.contains("done")) return; el.classList.add("done"); node.replaceChildren(tick()); };
+  return el;
+}
 
 // ------------------------------------------------------------------ screens + navigation
 function head(title, lede, right) {
   return h("div", { class: "head" }, h("div", null, h("h1", { class: "title", text: title }),
     lede ? h("p", { class: "lede", text: lede }) : null), right || null);
+}
+function heroHead(pic, title, lede) {
+  return h("div", { class: "hero" }, pic, h("h1", { class: "title", text: title }), lede ? h("p", { class: "lede", text: lede }) : null);
 }
 function screen(name, { tab = null, push = false, pop = false } = {}, ...kids) {
   clearInterval(timer); timer = null;
@@ -185,58 +224,124 @@ function screen(name, { tab = null, push = false, pop = false } = {}, ...kids) {
   window.scrollTo(0, 0);
   return view;
 }
+let current = null, popping = false;
 function go(fn, ...args) { trail.push(current); current = () => fn(...args); fn(...args); }
-let current = null;
-function goTab(fn) { trail.length = 0; current = fn; fn(); }
+function goTab(fn) { trail.length = 0; current = fn; drawMe(); fn(); }
 back.addEventListener("click", () => {
   const prev = trail.pop();
   current = prev || agents;
   popping = true; (prev || agents)(); popping = false;
 });
-let popping = false;
 const motion = () => (popping ? { pop: true } : { push: true });
 for (const b of topseg.children) b.addEventListener("click", () => goTab(b.dataset.go === "activity" ? activity : agents));
 window.addEventListener("scroll", () => bar.classList.toggle("scrolled", window.scrollY > 8), { passive: true });
+function drawMe() {
+  barRight.replaceChildren(ME && ME.role !== "admin" ? h("button", { class: "mebtn press", type: "button", "aria-label": "You", onclick: () => go(meScreen) },
+    avatar({ handle: ME.handle, role: "human" }, 32)) : "");
+}
 
-function signOut() { KEY = null; ME = null; store.clear(); trail.length = 0; signin(); }
+function signOut(message) { KEY = null; ME = null; store.clear(); trail.length = 0; clearInterval(timer); timer = null; signin(message); }
+function userSignOut() {
+  const k = KEY;
+  KEY = null;    // first, so a 401 here can't loop back into signOut
+  if (k)      // ends an email session on the hub; a key stays valid (the hub ignores those)
+    fetch("/auth/signout", { method: "POST", headers: { Authorization: "Bearer " + k }, cache: "no-store" }).catch(() => {});
+  signOut();
+}
 
 // ------------------------------------------------------------------ sign in
-function signin(message) {
+function welcomeView(...kids) {
   bar.classList.add("hidden");
+  app.replaceChildren(h("div", { class: "welcome v-rise" }, h("div", { class: "welcome-in" }, ...kids)));
+}
+function brand(title = "Relay", lede) {
+  // no lede: the agents themselves say what this is
+  const crew = h("div", { class: "crew", "aria-hidden": "true" }, ...["claude", "codex", "muse", "gemini", "cursor"].map((p) => avatar(p, 34)));
+  return h("div", { class: "brandline" }, mark("mark hello"), h("h1", { class: "title", text: title }), lede ? h("p", { class: "lede", text: lede }) : crew);
+}
+
+function signin(message, mode) {
+  mode = mode || (AUTH.email ? "email" : "key");
+  if (mode === "email") return emailSignin(message);
   const input = h("input", { class: "field", type: "password", placeholder: "Your Relay key", autocomplete: "current-password",
                               spellcheck: "false", "aria-label": "Your Relay key" });
-  const remember = h("input", { type: "checkbox", checked: true });
-  const err = h("p", { class: "err", text: message || "" });
+  const remember = h("input", { type: "checkbox", checked: store.remember() });
+  const err = h("p", { class: "err", role: "alert", text: message || "" });
   const btn = h("button", { class: "btn press", type: "submit" }, "Sign in");
-  const form = h("form", { class: "stack", onsubmit: async (e) => {
+  const form = h("form", { class: "stack tight", onsubmit: async (e) => {
     e.preventDefault();
     const k = input.value.trim(); if (!k) return;
     btn.disabled = true; err.textContent = "";
     try {
       const me = await api("GET", "/agents/me", undefined, k);
+      store.remember(remember.checked);
       if (me.role === "admin") { KEY = k; ME = me; return claim(remember.checked); }   // first-time setup
       KEY = k; ME = me; store.set(k, remember.checked); goTab(agents);
     } catch (x) { err.textContent = x.status === 401 ? "That key isn't recognised." : x.message; btn.disabled = false; }
   } },
-    input,
-    h("label", { class: "check" }, remember, "Keep me signed in on this device"),
-    h("div", null, btn, err),
-    h("p", { class: "hint", style: "text-align:center", text: "First time? Use the admin token from Railway once; you'll get your own key." }));
-  app.replaceChildren(h("div", { class: "welcome v-rise" }, h("div", { class: "welcome-in" },
-    h("div", { class: "brandline" }, mark(), h("h1", { class: "title", text: "Relay" }),
-      h("p", { class: "lede", style: "margin:0", text: "Your agents, in one place." })),
-    form)));
+    input, btn, h("label", { class: "check" }, remember, "Keep me signed in"), err);
+  welcomeView(brand(), form,
+    h("div", { class: "stack tight center" },
+      h("p", { class: "hint", style: "margin:0", text: "First time? Use your admin token." }),
+      AUTH.email ? h("div", { class: "alt" }, h("button", { class: "link sm", type: "button", onclick: () => signin(null, "email") }, "Use email instead")) : null));
   input.focus();
+}
+
+function emailSignin(message, prefill) {
+  const input = h("input", { class: "field", type: "email", placeholder: "you@example.com", autocomplete: "email", spellcheck: "false",
+                              "aria-label": "Email", value: prefill || "" });
+  const remember = h("input", { type: "checkbox", checked: store.remember() });
+  const err = h("p", { class: "err", role: "alert" });
+  const btn = h("button", { class: "btn press", type: "submit" }, "Email me a link");
+  const form = h("form", { class: "stack tight", onsubmit: async (e) => {
+    e.preventDefault();
+    const email = input.value.trim(); if (!email || !email.includes("@")) { err.textContent = "Type your email first."; return; }
+    btn.disabled = true; err.textContent = "";
+    store.remember(remember.checked);
+    try { await api("POST", "/auth/email", { email }, null); checkEmail(email); }
+    catch (x) { err.textContent = x.message; btn.disabled = false; }
+  } }, input, btn, h("label", { class: "check" }, remember, "Keep me signed in"), err);
+  welcomeView(brand(), message ? h("div", { class: "notice", role: "alert", text: message }) : null, form,
+    h("div", { class: "alt" }, h("button", { class: "link sm muted", type: "button", onclick: () => signin(null, "key") }, "Use a key instead")));
+  input.focus();
+}
+
+function envelope() {
+  const s = svg("0 0 112 92", [
+    { tag: "rect", x: "8", y: "18", width: "96", height: "66", rx: "12", class: "paper body" },
+    { d: "M20 18h72a12 12 0 0 1 12 12v42a12 12 0 0 1-12 12H20A12 12 0 0 1 8 72V30a12 12 0 0 1 12-12z", class: "edge body" },
+    { d: "M12 26l44 30 44-30", class: "edge body" },
+    { tag: "circle", cx: "88", cy: "22", r: "14", class: "seal" },
+  ], "envelope");
+  return s;
+}
+function checkEmail(email) {
+  let left = 30;
+  const resend = h("button", { class: "link sm", type: "button", disabled: true });
+  const note = h("p", { class: "hint center", style: "margin:0", role: "status" });
+  const paint = () => { resend.textContent = left > 0 ? `Resend in ${left}s` : "Resend"; resend.disabled = left > 0; };
+  const count = () => { clearInterval(timer); left = 30; paint(); timer = setInterval(() => { left--; paint(); if (left <= 0) { clearInterval(timer); timer = null; } }, 1000); };
+  resend.addEventListener("click", async () => {
+    resend.disabled = true;
+    try { await api("POST", "/auth/email", { email }, null); note.textContent = "Sent again."; count(); }
+    catch (x) { note.textContent = x.message; resend.disabled = false; }
+  });
+  const addr = h("p", { class: "lede", style: "margin:0;color:var(--ink);font-weight:600;overflow-wrap:anywhere", text: email });
+  welcomeView(h("div", { class: "brandline" }, envelope(), h("h1", { class: "title", text: "Check your email" }), addr,
+      h("p", { class: "lede", style: "margin:0", text: "Tap the link to sign in." })),
+    h("div", { class: "stack tight center" }, h("div", { class: "alt" }, resend), note,
+      h("div", { class: "alt" }, h("button", { class: "link sm muted", type: "button", onclick: () => { clearInterval(timer); timer = null; signin(null, "key"); } }, "Use a key instead"))));
+  count();
 }
 
 // first sign-in with the admin token: make the hub yours, then forget the token
 function claim(remember) {
   const name = h("input", { class: "field", type: "text", placeholder: "Your name, like kobby", autocomplete: "username",
                              spellcheck: "false", maxlength: "32", "aria-label": "Your name" });
-  name.addEventListener("input", () => { const v = name.value.toLowerCase().replace(/\s+/g, "-"); if (v !== name.value) name.value = v; });
-  const err = h("p", { class: "err" });
+  slug(name);
+  const err = h("p", { class: "err", role: "alert" });
   const btn = h("button", { class: "btn press", type: "submit" }, "Continue");
-  const form = h("form", { class: "stack", onsubmit: async (e) => {
+  const form = h("form", { class: "stack tight", onsubmit: async (e) => {
     e.preventDefault();
     const handle = name.value.trim(); if (!handle) { err.textContent = "Type your name first."; return; }
     btn.disabled = true; err.textContent = "";
@@ -246,38 +351,44 @@ function claim(remember) {
       store.set(r.token, remember);
       const c = h("button", { class: "btn quiet press", type: "button" }, "Copy my key");
       c.addEventListener("click", () => copy(r.token, c, "Copy my key"));
-      app.replaceChildren(h("div", { class: "welcome v-rise" }, h("div", { class: "welcome-in" },
-        h("div", { class: "brandline" }, h("div", { class: "status ok" }, tick()),
-          h("h1", { class: "title", text: `Welcome, ${r.handle}` }),
-          h("p", { class: "lede", style: "margin:0", text: "This hub is yours. This device remembers you. Keep a copy of your key in your password manager to sign in elsewhere." })),
-        h("div", { class: "stack tight" }, c, h("button", { class: "btn press", type: "button", onclick: () => goTab(agents) }, "Open Relay")))));
+      welcomeView(h("div", { class: "brandline" }, bigTick(), h("h1", { class: "title", text: `Welcome, ${r.handle}` }),
+          h("p", { class: "lede", text: "This hub is yours. Save your key somewhere safe." })),
+        h("div", { class: "stack tight" }, c, h("button", { class: "btn press", type: "button", onclick: () => goTab(agents) }, "Open Relay")));
     } catch (x) { err.textContent = x.message; btn.disabled = false; }
-  } }, name, h("div", null, btn, err));
-  app.replaceChildren(h("div", { class: "welcome v-rise" }, h("div", { class: "welcome-in" },
-    h("div", { class: "brandline" }, mark(), h("h1", { class: "title", text: "Make it yours" }),
-      h("p", { class: "lede", style: "margin:0", text: "Pick the name you'll use here. You get your own key, and the admin token can go back in the drawer." })),
-    form)));
+  } }, name, btn, err);
+  welcomeView(brand("Make it yours", "Pick the name you'll go by."), form);
   name.focus();
 }
 
 // ------------------------------------------------------------------ agents
+function blank(title, sub, action) {
+  return h("div", { class: "blank" },
+    h("div", { class: "orbit", "aria-hidden": "true" }, h("span", { class: "ghost g1" }), h("span", { class: "ghost g2" }),
+      h("span", { class: "ghost g3" }), h("span", { class: "ghost g4" }), h("span", { class: "core" }, mark())),
+    h("div", { class: "t", text: title }), sub ? h("div", { text: sub }) : null, action || null);
+}
 async function agents() {
-  const list = h("div", { class: "group people stack-in" }, h("div", { class: "empty", text: "Loading…" }));
-  const add = isOwner() ? h("button", { class: "btn small press", type: "button", onclick: () => go(addPick) }, "Add") : null;
-  screen("agents", { tab: "agents" }, head("Agents", null, add), list,
-    h("p", { class: "hint", text: "Green means active in the last two minutes." }));
+  const list = h("div", { class: "group people" }, h("div", { class: "empty", text: "Loading…" }));
+  const add = isOwner() ? h("button", { class: "btn small press", type: "button", onclick: () => go(addPick) }, icon("plus", "2.4"), "Add") : null;
+  const view = screen("agents", { tab: "agents" }, head("Agents", null, add), list);
   let first = true;
   async function refresh() {
     try {
       const ags = await api("GET", "/agents");
       const rows = ags.filter((a) => a.handle !== (ME && ME.handle)).map((a) =>
         h("button", { class: "cell press", type: "button", onclick: () => go(profile, a.handle) },
-          avatar(a, 44, true),
+          avatar(a, 46, true),
           h("div", { class: "grow" }, h("div", { class: "t", text: a.handle }),
             h("div", { class: "s", text: `${PROVIDER_NAMES[providerOf(a)] || "Other"} · ${ago(a.last_seen)}` })),
-          h("span", { class: "chev", "aria-hidden": "true" }, "›")));
-      list.replaceChildren(...(rows.length ? rows : [h("div", { class: "empty", text: "No agents yet. Tap Add to bring your first one in." })]));
-      if (first) { list.classList.add("stagger"); first = false; } else list.classList.remove("stagger");
+          chev()));
+      if (rows.length) {
+        if (!list.isConnected) view.querySelector(".blank").replaceWith(list);
+        list.replaceChildren(...rows);
+        if (first) list.classList.add("stagger"); else list.classList.remove("stagger");
+      } else if (list.isConnected) {
+        list.replaceWith(blank("No agents yet", isOwner() ? "Add one and it gets an address." : null));
+      }
+      first = false;
     } catch (x) { if (x.status !== 401) list.replaceChildren(h("div", { class: "empty", text: x.message })); }
   }
   await refresh();
@@ -286,115 +397,133 @@ async function agents() {
 
 // ------------------------------------------------------------------ add: pick the app
 const APPS = [
-  { id: "claude_app", label: "Claude", sub: "claude.ai · Desktop · phone", provider: "claude", style: "connector", name: "claude" },
+  { id: "claude_app", label: "Claude", sub: "app", provider: "claude", style: "connector", name: "claude" },
   { id: "claude_code", label: "Claude Code", sub: "terminal", provider: "claude", style: "invite", connect: "claude-code", name: "claude-code" },
   { id: "codex", label: "Codex", sub: "CLI · app", provider: "codex", style: "invite", connect: "codex", name: "codex" },
   { id: "muse", label: "Muse", sub: "Meta", provider: "muse", style: "connector", name: "muse" },
   { id: "gemini", label: "Gemini CLI", sub: "terminal", provider: "gemini", style: "connector", name: "gemini" },
   { id: "cursor", label: "Cursor", sub: "editor", provider: "cursor", style: "connector", name: "cursor" },
-  { id: "other", label: "Other agent", sub: "any MCP app", provider: null, style: "connector", name: "agent" },
-  { id: "person", label: "Person", sub: "a teammate", provider: null, style: "person", name: "" },
+  { id: "other", label: "Other", sub: "any MCP app", provider: null, style: "connector", name: "agent" },
+  { id: "person", label: "Person", sub: "teammate", provider: null, style: "person", name: "" },
 ];
 
 function addPick() {
   const grid = h("div", { class: "pick stagger" });
   for (const a of APPS) {
     grid.append(h("button", { class: "opt press", type: "button", onclick: () => go(addName, a) },
-      avatar(a.id === "person" ? "person" : a.id === "other" ? "other" : a.provider, 48),
-      h("span", { text: a.label }), h("span", { class: "sub", text: a.sub })));
+      appAvatar(a, 52), h("span", { text: a.label }), h("span", { class: "sub", text: a.sub })));
   }
-  screen("add", motion(), head("Add", "Where does it live? Pick the app and Relay sets up the rest."), grid);
+  screen("add", motion(), head("Add", "Where does it live?"), grid);
 }
 
 async function addName(a) {
   let taken = new Set();
   try { taken = new Set((await api("GET", "/agents")).map((x) => x.handle)); } catch {}
+  const person = a.style === "person", byEmail = person && AUTH.email;
   let suggestion = a.name;
   if (suggestion) { let i = 2; while (taken.has(suggestion)) suggestion = `${a.name}-${i++}`; }
-  const name = h("input", { class: "field", type: "text", value: suggestion, placeholder: a.id === "person" ? "Their name" : "Name",
+  const name = h("input", { class: "field", type: "text", value: suggestion, placeholder: person ? "Their name" : "Name",
                              spellcheck: "false", maxlength: "32", "aria-label": "Name" });
-  name.addEventListener("input", () => { const v = name.value.toLowerCase().replace(/\s+/g, "-"); if (v !== name.value) name.value = v; });
-  const err = h("p", { class: "err" });
-  const btn = h("button", { class: "btn press", type: "submit" }, "Continue");
+  slug(name);
+  const email = byEmail ? h("input", { class: "field", type: "email", placeholder: "Their email", autocomplete: "off", spellcheck: "false", "aria-label": "Email" }) : null;
+  const err = h("p", { class: "err", role: "alert" });
+  const btn = h("button", { class: "btn press", type: "submit" }, byEmail ? "Add" : "Continue");
   const works = h("button", { type: "button", class: "switch", role: "switch", "aria-checked": "false", "aria-label": "Does work for others",
     onclick: () => works.setAttribute("aria-checked", String(works.getAttribute("aria-checked") !== "true")) });
   const extra = a.style === "invite" ? h("div", { class: "group" }, h("div", { class: "cell" },
-    h("div", { class: "grow" }, h("div", { class: "t", text: "Does work for others" }),
-      h("div", { class: "s", text: "Downloads and breaks down videos. Needs yt-dlp and ffmpeg on that computer." })), works)) : null;
-  const form = h("form", { class: "stack", onsubmit: async (e) => {
+    h("div", { class: "grow" }, h("div", { class: "t plain", text: "Does work for others" }),
+      h("div", { class: "s", text: "Fetches and cuts videos. Needs yt-dlp + ffmpeg." })), works)) : null;
+  const form = h("form", { class: "stack tight", onsubmit: async (e) => {
     e.preventDefault();
     const handle = name.value.trim(); if (!handle) { err.textContent = "Give it a name."; return; }
+    if (email && !email.value.trim().includes("@")) { err.textContent = "Add their email."; return; }
     btn.disabled = true; err.textContent = "";
     try {
-      if (a.style === "connector") {
+      if (byEmail) {
+        const r = await api("POST", "/people", { handle, email: email.value.trim() });
+        go(personAdded, r);
+      } else if (a.style === "connector") {
         const r = await api("POST", "/agents", { handle, provider: a.provider, role: "agent" });
         go(connectGuide, a, r);
       } else {
         const caps = works.getAttribute("aria-checked") === "true" ? ["fetch", "digest"] : [];
         const inv = await api("POST", "/invites", { handle, hours: 24, provider: a.provider,
-          role: a.style === "person" ? "human" : "agent", caps });
+          role: person ? "human" : "agent", caps });
         go(inviteGuide, a, inv);
       }
     } catch (x) { err.textContent = x.message; btn.disabled = false; }
-  } }, name, extra, h("div", null, btn, err));
-  screen("addname", motion(), h("div", { class: "head" }, h("div", null,
-    h("h1", { class: "title", text: a.id === "person" ? "Who is it?" : `Name your ${a.label}` }),
-    h("p", { class: "lede", text: "This is its address on Relay. Others reach it by this name." })), avatar(a.id === "person" ? "person" : a.id === "other" ? "other" : a.provider, 56)), form);
+  } }, name, email, extra, h("div", { style: "margin-top:8px" }, btn), err);
+  screen("addname", motion(), heroHead(appAvatar(a, 72), person ? "Who is it?" : `Name your ${a.label}`,
+    person ? (byEmail ? "They sign in with their email." : "Their name on Relay.") : "Its address on Relay."), form);
   name.focus(); name.select();
 }
+
+function personAdded(r) {
+  screen("added", motion(), heroHead(bigTick(), `${r.handle} is in`, null),
+    h("div", { class: "stack" },
+      h("div", { class: "group" }, h("div", { class: "cell" }, avatar("person", 40), h("div", { class: "grow" },
+        h("div", { class: "t", text: r.handle }), h("div", { class: "s", text: r.email || "" })))),
+      h("div", { class: "stack tight" }, h("p", { class: "hint", style: "margin:0 8px", text: "They sign in here with that email:" }), copyField("Sign-in page", `${ORIGIN}/app`)),
+      h("button", { class: "btn press", type: "button", onclick: () => goTab(agents) }, "Done")));
+}
+
+function stickyStatus(text, ok) { const s = statusLine(text, ok); s.classList.add("sticky-status"); if (ok) s.classList.add("ok"); return s; }
 
 // connector apps: the agent exists now; show exactly what to paste where, then confirm the first call
 function connectGuide(a, created) {
   const url = `${ORIGIN}/mcp`, key = created.token, handle = created.handle;
+  const before = created.last_seen || null;    // after a new key, wait for a fresh call, not the old one
   const bearer = `Bearer ${key}`;
+  const say = (...parts) => h("span", null, ...parts);
+  const b = (t) => h("b", { text: t });
   let steps;
   if (a.id === "claude_app") {
     steps = [
-      [h("span", { text: "In Claude, open Settings → Connectors → Add custom connector." })],
-      [h("span", { text: "Fill in the name and server URL:" }), copyField("Name", "Relay"), copyField("Remote MCP server URL", url)],
-      [h("span", { text: "Set Authentication to “No sign in”, then add one request header:" }),
+      [say("In Claude: ", b("Settings → Connectors → Add custom connector"))],
+      [copyField("Name", "Relay"), copyField("Remote MCP server URL", url)],
+      [say("Authentication: ", b("No sign in"), ". Add one header:"),
         copyField("Header name", "Authorization"), copyField("Header value", bearer, { secret: true })],
-      [h("span", { text: "Save. In any chat, ask Claude: “Who are my Relay contacts?”" })],
+      [say("Save, then ask Claude: ", b("“Who are my Relay contacts?”"))],
     ];
   } else if (a.id === "muse") {
     const msg = `Please add a custom connector called Relay.\nServer URL: ${url}\nIt's an MCP server. I'll paste the key into your secure entry page.\nOnce it's connected, call check_replies and answer anything waiting with reply.`;
     steps = [
-      [h("span", { text: "Send Muse this message:" }), copyBlock(msg, "Copy message")],
-      [h("span", { text: "When Muse opens its secure entry page, paste this key there, never in the chat:" }), copyField("Key", key, { secret: true })],
-      [h("span", { text: "Ask Muse to check Relay on a recurring task, as often as it allows. It can't be woken instantly yet." })],
+      [say("Send Muse this:"), copyBlock(msg, "Copy message")],
+      [say("Paste the key in Muse's ", b("secure entry page"), ", never in the chat:"), copyField("Key", key, { secret: true })],
+      [say("Ask Muse to check Relay on a recurring task. It can't be woken instantly yet.")],
     ];
   } else if (a.id === "gemini") {
     const json = JSON.stringify({ mcpServers: { relay: { httpUrl: url, headers: { Authorization: bearer } } } }, null, 2);
     steps = [
-      [h("span", { text: "Add this to ~/.gemini/settings.json (merge it into mcpServers if you already have some):" }), copyBlock(json)],
-      [h("span", { text: "Restart Gemini CLI and run /mcp. Relay should be listed." })],
+      [say("Merge into ", b("~/.gemini/settings.json"), ":"), copyBlock(json)],
+      [say("Restart Gemini CLI and run ", b("/mcp"), ".")],
     ];
   } else if (a.id === "cursor") {
     const json = JSON.stringify({ mcpServers: { relay: { url, headers: { Authorization: bearer } } } }, null, 2);
     steps = [
-      [h("span", { text: "Add this to ~/.cursor/mcp.json (merge it into mcpServers if you already have some):" }), copyBlock(json)],
-      [h("span", { text: "Open Cursor Settings → MCP and make sure Relay is on." })],
+      [say("Merge into ", b("~/.cursor/mcp.json"), ":"), copyBlock(json)],
+      [say(b("Cursor Settings → MCP"), ": turn Relay on.")],
     ];
   } else {
     steps = [
-      [h("span", { text: "In the app's connector or MCP settings, add a remote server:" }), copyField("Server URL", url)],
-      [h("span", { text: "With this header:" }), copyField("Header name", "Authorization"), copyField("Header value", bearer, { secret: true })],
+      [say("Add a remote MCP server:"), copyField("Server URL", url)],
+      [say("With this header:"), copyField("Header name", "Authorization"), copyField("Header value", bearer, { secret: true })],
     ];
   }
-  let status = statusLine(`Waiting for ${handle} to connect…`);
-  status.classList.add("sticky-status");
+  const link = linkup(appAvatar(a, 64));
+  let status = stickyStatus(`Waiting for ${handle}…`);
   const list = h("ol", { class: "steps" }, ...steps.map((parts) => h("li", null, h("div", null, ...parts))));
-  const done = h("button", { class: "btn press", type: "button", onclick: () => goTab(agents) }, "Done");
-  screen("connect", motion(), h("div", { class: "head" }, h("div", null, h("h1", { class: "title", text: `Connect ${a.label}` }),
-    h("p", { class: "lede", text: "Copy each field into the app. This page notices the moment it connects." })), avatar(a.id === "other" ? "other" : a.provider, 56)),
-    h("div", { class: "stack" }, status, list, done),
-    h("p", { class: "hint", text: "The key is shown only on this page. If you leave before using it, open the agent and issue a new one." }));
+  const done = h("button", { class: "btn ghost press", type: "button", onclick: () => goTab(agents) }, "Done");
+  screen("connect", motion(), h("div", { class: "hero" }, link, h("h1", { class: "title", text: `Connect ${a.label}` })),
+    h("div", { class: "stack" }, status, list, done,
+      h("p", { class: "hint center", style: "margin-top:0", text: "The key shows only here. Lost it? Issue a new one from the agent." })));
   timer = setInterval(async () => {
     try {
       const ag = (await api("GET", "/agents")).find((x) => x.handle === handle);
-      if (ag && ag.last_seen) {
+      if (ag && ag.last_seen && ag.last_seen !== before) {
         clearInterval(timer); timer = null;
-        const s2 = statusLine(`${handle} is connected`, true); s2.classList.add("sticky-status"); status.replaceWith(s2); status = s2;
+        const s2 = stickyStatus(`${handle} is connected`, true); status.replaceWith(s2); status = s2;
+        link.connect(); done.classList.replace("ghost", "done");
       }
     } catch {}
   }, 2500);
@@ -423,60 +552,100 @@ function inviteGuide(a, inv) {
   const code = inv.code, handle = inv.handle;
   const person = a.style === "person";
   const link = `${ORIGIN}/join#${code}`;
-  let status = statusLine(`Waiting for ${handle} to join…`);
-  status.classList.add("sticky-status");
+  const diagram = linkup(appAvatar(a, 64));
+  const done = h("button", { class: "btn ghost press", type: "button", onclick: () => goTab(agents) }, "Done");
+  let status = stickyStatus(`Waiting for ${handle}…`);
   const body = person
-    ? h("ol", { class: "steps" }, h("li", null, h("div", null, h("span", { text: "Send them this link privately. It works once, for 24 hours:" }), copyField("Invite link", link))),
-        h("li", null, h("div", null, h("span", { text: "They tap Accept and get their own key." }))))
-    : h("ol", { class: "steps" }, h("li", null, h("div", null, h("span", { text: `Paste this into ${a.label}. It sets itself up:` }), copyBlock(agentPrompt(inv, code, a.connect), "Copy message"))),
-        h("li", null, h("div", null, h("span", { text: "That's it. This page updates when it joins." }))));
-  screen("invite", motion(), h("div", { class: "head" }, h("div", null, h("h1", { class: "title", text: person ? `Invite ${handle}` : `Bring in ${a.label}` }),
-    h("p", { class: "lede", text: "The code works once and expires in 24 hours." })), avatar(person ? "person" : a.provider, 56)),
-    h("div", { class: "stack" }, status, body, h("button", { class: "btn press", type: "button", onclick: () => goTab(agents) }, "Done")));
+    ? h("div", { class: "stack tight" }, h("p", { class: "hint", style: "margin:0 8px", text: "Send privately. Works once, for 24 h." }), copyField("Invite link", link))
+    : h("div", { class: "stack tight" }, h("p", { class: "hint", style: "margin:0 8px", text: `Paste into ${a.label}. It sets itself up. Code works once, for 24 h.` }),
+        copyBlock(agentPrompt(inv, code, a.connect), "Copy message"));
+  screen("invite", motion(), h("div", { class: "hero" }, diagram, h("h1", { class: "title", text: person ? `Invite ${handle}` : `Bring in ${a.label}` })),
+    h("div", { class: "stack" }, status, body, done));
   let joined = false;
   timer = setInterval(async () => {
     try {
       const ag = (await api("GET", "/agents")).find((x) => x.handle === handle);
-      if (ag && !joined) { joined = true; const s2 = statusLine(`${handle} joined`, true); s2.classList.add("sticky-status"); status.replaceWith(s2); status = s2; }
+      if (ag && !joined) { joined = true; const s2 = stickyStatus(`${handle} joined`, true); status.replaceWith(s2); status = s2; }
       if (ag && ag.last_seen) {
         clearInterval(timer); timer = null;
-        const s3 = statusLine(`${handle} is connected`, true); s3.classList.add("sticky-status"); status.replaceWith(s3); status = s3;
+        const s3 = stickyStatus(`${handle} is connected`, true); status.replaceWith(s3); status = s3; diagram.connect(); done.classList.replace("ghost", "done");
       }
     } catch {}
   }, 2500);
 }
 
 // ------------------------------------------------------------------ profile
+// the email a person signs in with; the owner can set, change or remove it
+function emailRow(a, label = "Email") {
+  const wrap = h("div");
+  function show() {
+    wrap.replaceChildren(h("button", { class: "cell", type: "button", onclick: edit },
+      h("div", { class: "grow t plain", text: label }), h("span", { class: "v blue", text: a.email || "Add" }), chev()));
+  }
+  function edit() {
+    const input = h("input", { class: "field", type: "email", value: a.email || "", placeholder: "name@example.com", spellcheck: "false", "aria-label": "Email" });
+    const err = h("p", { class: "err", role: "alert" });
+    const save = h("button", { class: "btn small press", type: "submit" }, "Save");
+    const path = `/people/${encodeURIComponent(a.handle)}/email`;
+    wrap.replaceChildren(h("form", { class: "inlineform", onsubmit: async (e) => {
+      e.preventDefault();
+      const v = input.value.trim(); if (!v.includes("@")) { err.textContent = "That doesn't look like an email."; return; }
+      save.disabled = true;
+      try { const r = await api("PUT", path, { email: v }); a.email = r.email || v; show(); }
+      catch (x) { err.textContent = x.message; save.disabled = false; }
+    } }, h("div", { class: "t plain", style: "padding-top:10px", text: label }), input,
+      h("div", { class: "row" }, save,
+        a.email ? h("button", { class: "btn small danger press", type: "button", onclick: async () => {
+          try { await api("DELETE", path); a.email = null; show(); } catch (x) { err.textContent = x.message; }
+        } }, "Remove") : null,
+        h("button", { class: "btn small ghost press", type: "button", onclick: show }, "Cancel")), err));
+    input.focus();
+  }
+  show();
+  return wrap;
+}
+
 async function profile(handle) {
   let a;
   try { a = (await api("GET", "/agents")).find((x) => x.handle === handle); } catch {}
   if (!a) return goTab(agents);
   const p = providerOf(a);
   const quick = h("div", { class: "quick" },
-    h("button", { class: "q press", type: "button", onclick: () => go(thread, null, [a.handle]) },
-      svg("0 0 24 24", [{ d: "M4 6.5A2.5 2.5 0 0 1 6.5 4h11A2.5 2.5 0 0 1 20 6.5v8a2.5 2.5 0 0 1-2.5 2.5H10l-4.5 3.5V17H6.5A2.5 2.5 0 0 1 4 14.5z", fill: "none", stroke: "currentColor", "stroke-width": "1.8", "stroke-linejoin": "round" }]), "Message"),
-    isOwner() && a.role !== "human" ? h("button", { class: "q press", type: "button", onclick: () => go(wake, a) },
-      svg("0 0 24 24", [{ d: "M12 3a6 6 0 0 0-6 6v3.5L4.5 15h15L18 12.5V9a6 6 0 0 0-6-6zM9.5 18a2.5 2.5 0 0 0 5 0", fill: "none", stroke: "currentColor", "stroke-width": "1.8", "stroke-linecap": "round", "stroke-linejoin": "round" }]), "Wake-up") : null);
+    h("button", { class: "q press", type: "button", onclick: () => go(thread, null, [a.handle]) }, icon("chat"), "Message"),
+    isOwner() && a.role !== "human" ? h("button", { class: "q press", type: "button", onclick: () => go(wake, a) }, icon("bell"), "Wake-up") : null);
   const info = h("div", { class: "group" },
-    h("div", { class: "cell" }, h("div", { class: "grow t" }, "Status"), h("span", { class: "dot " + presence(a.last_seen) }), h("span", { class: "v", text: ago(a.last_seen) })),
     a.role !== "human" ? runsOn(a) : null,
-    (a.caps || []).length ? h("div", { class: "cell" }, h("div", { class: "grow t" }, "Does work"), h("span", { class: "v", text: a.caps.join(", ") })) : null,
-    h("div", { class: "cell" }, h("div", { class: "grow t" }, "Address"), h("span", { class: "v", text: a.handle })));
-  const danger = isOwner() && a.handle !== ME.handle ? h("div", { class: "row", style: "justify-content:space-between;margin:4px 6px" },
+    (a.caps || []).length ? h("div", { class: "cell" }, h("div", { class: "grow t plain" }, "Does work"), h("span", { class: "v", text: a.caps.join(", ") })) : null,
+    a.role === "human" && isOwner() && (AUTH.email || a.email) ? emailRow(a) : null,
+    h("div", { class: "cell" }, h("div", { class: "grow t plain" }, "Address"), h("span", { class: "v", style: "font-family:var(--mono);font-size:14px", text: a.handle })));
+  const danger = isOwner() && a.handle !== ME.handle ? h("div", { class: "spread", style: "margin:2px 8px" },
     h("button", { class: "link sm press", type: "button", onclick: () => newKey(a) }, "Issue new key"),
     h("button", { class: "link sm red press", type: "button", onclick: async () => {
       if (!confirm(`Remove ${a.handle}? Its key stops working at once. Past messages stay.`)) return;
       try { await api("DELETE", `/agents/${encodeURIComponent(a.handle)}`); goTab(agents); } catch (x) { alert(x.message); }
     } }, "Remove")) : null;
+  const sub = h("div", { class: "row small", style: "gap:8px" }, h("span", { class: "dot " + presence(a.last_seen) }),
+    h("span", { text: `${a.role === "human" ? "Person" : PROVIDER_NAMES[p] || "Agent"} · ${ago(a.last_seen)}` }));
   screen("profile", motion(),
-    h("div", { class: "profile" }, avatar(a, 84, true), h("h1", { class: "title", text: a.handle }),
-      h("div", { class: "small", text: `${a.role === "human" ? "Person" : PROVIDER_NAMES[p] || "Agent"} · ${ago(a.last_seen)}` }), quick),
+    h("div", { class: "profile" }, avatar(a, 88), h("h1", { class: "title", text: a.handle }), sub, quick),
     h("div", { class: "stack" }, info, danger));
+}
+
+// you: your email sign-in and sign out
+async function meScreen() {
+  let mine = { handle: ME.handle, role: "human", email: null };
+  try { mine = (await api("GET", "/agents")).find((x) => x.handle === ME.handle) || mine; } catch {}
+  const rows = isOwner() && AUTH.email ? h("div", { class: "group" }, emailRow(mine, "Email sign-in")) : null;
+  screen("me", motion(),
+    h("div", { class: "profile" }, avatar({ handle: ME.handle, role: "human" }, 88), h("h1", { class: "title", text: ME.handle }),
+      ME.owner ? h("span", { class: "pill-tag", text: "Owner" }) : null),
+    h("div", { class: "stack" }, rows,
+      h("button", { class: "btn danger press", type: "button", onclick: userSignOut }, "Sign out")));
 }
 
 function runsOn(a) {
   const val = h("span", { class: "v" + (isOwner() ? " blue" : ""), text: PROVIDER_NAMES[providerOf(a)] || "Other" });
-  if (!isOwner()) return h("div", { class: "cell" }, h("div", { class: "grow t" }, "Runs on"), val);
+  if (!isOwner()) return h("div", { class: "cell" }, h("div", { class: "grow t plain" }, "Runs on"), val);
   const tiles = h("div", { class: "pick hidden", style: "padding:4px 16px 16px" });
   for (const k of ["claude", "codex", "muse", "gemini", "cursor", "copilot", "other"]) {
     tiles.append(h("button", { class: "opt press", type: "button", "aria-checked": String(providerOf(a) === k), onclick: async (e) => {
@@ -486,12 +655,12 @@ function runsOn(a) {
         a.provider = k === "other" ? null : k; val.textContent = PROVIDER_NAMES[k];
         for (const t of tiles.children) t.setAttribute("aria-checked", String(t === picked));
         tiles.classList.add("hidden");
-        const big = app.querySelector(".profile .av"); if (big) big.replaceWith(avatar(a, 84, true));
+        const big = app.querySelector(".profile .av"); if (big) big.replaceWith(avatar(a, 88));
       } catch {}
     } }, avatar(k, 36), h("span", { text: PROVIDER_NAMES[k] })));
   }
-  return h("div", null, h("button", { class: "cell", type: "button", onclick: () => tiles.classList.toggle("hidden") },
-    h("div", { class: "grow t" }, "Runs on"), val), tiles);
+  return h("div", null, h("button", { class: "cell", type: "button", onclick: () => { tiles.classList.toggle("hidden"); if (!tiles.classList.contains("hidden")) tiles.classList.add("stagger"); } },
+    h("div", { class: "grow t plain" }, "Runs on"), val, chev()), tiles);
 }
 
 async function newKey(a) {
@@ -500,10 +669,11 @@ async function newKey(a) {
     const r = await api("POST", `/agents/${encodeURIComponent(a.handle)}/token`);
     const appGuess = APPS.find((x) => x.provider === providerOf(a) && x.style === "connector") || APPS.find((x) => x.id === "other");
     if (a.role === "human") {
-      const c = h("button", { class: "btn quiet press", type: "button" }, "Copy key");
+      const c = h("button", { class: "btn press", type: "button" }, "Copy key");
       c.addEventListener("click", () => copy(r.token, c, "Copy key"));
-      screen("key", motion(), head(`New key for ${a.handle}`, "Shown once. They sign in with it."), h("div", { class: "stack" }, copyField("Key", r.token, { secret: true }), c));
-    } else go(connectGuide, appGuess, { handle: a.handle, token: r.token });
+      screen("key", motion(), heroHead(avatar("person", 72), `New key for ${a.handle}`, "Shown once. They sign in with it."),
+        h("div", { class: "stack tight" }, copyField("Key", r.token, { secret: true }), c));
+    } else go(connectGuide, appGuess, { handle: a.handle, token: r.token, last_seen: a.last_seen });
   } catch (x) { alert(x.message); }
 }
 
@@ -527,49 +697,51 @@ async function wake(a) {
   try { cur = await api("GET", `/agents/${encodeURIComponent(a.handle)}/wake`); } catch {}
   let mode = cur.kind === "webhook" ? "webhook" : cur.kind === "claude_routine" ? "routine" : (providerOf(a) === "claude" ? "routine" : "listen");
   const body = h("div", { class: "stack" });
-  const state = h("p", { class: "hint", text: cur.kind ? `On · ${cur.last_status ? "last wake " + cur.last_status : "not fired yet"}` : "Off. It only sees messages when it checks." });
+  const OFF = "Off · it sees messages when it checks";
+  const state = h("div", { class: "row small", style: "justify-content:center;gap:8px" });
+  const setState = (on, text) => state.replaceChildren(h("span", { class: "dot " + (on ? "on" : "off") }), h("span", { text }));
+  setState(!!cur.kind, cur.kind ? `On · ${cur.last_status ? "last wake " + cur.last_status : "not fired yet"}` : OFF);
   function render() {
     if (mode === "routine") {
-      const url = h("input", { class: "field", type: "text", placeholder: "Fire URL", autocomplete: "off", spellcheck: "false" });
-      const tok = h("input", { class: "field", type: "password", placeholder: "Routine API token", autocomplete: "off" });
-      const err = h("p", { class: "err" }), save = h("button", { class: "btn press", type: "submit" }, "Save and test");
+      const url = h("input", { class: "field", type: "text", placeholder: "Fire URL", autocomplete: "off", spellcheck: "false", "aria-label": "Fire URL" });
+      const tok = h("input", { class: "field", type: "password", placeholder: "Routine API token", autocomplete: "off", "aria-label": "Routine API token" });
+      const err = h("p", { class: "err", role: "alert" }), save = h("button", { class: "btn press", type: "submit" }, "Save and test");
       body.replaceChildren(h("ol", { class: "steps" },
-        h("li", null, h("div", null, h("span", { text: "In Claude, create a routine (claude.ai/code/routines → New task) with these instructions and the Relay connector included:" }), copyBlock(routinePrompt(a.handle), "Copy instructions"))),
-        h("li", null, h("div", null, h("span", { text: "Add an API trigger, then paste its Fire URL and token:" }),
+        h("li", null, h("div", null, h("span", null, "New routine at ", h("b", { text: "claude.ai/code/routines" }), ", with the Relay connector:"), copyBlock(routinePrompt(a.handle), "Copy instructions"))),
+        h("li", null, h("div", null, h("span", { text: "Add an API trigger. Paste its Fire URL and token:" }),
           h("form", { class: "stack tight", onsubmit: async (e) => {
             e.preventDefault(); save.disabled = true; err.textContent = "";
             try {
               await api("PUT", `/agents/${encodeURIComponent(a.handle)}/wake`, { kind: "claude_routine", url: url.value.trim(), token: tok.value.trim() });
               const t = await api("POST", `/agents/${encodeURIComponent(a.handle)}/wake/test`);
-              state.textContent = `On · test wake ${t.status}`; tok.value = "";
+              setState(true, `On · test wake ${t.status}`); tok.value = "";
             } catch (x) { err.textContent = x.message; }
             save.disabled = false;
-          } }, url, tok, h("div", null, save, err))))));
+          } }, url, tok, save, err)))));
     } else if (mode === "webhook") {
-      const url = h("input", { class: "field", type: "text", placeholder: "https://your-server/relay-hook", autocomplete: "off", spellcheck: "false" });
-      const err = h("p", { class: "err" }), out = h("div"), save = h("button", { class: "btn press", type: "submit" }, "Save");
-      body.replaceChildren(h("p", { class: "hint", text: "Relay POSTs a small signed notice (who wrote, never the message) the moment something arrives." }),
+      const url = h("input", { class: "field", type: "text", placeholder: "https://your-server/relay-hook", autocomplete: "off", spellcheck: "false", "aria-label": "Webhook URL" });
+      const err = h("p", { class: "err", role: "alert" }), out = h("div"), save = h("button", { class: "btn press", type: "submit" }, "Save");
+      body.replaceChildren(h("p", { class: "hint center", style: "margin:0", text: "Relay POSTs a signed notice: who wrote, never the message." }),
         h("form", { class: "stack tight", onsubmit: async (e) => {
           e.preventDefault(); save.disabled = true; err.textContent = "";
           try {
             const r = await api("PUT", `/agents/${encodeURIComponent(a.handle)}/wake`, { kind: "webhook", url: url.value.trim() });
-            state.textContent = "On · webhook";
+            setState(true, "On · webhook");
             if (r.signing_secret) out.replaceChildren(copyField("Signing secret (shown once)", r.signing_secret, { secret: true }));
           } catch (x) { err.textContent = x.message; }
           save.disabled = false;
-        } }, url, h("div", null, save, err)), out);
+        } }, url, save, err), out);
     } else {
       const cmd = providerOf(a) === "claude"
         ? `python3 cli.py --as ${a.handle} listen --run 'claude -p "You have new Relay messages. Use the relay tools: check_replies, then reply to each." --allowedTools "mcp__relay__*"'`
         : `python3 cli.py --as ${a.handle} listen --run '<command that starts your agent on its new messages>'`;
-      body.replaceChildren(h("p", { class: "hint", text: "For an agent on an always-on computer that can run commands. It hears each message within a second." }), copyBlock(cmd));
+      body.replaceChildren(h("p", { class: "hint center", style: "margin:0", text: "On an always-on computer. Hears each message within a second." }), copyBlock(cmd));
     }
   }
-  screen("wake", motion(), h("div", { class: "head" }, h("div", null, h("h1", { class: "title", text: "Wake-up" }),
-    h("p", { class: "lede", text: `How ${a.handle} hears about a message the moment it arrives.` })), avatar(a, 56)),
-    h("div", { class: "stack" }, h("div", null, seg([["routine", "Claude routine"], ["webhook", "Webhook"], ["listen", "Listener"]], mode, (v) => { mode = v; render(); }), state), body,
+  screen("wake", motion(), heroHead(avatar(a, 72), "Wake-up", `How ${a.handle} hears a message the moment it lands.`),
+    h("div", { class: "stack" }, h("div", { class: "stack tight" }, seg([["routine", "Claude routine"], ["webhook", "Webhook"], ["listen", "Listener"]], mode, (v) => { mode = v; render(); }), state), body,
       cur.kind ? h("button", { class: "btn danger press", type: "button", onclick: async () => {
-        await api("DELETE", `/agents/${encodeURIComponent(a.handle)}/wake`).catch(() => {}); state.textContent = "Off. It only sees messages when it checks.";
+        await api("DELETE", `/agents/${encodeURIComponent(a.handle)}/wake`).catch(() => {}); setState(false, OFF);
       } }, "Turn off") : null));
   render();
 }
@@ -577,8 +749,8 @@ async function wake(a) {
 // ------------------------------------------------------------------ activity
 async function activity() {
   const list = h("div", { class: "group conv" }, h("div", { class: "empty", text: "Loading…" }));
-  const neu = ME.role !== "admin" ? h("button", { class: "btn small press", type: "button", onclick: () => go(newMessage) }, "New") : null;
-  screen("activity", { tab: "activity" }, head("Activity", null, neu), list);
+  const neu = ME.role !== "admin" ? h("button", { class: "btn small press", type: "button", onclick: () => go(newMessage) }, icon("plus", "2.4"), "New") : null;
+  const view = screen("activity", { tab: "activity" }, head("Activity", null, neu), list);
   let first = true;
   async function refresh() {
     try {
@@ -598,7 +770,7 @@ async function activity() {
           e.stopPropagation(); b.disabled = true;
           try { await api("POST", `/jobs/${encodeURIComponent(j.id)}/approve`); refresh(); } catch { b.disabled = false; }
         } }, "Approve");
-        return h("div", { class: "cell" }, avatar(by[j.requested_by] || { handle: j.requested_by }, 44),
+        return h("div", { class: "cell jobcell" }, h("span", { class: "stackav" }, avatar(by[j.requested_by] || { handle: j.requested_by }, 44)),
           h("div", { class: "grow" }, h("div", { class: "t", text: `${j.kind} for ${j.requested_by}` }),
             h("div", { class: "s", text: `Needs your OK · ${(j.params && j.params.url) || j.id}` })), b);
       });
@@ -606,15 +778,19 @@ async function activity() {
       for (const t of sorted) {
         const last = t.msgs[t.msgs.length - 1];
         const others = [...t.people].filter((p) => p !== ME.handle);
-        const lead = by[others[0]] || { handle: others[0] || "relay" };
+        const faces = (others.length ? others : ["relay"]).slice(0, 2).map((x) => avatar(by[x] || { handle: x }, others.length > 1 ? 38 : 46));
         rows.push(h("button", { class: "cell press", type: "button", onclick: () => go(thread, t.id, others) },
-          avatar(lead, 44),
+          h("span", { class: "stackav" }, ...faces),
           h("div", { class: "grow" },
-            h("div", { class: "row", style: "justify-content:space-between;gap:8px" }, h("div", { class: "t", text: others.join(", ") || "Relay" }), h("span", { class: "when", text: clock(last.time) })),
+            h("div", { class: "spread", style: "gap:8px" }, h("div", { class: "t", text: others.join(", ") || "Relay" }), h("span", { class: "when", text: clock(last.time) })),
             h("div", { class: "s preview", text: `${last.from === ME.handle ? "You" : last.from}: ${last.text}` }))));
       }
-      list.replaceChildren(...(rows.length ? rows : [h("div", { class: "empty", text: "Nothing yet. Messages between your agents show up here." })]));
-      if (first) { list.classList.add("stagger"); first = false; } else list.classList.remove("stagger");
+      if (rows.length) {
+        if (!list.isConnected) view.querySelector(".blank").replaceWith(list);
+        list.replaceChildren(...rows);
+        if (first) list.classList.add("stagger"); else list.classList.remove("stagger");
+      } else if (list.isConnected) list.replaceWith(blank("Quiet so far", "Messages between your agents land here."));
+      first = false;
     } catch (x) { if (x.status !== 401) list.replaceChildren(h("div", { class: "empty", text: x.message })); }
   }
   await refresh();
@@ -624,18 +800,19 @@ async function activity() {
 async function newMessage() {
   let ags = [];
   try { ags = (await api("GET", "/agents")).filter((a) => a.handle !== ME.handle); } catch {}
-  const list = h("div", { class: "group people stagger" }, ...ags.map((a) => h("button", { class: "cell press", type: "button", onclick: () => go(thread, null, [a.handle]) },
-    avatar(a, 40, true), h("div", { class: "grow" }, h("div", { class: "t", text: a.handle }), h("div", { class: "s", text: ago(a.last_seen) })))));
-  screen("new", motion(), head("New message", "Who to?"), ags.length ? list : h("div", { class: "empty", text: "Add an agent first." }));
+  const grid = h("div", { class: "pick stagger" }, ...ags.map((a) => h("button", { class: "opt press", type: "button", onclick: () => go(thread, null, [a.handle]) },
+    avatar(a, 52, true), h("span", { text: a.handle }), h("span", { class: "sub", text: ago(a.last_seen) }))));
+  screen("new", motion(), head("New message", "Who to?"), ags.length ? grid : blank("No one to message yet", "Add an agent first."));
 }
 
 async function thread(id, people) {
-  const list = h("div", { class: "group thread" }, h("div", { class: "empty", text: id ? "Loading…" : "Say hello. They'll be woken if they have a wake-up." }));
+  const list = h("div", { class: "chat" }, id ? h("div", { class: "empty", text: "Loading…" }) : h("div", { class: "sysmsg", text: "Say hello. They're woken if they have a wake-up." }));
   const canPost = ME.role !== "admin";
   const input = h("textarea", { rows: "1", placeholder: `Message ${people.join(", ")}`, "aria-label": "Message" });
-  const send = h("button", { class: "btn press", type: "submit" }, "Send");
+  const send = h("button", { class: "btn send press", type: "submit", "aria-label": "Send" }, icon("send", "2.4"));
   let threadId = id, lastId = 0;
   input.addEventListener("input", () => { input.style.height = "auto"; input.style.height = Math.min(input.scrollHeight, 140) + "px"; });
+  input.addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.shiftKey && !e.isComposing && matchMedia("(pointer: fine)").matches) { e.preventDefault(); input.form.requestSubmit(); } });
   const composer = canPost ? h("div", { class: "composer" }, h("form", { onsubmit: async (e) => {
     e.preventDefault();
     const text = input.value.trim(); if (!text) return;
@@ -647,9 +824,12 @@ async function thread(id, people) {
     } catch (x) { alert(x.message); }
     send.disabled = false; input.focus();
   } }, input, send)) : null;
-  screen("thread", motion(), head(people.join(", ") || "Conversation", canPost ? null : "Sign in as yourself to reply."), list, composer);
   const by = {};
+  const faces = h("span", { class: "stackav" });
+  screen("thread", motion(), head(people.join(", ") || "Conversation", canPost ? null : "Sign in as yourself to reply.", faces), list);
+  if (composer) app.append(composer);    // outside the sliding page, so "fixed" means the window
   try { for (const a of await api("GET", "/agents")) by[a.handle] = a; } catch {}
+  faces.append(...people.slice(0, 2).map((x) => avatar(by[x] || { handle: x }, 44, true)));
   let shown = 0;
   async function refresh() {
     if (!threadId) return;
@@ -657,11 +837,15 @@ async function thread(id, people) {
       const msgs = await api("GET", `/messages?thread=${threadId}&limit=200`);
       if (msgs.length === shown) return;
       lastId = msgs.length ? msgs[msgs.length - 1].id : threadId;
-      list.replaceChildren(...msgs.map((m, i) => m.from === "relay"
-        ? h("div", { class: "cell", style: i >= shown ? "animation: rise .35s var(--ease) both" : "" }, avatar({ handle: "relay" }, 40), h("div", { class: "grow sys", text: m.text }))
-        : h("div", { class: "cell", style: i >= shown ? "animation: rise .35s var(--ease) both" : "" }, avatar(by[m.from] || { handle: m.from, role: m.from === ME.handle ? ME.role : "agent" }, 40),
-            h("div", { class: "grow" }, h("div", { class: "from" }, m.from === ME.handle ? "You" : m.from, h("span", { class: "when", text: clock(m.time) })),
-              h("div", { class: "text", text: m.text })))));
+      let prev = null;
+      list.replaceChildren(...msgs.map((m, i) => {
+        const fresh = i >= shown ? "" : "animation:none";
+        if (m.from === "relay") { prev = null; return h("div", { class: "sysmsg", style: fresh, text: m.text }); }
+        const mine = m.from === ME.handle, run = prev === m.from; prev = m.from;
+        const who = run ? null : h("div", { class: "who", text: `${mine ? "You" : m.from} · ${clock(m.time)}` });
+        const face = mine ? null : run ? h("span", { class: "ghostav" }) : avatar(by[m.from] || { handle: m.from, role: "agent" }, 32);
+        return h("div", { class: "msg" + (mine ? " mine" : ""), style: fresh }, face, h("div", { class: "body" }, who, h("div", { class: "bub", text: m.text })));
+      }));
       shown = msgs.length;
       window.scrollTo({ top: document.body.scrollHeight, behavior: "smooth" });
     } catch {}
@@ -674,6 +858,27 @@ async function thread(id, people) {
 // ------------------------------------------------------------------ start
 brandmini.append(mark(), h("span", { class: "word", text: "Relay" }));
 (async function start() {
+  // back from an emailed sign-in link: read the fragment, then wipe it from the address bar before anything else
+  let link = null;
+  if (location.hash.length > 1) {
+    const q = new URLSearchParams(location.hash.slice(1));
+    if (q.has("access_token") || q.has("error") || q.has("error_description")) {
+      link = { token: q.get("access_token"), error: q.get("error_description") || q.get("error") };
+      history.replaceState(null, "", "/app");
+    }
+  }
+  try { const c = await api("GET", "/auth/config", undefined, null); AUTH = { email: !!(c && c.email) }; } catch { AUTH = { email: false }; }
+  if (link && link.token) {
+    try {
+      const r = await api("POST", "/auth/session", { access_token: link.token }, null);
+      ME = await api("GET", "/agents/me", undefined, r.token); KEY = r.token;
+      store.set(r.token, store.remember());
+      return goTab(agents);
+    } catch (x) {
+      return signin(x.status === 403 ? (x.message || "That email isn't on this hub yet. Ask the owner to add you.") : x.message, AUTH.email ? "email" : "key");
+    }
+  }
+  if (link && link.error) return signin(link.error, AUTH.email ? "email" : "key");
   const saved = store.get();
   if (saved) {
     try { ME = await api("GET", "/agents/me", undefined, saved); KEY = saved; return goTab(agents); }
