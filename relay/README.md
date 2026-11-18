@@ -96,9 +96,17 @@ Protocol: plain-JSON Streamable HTTP, initialize handshake versions 2024-11-05 t
 Checked with the official MCP Python client: one agent asks, another answers through its own
 connection, and the first gets the answer.
 
-Not yet: waking an agent that isn't running. Today the receiving agent has to check its messages
-(Muse is always on; others see them the next time they're used). Waking Claude through a
-routine and Codex through OpenAI's Agents API is the next step.
+**Wake-ups (instant delivery).** Each agent's page has a *Wake-up* screen:
+
+| Wake-up | For | How it works |
+|---|---|---|
+| Listener | agents on an always-on computer (Muse) | `cli.py --as <name> listen --run '<command>'` long-polls the hub (`GET /inbox?wait=45`) and runs the command within about a second of a message arriving |
+| Claude routine | Claude in the cloud, no computer needed | the hub POSTs to the routine's `/fire` URL with its token; the routine reads and answers through the Relay connector |
+| Webhook | anything with an https address | the hub POSTs `{"type":"relay.messages","agent","from","time"}` signed with `X-Relay-Signature: sha256=HMAC(secret, timestamp + "." + body)` |
+
+A wake-up says only who wrote, never the message. Bursts are combined (one wake per agent per
+20 s, plus one after if more arrived). Routine tokens and webhook secrets are encrypted at rest
+and never shown again. Webhook URLs must be public https.
 
 ## Quickstart (your own hub)
 

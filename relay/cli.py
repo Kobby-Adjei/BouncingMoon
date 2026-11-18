@@ -173,6 +173,52 @@ def connect_app(app: str, url: str, handle: str, token: str) -> str:
                      "add a custom connector in Settings → Connectors)")
 
 
+def listen(hub: "Hub", run: Optional[str] = None, once: bool = False, log=print) -> None:
+    """Hear new messages the moment they arrive (long-poll), and optionally wake an agent.
+
+    Without --run it prints each new message. With --run it runs that command once per
+    batch of new messages, e.g. a headless agent that reads and answers them:
+        cli.py --as muse listen --run 'claude -p "Check Relay and answer your messages"'
+    The command gets RELAY_AGENT and RELAY_NEW_IDS in its environment. Messages are not
+    marked read here: the agent does that when it reads them (check_replies / inbox --ack),
+    and this listener remembers what it has already announced so it never wakes twice for
+    the same message."""
+    me = hub.get("/agents/me")["handle"]
+    state = os.path.join(os.path.expanduser("~"), ".relay", "agents", f"{me}.listen")
+    try:
+        with open(state) as f:
+            seen = int(f.read().strip() or 0)
+    except (OSError, ValueError):
+        seen = 0
+    log(f"listening for @{me}" + (f"; will run: {run}" if run else ""))
+    while True:
+        try:
+            box = hub.get("/inbox", wait=45, limit=100)
+        except RelayError as e:
+            log(f"hub unreachable ({e}); retrying in 10 s")
+            time.sleep(10)
+            continue
+        new = [m for m in box["messages"] if m["id"] > seen]
+        if new:
+            seen = max(m["id"] for m in new)
+            os.makedirs(os.path.dirname(state), exist_ok=True)
+            with open(state, "w") as f:
+                f.write(str(seen))
+            for m in new:
+                log(f"#{m['id']} @{m['from']}: {m['text'][:200]}")
+            if run:
+                env = {**os.environ, "RELAY_AGENT": me,
+                       "RELAY_NEW_IDS": ",".join(str(m["id"]) for m in new)}
+                code = subprocess.run(run, shell=True, env=env).returncode
+                log(f"woke the agent (exit {code})")
+            if once:
+                return
+        elif not box["messages"]:
+            pass                                   # quiet: long-poll timed out, ask again
+        else:
+            time.sleep(5)                          # only already-announced, unread messages remain
+
+
 class Hub:
     def __init__(self, url: str, token: str):
         if not url or not token:
@@ -520,6 +566,9 @@ def main(argv=None):
     p = sub.add_parser("connect", help="add this hub as a connector in a local app: claude-code or codex")
     p.add_argument("app", choices=["claude-code", "codex"])
     sub.add_parser("mcp-headers", help="print this agent's Authorization header as JSON (for app header helpers)")
+    p = sub.add_parser("listen", help="hear new messages instantly; --run a command to wake your agent")
+    p.add_argument("--run", help="command to run when new messages arrive")
+    p.add_argument("--once", action="store_true", help="stop after the first batch")
     r = sub.add_parser("register", help="admin: create an agent, print its token once")
     r.add_argument("handle"); r.add_argument("--cap", action="append", default=[])
     r.add_argument("--human", action="store_true")
@@ -562,6 +611,9 @@ def main(argv=None):
         if a.cmd == "connect":
             me = hub.get("/agents/me")                            # proves the key works first
             print(connect_app(a.app, hub.url, me["handle"], hub.token))
+            return 0
+        if a.cmd == "listen":
+            listen(hub, run=a.run, once=a.once)
             return 0
         if a.cmd == "mcp-headers":
             print(json.dumps({"Authorization": f"Bearer {hub.token}"}))

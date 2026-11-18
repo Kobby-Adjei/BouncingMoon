@@ -75,7 +75,7 @@ CREATE TABLE IF NOT EXISTS contacts(
 
 HANDLE_RE = re.compile(r"^[a-z0-9][a-z0-9_.-]{0,31}$")
 PROVIDER_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,23}$")   # "claude", "openai", "gemini", ... (display only)
-RESERVED = {"relay", "admin"}
+RESERVED = {"relay", "admin", "me"}
 SYSTEM = "relay"            # sender name for messages the hub writes itself
 MEDIA_PREFIXES = ("video/", "audio/")
 
@@ -206,6 +206,12 @@ class InviteIn(BaseModel):
     note: Optional[str] = None
 
 
+class WakeIn(BaseModel):
+    kind: str                       # claude_routine | webhook
+    url: str
+    token: Optional[str] = None     # routine API token, or a webhook signing secret (else generated)
+
+
 class ClaimInviteIn(BaseModel):
     code: str
 
@@ -263,7 +269,8 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
                max_attempts: Optional[int] = None,
                max_upload_mb: Optional[int] = None,
                retry_base_seconds: Optional[float] = None,
-               allow_private_fetch: Optional[bool] = None) -> FastAPI:
+               allow_private_fetch: Optional[bool] = None,
+               wake_opener=None, wake_check_url: bool = True, wake_cooldown: Optional[float] = None) -> FastAPI:
     data_dir = data_dir or os.environ.get("RELAY_DATA", "./relay-data")
     os.makedirs(data_dir, exist_ok=True)
     admin_token = admin_token or os.environ.get("RELAY_ADMIN_TOKEN")
@@ -289,6 +296,12 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
     store = Store(data_dir)
     app = FastAPI(title="Relay", version="0.1.0")
     app.state.store = store
+    from .wake import Waker, WakeError
+    waker = Waker(store, admin_token, os.environ.get("RELAY_SECRET_KEY"), opener=wake_opener,
+                  check_url=wake_check_url,
+                  cooldown=wake_cooldown if wake_cooldown is not None else float(
+                      os.environ.get("RELAY_WAKE_COOLDOWN", 20)))
+    app.state.waker = waker
 
     # ---------------------------------------------------------------- auth
     def auth(authorization: str = Header(default="")) -> dict:
@@ -348,6 +361,11 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
             c.execute("UPDATE messages SET thread=? WHERE id=?", (mid, mid))
         if sender != SYSTEM:
             c.execute("INSERT OR IGNORE INTO follows(agent,thread) VALUES (?,?)", (sender, thread))
+        # who should hear about this right away: mentioned, following the thread, or subscribed
+        who = set(mentions) | {r["agent"] for r in c.execute(
+            "SELECT agent FROM follows WHERE thread=? UNION SELECT agent FROM subs WHERE channel=?",
+            (thread, channel))}
+        waker.notify(who - {sender}, sender)
         return msg_out(c.execute("SELECT * FROM messages WHERE id=?", (mid,)).fetchone())
 
     def inbox_for(c, h: str, limit: int = 20) -> dict:
@@ -530,6 +548,38 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
             c.execute("UPDATE agents SET provider=? WHERE handle=?", (provider, handle))
         return {"handle": handle, "provider": provider}
 
+    # ---------------------------------------------------------------- wake-ups
+    def wake_target(handle: str, me: dict) -> str:
+        if handle == "me":
+            need_agent(me)
+            return me["handle"]
+        need_admin(me)
+        with store.ro() as c:
+            if not c.execute("SELECT 1 FROM agents WHERE handle=?", (handle,)).fetchone():
+                raise HTTPException(404, f"no agent @{handle}")
+        return handle
+
+    @app.put("/agents/{handle}/wake")
+    def set_wake(handle: str, body: WakeIn, me: dict = Depends(auth)):
+        h = wake_target(handle, me)
+        try:
+            return waker.configure(h, body.kind, body.url, body.token)
+        except WakeError as e:
+            raise HTTPException(400, str(e))
+
+    @app.get("/agents/{handle}/wake")
+    def get_wake(handle: str, me: dict = Depends(auth)):
+        return waker.get(wake_target(handle, me)) or {"kind": None}
+
+    @app.delete("/agents/{handle}/wake")
+    def delete_wake(handle: str, me: dict = Depends(auth)):
+        return {"removed": waker.remove(wake_target(handle, me))}
+
+    @app.post("/agents/{handle}/wake/test")
+    def test_wake(handle: str, me: dict = Depends(auth)):
+        h = wake_target(handle, me)
+        return {"status": waker.fire_now(h), **(waker.get(h) or {})}
+
     @app.post("/agents/{handle}/token")
     def reset_token(handle: str, me: dict = Depends(auth)):
         """Admin: issue a new token for an agent. The old one stops working at once."""
@@ -663,12 +713,20 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
         return rows[::-1] if latest else rows
 
     @app.get("/inbox")
-    def inbox(limit: int = Query(20, ge=1, le=200), me: dict = Depends(auth)):
+    def inbox(limit: int = Query(20, ge=1, le=200), wait: float = Query(0, ge=0, le=50),
+              me: dict = Depends(auth)):
         """What is waiting for me: mentions, my channels, threads I follow.
-        At-least-once: nothing is consumed until I ack the cursor."""
+        At-least-once: nothing is consumed until I ack the cursor. With wait=N the request
+        holds for up to N seconds until something arrives (long-poll), so a listener hears a
+        message within about a second instead of at its next check."""
         need_agent(me)
-        with store.ro() as c:
-            return inbox_for(c, me["handle"], limit)
+        deadline = time.monotonic() + wait
+        while True:
+            with store.ro() as c:
+                box = inbox_for(c, me["handle"], limit)
+            if box["messages"] or time.monotonic() >= deadline:
+                return box
+            time.sleep(0.5)
 
     @app.post("/inbox/ack")
     def ack(body: AckIn, me: dict = Depends(auth)):
