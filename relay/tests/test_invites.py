@@ -121,7 +121,7 @@ def _free_port():
     s = socket.socket(); s.bind(("127.0.0.1", 0)); p = s.getsockname()[1]; s.close(); return p
 
 
-def test_cli_join_saves_a_private_config_and_never_prints_the_key(tmp_path, monkeypatch, capsys):
+def test_cli_join_keeps_each_agent_in_its_own_private_file(tmp_path, monkeypatch, capsys):
     port = _free_port()
     app = create_app(data_dir=str(tmp_path / "hub"), admin_token=ADMIN)
     server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=port, log_level="warning"))
@@ -133,21 +133,35 @@ def test_cli_join_saves_a_private_config_and_never_prints_the_key(tmp_path, monk
         except OSError:
             time.sleep(0.05)
     try:
-        cfg = tmp_path / "home" / ".relay" / "config.json"
-        monkeypatch.setenv("RELAY_CONFIG", str(cfg))
-        monkeypatch.delenv("RELAY_URL", raising=False); monkeypatch.delenv("RELAY_TOKEN", raising=False)
-        code = TestClient(app).post("/invites", headers=H(ADMIN), json={"handle": "codex"}).json()["code"]
-        assert cli.main(["join", url, code]) == 0
-        saved = json.loads(cfg.read_text())
+        home = tmp_path / "home"
+        monkeypatch.setenv("HOME", str(home))
+        for k in ("RELAY_URL", "RELAY_TOKEN", "RELAY_CONFIG", "RELAY_AGENT"):
+            monkeypatch.delenv(k, raising=False)
+        admin = TestClient(app)
+        codex = admin.post("/invites", headers=H(ADMIN), json={"handle": "codex"}).json()["code"]
+        claude = admin.post("/invites", headers=H(ADMIN), json={"handle": "claude"}).json()["code"]
+
+        assert cli.main(["join", url, codex]) == 0
+        f = home / ".relay" / "agents" / "codex.json"
+        saved = json.loads(f.read_text())
         assert saved["handle"] == "codex" and saved["url"] == url
-        assert stat.S_IMODE(os.stat(cfg).st_mode) == 0o600
+        assert stat.S_IMODE(os.stat(f).st_mode) == 0o600
         out = capsys.readouterr().out
         assert "@codex" in out and saved["token"] not in out
-        # every later command picks the saved key up by itself
-        assert cli.main(["whoami"]) == 0
-        assert '"handle": "codex"' in capsys.readouterr().out
+        # with one agent on this computer, commands need no flags at all
+        assert cli.main(["whoami"]) == 0 and '"handle": "codex"' in capsys.readouterr().out
+
+        # a second agent on the same computer gets its own file; the first key is untouched
+        assert cli.main(["join", url, claude]) == 0
+        assert json.loads(f.read_text())["token"] == saved["token"]
+        capsys.readouterr()
+        assert cli.main(["whoami"]) == 1 and "--as" in capsys.readouterr().err
+        assert cli.main(["--as", "codex", "whoami"]) == 0 and '"handle": "codex"' in capsys.readouterr().out
+        assert cli.main(["--as", "claude", "whoami"]) == 0 and '"handle": "claude"' in capsys.readouterr().out
+        assert cli.main(["--as", "nobody", "whoami"]) == 1
+
         # a used code fails cleanly
-        assert cli.main(["join", url, code]) == 1
+        assert cli.main(["join", url, codex]) == 1
         assert "used" in capsys.readouterr().err
     finally:
         server.should_exit = True; t.join(5)

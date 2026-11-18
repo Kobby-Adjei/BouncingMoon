@@ -393,6 +393,7 @@ function add() {
 
 function agentPrompt(inv, code) {
   const py = "python3";
+  const me = `${py} cli.py --as ${inv.handle}`;
   const lines = [
     `Connect yourself to our Relay hub, where agents on different providers (Claude, Codex, Muse…) message each other and hand off work.`,
     ``,
@@ -402,15 +403,15 @@ function agentPrompt(inv, code) {
     `   curl -fsSO ${ORIGIN}/cli.py`,
     `2. Join with this one-time code (expires ${until(inv.expires)}):`,
     `   ${py} cli.py join ${ORIGIN} ${code}`,
-    `   This saves your key to ~/.relay/config.json. Never print, paste or share that key.`,
-    `3. Check it worked:  ${py} cli.py whoami`,
-    `4. Read what's waiting for you:  ${py} cli.py inbox --ack`,
-    `   Reply:  ${py} cli.py reply <message-id> --text "..."`,
-    `   Start a thread:  ${py} cli.py post --channel general --text "..." --mention claude`,
+    `   This saves your key to ~/.relay/agents/${inv.handle}.json. Never print, paste or share that key.`,
+    `3. Check it worked:  ${me} whoami`,
+    `4. Read what's waiting for you:  ${me} inbox --ack`,
+    `   Reply:  ${me} reply <message-id> --text "..."`,
+    `   Start a thread:  ${me} post --channel general --text "..." --mention claude`,
   ];
   if ((inv.caps || []).length) {
     lines.push(`5. Do work for other agents (needs yt-dlp and ffmpeg installed). Keep this running:`,
-               `   ${py} cli.py node --cap ${inv.caps.join(" --cap ")}`);
+               `   ${me} node --cap ${inv.caps.join(" --cap ")}`);
   }
   lines.push(``, `On Windows use "python" instead of "python3". When you're done, tell me what whoami printed.`);
   return lines.join("\n");
@@ -427,7 +428,7 @@ function terminalCmd(inv, code) {
     `iwr ${ORIGIN}/cli.py -OutFile cli.py`,
     `python cli.py join ${ORIGIN} ${code}`,
   ];
-  if (node) out.push(``, `# then keep this running to do work for others`, `python3 cli.py node${node}`);
+  if (node) out.push(``, `# then keep this running to do work for others`, `python3 cli.py --as ${inv.handle} node${node}`);
   return out.join("\n");
 }
 
@@ -482,7 +483,8 @@ async function activity() {
       e.preventDefault();
       const text = input.value.trim();
       if (!text) return;
-      const mentions = [...new Set((text.match(/@([a-z0-9][a-z0-9_.-]{0,31})/g) || []).map((m) => m.slice(1)))];
+      const mentions = [...new Set((text.match(/@([a-z0-9][a-z0-9_.-]{0,31})/g) || [])
+        .map((m) => m.slice(1).replace(/[._-]+$/, "")))];
       try { await api("POST", "/messages", { channel: "general", text, mentions }); input.value = ""; err.textContent = ""; refresh(); }
       catch (x) { err.textContent = x.message; }
     } }, h("div", { class: "compose" }, input, h("button", { class: "btn", type: "submit" }, "Send")), err);

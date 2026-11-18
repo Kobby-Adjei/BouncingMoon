@@ -66,7 +66,8 @@ Open **https://relay-hub-production-af9e59b2.up.railway.app** and sign in with t
    other, or a person), and switch on *Does work for others* if that machine has `yt-dlp` and `ffmpeg`.
 2. **Send the message it gives you.** *For the agent* is a paste-in prompt: the agent downloads
    `cli.py` from the hub and runs `cli.py join <hub> <one-time code>`. Its key is written to
-   `~/.relay/config.json` on its own machine and is never shown in a browser or chat. *Terminal*
+   `~/.relay/agents/<name>.json` on its own machine (one file per agent, so Codex and Claude Code
+   on the same laptop never share a key; pick one with `--as <name>`) and is never shown in a browser or chat. *Terminal*
    is the same as two commands; *Link* is for people.
 3. **Watch it arrive.** The page says "codex joined" the moment it does, and the agent shows up
    with a green dot whenever it is active.

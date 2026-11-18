@@ -2,10 +2,11 @@
 """relay - client and worker node for a Relay hub. Python standard library only.
 
 Copy this one file to any machine, then join with the one-time code from the hub's
-"Add agent" page. That saves the hub address and this agent's token to
-~/.relay/config.json (readable only by you); nothing else needs setting:
+"Add agent" page. That saves the hub address and this agent's key to
+~/.relay/agents/<name>.json (readable only by you); nothing else needs setting:
 
     python3 cli.py join https://your-hub inv_...
+    python3 cli.py --as <name> whoami        # --as is only needed when several agents share a computer
 
 (Environment variables RELAY_URL and RELAY_TOKEN, or --url/--token, override it.)
 
@@ -55,20 +56,42 @@ class RelayError(RuntimeError):
     pass
 
 
-def config_path() -> str:
-    return os.environ.get("RELAY_CONFIG") or os.path.join(os.path.expanduser("~"), ".relay", "config.json")
+def relay_dir() -> str:
+    return os.path.join(os.path.expanduser("~"), ".relay", "agents")
 
 
-def load_config() -> dict:
+def agent_file(handle: str) -> str:
+    # one file per agent, so several agents on one computer never share or overwrite a key
+    return os.environ.get("RELAY_CONFIG") or os.path.join(relay_dir(), f"{handle}.json")
+
+
+def load_config(name: Optional[str] = None) -> dict:
+    """Which agent am I? RELAY_CONFIG names a file outright; otherwise --as NAME (or
+    RELAY_AGENT) picks ~/.relay/agents/NAME.json, and with no name the only one there."""
+    path = os.environ.get("RELAY_CONFIG")
+    if not path:
+        if name:
+            path = os.path.join(relay_dir(), f"{name}.json")
+            if not os.path.exists(path):
+                raise RelayError(f"no agent named {name} has joined from this computer")
+        else:
+            found = sorted(glob.glob(os.path.join(relay_dir(), "*.json")))
+            if len(found) > 1:
+                names = ", ".join(os.path.basename(f)[:-5] for f in found)
+                raise RelayError(f"several agents have joined from this computer ({names}); "
+                                 f"say which with --as NAME")
+            path = found[0] if found else None
+    if not path:
+        return {}
     try:
-        with open(config_path()) as f:
+        with open(path) as f:
             return json.load(f)
     except (OSError, ValueError):
         return {}
 
 
 def save_config(url: str, handle: str, token: str) -> str:
-    path = config_path()
+    path = agent_file(handle)
     os.makedirs(os.path.dirname(path) or ".", mode=0o700, exist_ok=True)
     tmp = path + ".tmp"
     fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
@@ -82,6 +105,14 @@ def join(url: str, code: str) -> dict:
     """Trade a one-time invite code for this agent's token and save it locally.
     The token is written to the config file and never printed."""
     url = url.rstrip("/")
+    try:   # never replace a key we already hold for a different identity
+        with open(os.environ["RELAY_CONFIG"]) as f:
+            held = json.load(f).get("handle")
+        if held:
+            raise RelayError(f"{os.environ['RELAY_CONFIG']} already holds @{held}'s key; "
+                             f"unset RELAY_CONFIG to keep agents in separate files")
+    except (KeyError, OSError, ValueError):
+        pass
     req = urllib.request.Request(url + "/invites/claim", method="POST",
                                  data=json.dumps({"code": code.strip()}).encode(),
                                  headers={"Content-Type": "application/json"})
@@ -439,6 +470,8 @@ def main(argv=None):
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--url", default=os.environ.get("RELAY_URL"))
     ap.add_argument("--token", default=os.environ.get("RELAY_TOKEN"))
+    ap.add_argument("--as", dest="agent", default=os.environ.get("RELAY_AGENT"),
+                    help="which agent to act as, when several have joined from this computer")
     sub = ap.add_subparsers(dest="cmd", required=True)
     p = sub.add_parser("join", help="join a hub with a one-time invite code (saves your token locally)")
     p.add_argument("hub_url"); p.add_argument("code")
@@ -478,9 +511,9 @@ def main(argv=None):
             out = join(a.hub_url, a.code)
             caps = f" (serves: {', '.join(out['caps'])})" if out["caps"] else ""
             print(f"joined as @{out['handle']}{caps}. Token saved to {out['config']} - keep it private.")
-            print("next: python3 cli.py whoami")
+            print(f"next: python3 cli.py --as {out['handle']} whoami")
             return 0
-        cfg = load_config()
+        cfg = {} if (a.url and a.token) else load_config(a.agent)
         hub = Hub(a.url or cfg.get("url"), a.token or cfg.get("token"))
         show = lambda x: print(json.dumps(x, indent=1))
         if a.cmd == "register":
