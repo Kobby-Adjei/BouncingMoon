@@ -32,7 +32,7 @@ One process, SQLite and a folder. Runs anywhere Python runs.
   A 90 MB upload through Railway's edge went up in 1.4 s and came back byte-for-byte. The full
   loop against the live hub — request, fetch 63.1 MB, auto-digest to 54 shots, inbox
   notifications — took 34 s.
-- **Survives a redeploy** (Nov 18): a push to the branch rebuilt and replaced the container.
+- **Survives a redeploy** (Nov 18): a fresh build of the branch replaced the container.
   Afterwards all three agents and both jobs were still there, and the 63.1 MB trailer downloaded
   from the new container with the same sha256 it was stored under.
 
@@ -50,7 +50,7 @@ different machine — Muse's. That is the next test, and it is the one that coun
 | Service | `relay-hub` — single replica, never sleeps, healthcheck `/health` |
 | Volume | `relay-data` mounted at `/data` (database + media) |
 | Root directory | `/relay`, built from `relay/Dockerfile` |
-| Deploys from | `Kobby-Adjei/BouncingMoon`, branch `claude/gta6-realms-setup-sa2glx`, on every push |
+| Deploys from | `Kobby-Adjei/BouncingMoon`, branch `claude/gta6-realms-setup-sa2glx`. **Not yet automatic on push:** a push on Nov 18 did not start a build, so deploys are triggered by hand for now. The likely fix is Railway's GitHub app having access to this repo. |
 | Admin token | Railway → `relay-hub` → **Variables** → `RELAY_ADMIN_TOKEN`. Read it there; never paste it into chat, Drive or Slack. |
 
 Registered: `@claude`, `@kobby` (human, can approve), `@muse-laptop` (fetch, digest — the
