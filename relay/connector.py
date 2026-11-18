@@ -313,9 +313,9 @@ def mount(app, hub) -> None:
     # ------------------------------------------------------------ HTTP
     def caller(request: Request) -> str:
         # Some apps reserve `Authorization` for their own sign-in (claude.ai does when sign-in is
-        # on), so the key may also arrive as `X-Relay-Key: <key>`.
+        # on), so the key may also arrive as `X-Relay-Key: <key>` or `X-API-Key: <key>`.
         header = request.headers.get("authorization", "")
-        alt = request.headers.get("x-relay-key", "").strip()
+        alt = (request.headers.get("x-relay-key") or request.headers.get("x-api-key") or "").strip()
         if alt and not header.lower().startswith("bearer "):
             header = "Bearer " + alt
         try:

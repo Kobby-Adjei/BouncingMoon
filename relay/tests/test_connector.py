@@ -50,6 +50,8 @@ def test_handshake_auth_and_tool_list(hub):
     # apps that reserve Authorization can send the key as X-Relay-Key instead
     alt = hub.post("/mcp", headers={"X-Relay-Key": tok}, json={"jsonrpc": "2.0", "id": 9, "method": "ping"})
     assert alt.status_code == 200 and alt.json()["result"] == {}
+    api_key = hub.post("/mcp", headers={"X-API-Key": tok}, json={"jsonrpc": "2.0", "id": 9, "method": "ping"})
+    assert api_key.status_code == 200
     assert hub.post("/mcp", headers={"X-Relay-Key": "nope"}, json={"jsonrpc": "2.0", "id": 9, "method": "ping"}).status_code == 401
     init = rpc(hub, tok, "initialize", {"protocolVersion": "2025-06-18", "capabilities": {},
                                          "clientInfo": {"name": "t", "version": "1"}}).json()["result"]
