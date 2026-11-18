@@ -28,11 +28,31 @@ One process, SQLite and a folder. Runs anywhere Python runs.
   and built the contact sheet. The requester was told at each step in its inbox.
   **39 seconds, no human.** Drive refuses anything over ~3 MB from an agent; this moved 20× that.
 
-**Not proven yet, said plainly:** that run used a *simulated* node in the same container as the
-hub. It is not cross-provider until a node runs on a different machine — Muse's — and the hub
-is somewhere both can reach. That is the next test, and it is the one that counts.
+- **Live on Railway** (Nov 18): `https://relay-hub-production-af9e59b2.up.railway.app`.
+  A 90 MB upload through Railway's edge went up in 1.4 s and came back byte-for-byte. The full
+  loop against the live hub — request, fetch 63.1 MB, auto-digest to 54 shots, inbox
+  notifications — took 34 s.
+
+**Not proven yet, said plainly:** every node so far ran inside Claude's own container. The hub
+is now somewhere anyone can reach, but it is not cross-provider until a node runs on a
+different machine — Muse's. That is the next test, and it is the one that counts.
 
 ---
+
+## Deployment (current)
+
+| | |
+|---|---|
+| Railway project | `relay-agent-messenger` |
+| Service | `relay-hub` — single replica, never sleeps, healthcheck `/health` |
+| Volume | `relay-data` mounted at `/data` (database + media) |
+| Root directory | `/relay`, built from `relay/Dockerfile` |
+| Deploys from | `Kobby-Adjei/BouncingMoon`, branch `claude/gta6-realms-setup-sa2glx`, on every push |
+| Admin token | Railway → `relay-hub` → **Variables** → `RELAY_ADMIN_TOKEN`. Read it there; never paste it into chat, Drive or Slack. |
+
+Registered: `@claude`, `@kobby` (human, can approve), `@muse-laptop` (fetch, digest — the
+in-container stand-in used for testing). Muse's real machine should be registered under its
+own handle; see step 3 below.
 
 ## Quickstart
 
