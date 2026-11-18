@@ -90,7 +90,8 @@ main { overflow-x: clip; }   /* slide-ins must never widen a phone's layout view
 .btn:disabled { opacity: .45; cursor: default; }
 .btn.quiet { background: var(--accent-soft); color: var(--accent); }
 .btn.ghost, .btn.danger { background: var(--fill); color: var(--ink); }
-.btn.ghost:hover, .btn.danger:hover, .btn.quiet:hover { background: var(--fill2); }
+.btn.ghost:hover, .btn.quiet:hover { background: var(--fill2); }
+.btn.danger:hover { background: var(--fill); color: var(--red); }   /* red stays AA: no darker fill */
 .btn.danger { color: var(--red); }
 .btn.done, .btn.done:hover { background: var(--green-btn); color: var(--on-green); }
 .btn.small { height: 34px; width: auto; padding: 0 14px; font-size: 14px; border-radius: 8px; gap: 6px; }
@@ -171,7 +172,7 @@ button.cell:hover::before, button.cell:hover + .cell::before { opacity: 0; }
 .copybtn { border: 0; background: none; color: var(--accent); font-weight: 600; font-size: 14px; height: 32px; padding: 0 10px; margin-right: -10px;
   border-radius: 7px; cursor: pointer; flex: none; transition: background-color .2s var(--ease), color .2s var(--ease); }
 .copybtn:hover { background: var(--fill); }
-.copybtn.ok { color: var(--green-ink); animation: bump .4s var(--spring); }
+.copybtn.ok, .copybtn.ok:hover { color: var(--green-ink); background: none; animation: bump .4s var(--spring); }
 .btn.ok, .btn.ok:hover { background: var(--green-btn); color: var(--on-green); animation: bump .4s var(--spring); }
 .msgcard { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 12px; min-width: 0; }
 .msgcard .top { order: 2; display: flex; margin-left: auto; }
