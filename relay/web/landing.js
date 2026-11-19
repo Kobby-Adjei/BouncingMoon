@@ -7,13 +7,11 @@ const RUN = window.RELAY_HERO_RUN;
 const log = document.getElementById("log");
 if (!RUN || !log) return;
 const SPEED = 3;                 // real seconds per replay second
-const LEAD = 1.5;                // replay seconds before the first message, for the typing
+const LEAD = 0.6;                // replay seconds before the first message
 const reduce = matchMedia("(prefers-reduced-motion: reduce)").matches;
 const NS = "http://www.w3.org/2000/svg";
 const AVATAR = { claude: "/logos/claude.svg", muse: "/logos/muse.svg" };
-const field = document.getElementById("field"), send = document.getElementById("send");
-const placeholder = field.firstElementChild;
-const replayBtn = document.getElementById("replay"), label = document.getElementById("runlabel");
+const label = document.getElementById("runlabel"), chip = document.getElementById("chip");
 
 function el(tag, cls, text) {
   const e = document.createElement(tag);
@@ -54,7 +52,6 @@ const rows = chat.map((m) => {
       const src = RUN.source, file = el("div", "file");
       file.append(videoIcon("currentColor"), document.createTextNode(`${src.name} · ${mb(src.bytes)}`));
       b.append(file);
-      step.attach = `${src.name} · ${mb(src.bytes)}`;
     }
     row.append(b);
     return step;
@@ -128,29 +125,12 @@ function finalState(s) {
 }
 function reset() {
   timers.forEach(clearTimeout); timers = []; cancelAnimationFrame(frame); frames.forEach(cancelAnimationFrame); frames.clear();
-  field.replaceChildren(placeholder);
   for (const s of rows) {
     s.row.className = s.m.from === "you" ? "row me later" : "row later";
     s.b.className = "b hold"; s.b.classList.remove("approved");
     if (s.st) { s.st.textContent = ""; s.st.className = "st"; }
     for (const v of s.videos || []) { v.pause(); try { v.currentTime = 0; } catch (e) { /* not loaded yet */ } v.dispatchEvent(new Event("timeupdate")); v.parentElement.classList.add("idle"); }
   }
-}
-function typeInto(s, start, end) {                     // the person's line, typed into the composer
-  const text = s.m.text, n = text.length;
-  later(start, () => {
-    const typed = el("span", "typed"); field.replaceChildren(typed);
-    if (s.attach) { const att = el("span", "att"); att.append(videoIcon("currentColor"), document.createTextNode(s.attach)); field.prepend(att); }
-    const t0 = performance.now(), dur = Math.max(200, end - start - 160);
-    const step = (now) => {
-      const k = Math.min(1, (now - t0) / dur);
-      typed.textContent = text.slice(0, Math.round(n * k));
-      if (k < 1) frame = requestAnimationFrame(step);
-    };
-    frame = requestAnimationFrame(step);
-  });
-  later(end - 120, () => send.classList.add("tap"));
-  later(end, () => { send.classList.remove("tap"); field.replaceChildren(placeholder); });
 }
 function counter(s) {                                  // "studio is on it · 4.2 s", counting real seconds
   const begin = performance.now();
@@ -169,18 +149,16 @@ function playWhenSeen(videos) {                         // play once, when they'
     if (p) p.catch(() => v.parentElement.classList.add("idle"));
   });
   if (!("IntersectionObserver" in window)) return go();
-  const io = new IntersectionObserver((es) => { if (es.some((e) => e.isIntersecting)) { io.disconnect(); go(); } }, { threshold: 0.6 });
+  const io = new IntersectionObserver((es) => { if (es.some((e) => e.isIntersecting)) { io.disconnect(); go(); } }, { threshold: 0.5 });
   io.observe(videos[0].parentElement);
 }
 function play() {
   reset(); playing = true;
-  replayBtn.hidden = true;
   label.textContent = `A real run, replayed at ${SPEED}×`;
   let prevEnd = 0;
   for (const s of rows) {
     const show = T(s.m.t);
     if (s.m.from === "you") {
-      typeInto(s, Math.max(prevEnd + 250, show - 1200), show);
       later(show, () => { s.row.classList.replace("later", "show"); s.b.classList.remove("hold"); });
     } else if (s.job) {
       later(T(s.from), () => { s.row.classList.replace("later", "show"); counter(s); });
@@ -193,17 +171,15 @@ function play() {
     }
     prevEnd = show;
   }
-  later(prevEnd + 900, () => { playing = false; label.textContent = "A real run, replayed"; replayBtn.hidden = false; });
+  later(prevEnd + 900, () => { playing = false; label.textContent = "A real run, replayed"; chip.setAttribute("aria-label", "Replay the run: cut clips from a video"); });
 }
 function still() {                                     // reduced motion: the whole exchange, at rest; videos play on tap
   reset();
   for (const s of rows) finalState(s);
   label.textContent = "A real run";
-  replayBtn.hidden = true;
 }
 
-replayBtn.addEventListener("click", play);
-document.getElementById("chip").addEventListener("click", () => {
+chip.addEventListener("click", () => {
   document.getElementById("chat").scrollIntoView({ behavior: reduce ? "auto" : "smooth", block: "start" });
   if (reduce) still(); else if (!playing) play();
 });
