@@ -800,6 +800,27 @@ function agentPrompt(inv, code, connect) {
   return lines.join("\n");
 }
 
+// The Relay helper: one line in the terminal of the computer where the app is signed in. It
+// joins (or, given a name, reuses an agent that already joined there), adds Relay to the app,
+// and keeps a small service running that wakes the app when a message lands, on the user's own
+// plan. The code goes in as an argument, never in the URL.
+function installLines(who, connect) {
+  const flag = who.startsWith("inv_") ? "Code" : "Name";
+  return {
+    unix: `curl -fsSL ${ORIGIN}/install.sh | sh -s -- ${who} ${connect}`,
+    win: `& ([scriptblock]::Create((irm ${ORIGIN}/install.ps1))) -${flag} ${who} -App ${connect}`,
+  };
+}
+function installBlock(who, connect) {
+  const lines = installLines(who, connect);
+  let os = /Win/i.test(navigator.userAgent || "") ? "win" : "unix";
+  const slot = h("div");
+  const draw = () => slot.replaceChildren(copyBlock(lines[os], "Copy"));
+  draw();
+  return h("div", { class: "stack tight" }, seg([["unix", "Mac · Linux"], ["win", "Windows"]], os, (v) => { os = v; draw(); }), slot);
+}
+const listening = (ag) => !!(ag && ag.listener && ag.listener.seen && Date.now() / 1000 - ag.listener.seen < 150);
+
 function inviteGuide(a, inv) {
   const tk = ticket();
   const code = inv.code, handle = inv.handle;
@@ -808,21 +829,30 @@ function inviteGuide(a, inv) {
   const diagram = linkup(appAvatar(a, 64));
   const done = h("button", { class: "btn ghost press", type: "button", onclick: finish(handle) }, "Done");
   let status = stickyStatus(`Waiting for ${handle}…`);
+  const me = `python3 ~/.relay/bin/cli.py --as ${handle}`;
   const body = person
     ? h("div", { class: "stack tight" }, h("p", { class: "hint", style: "margin:0", text: "Send privately. Works once, for 24 h." }), copyField("Invite link", link))
-    : h("div", { class: "stack tight" }, h("p", { class: "hint", style: "margin:0", text: `Paste into ${a.label}. It sets itself up. Code works once, for 24 h.` }),
-        copyBlock(agentPrompt(inv, code, a.connect), "Copy message"));
+    : h("div", { class: "stack tight" },
+        h("p", { class: "hint", style: "margin:0", text: `Paste into a terminal on the computer where ${a.label} is signed in. It answers by itself after that, on your own plan. Works once, for 24 h.` }),
+        installBlock(code, a.connect),
+        (inv.caps || []).length ? h("p", { class: "hint", text: `To also fetch and cut videos for others, keep this running there: ${me} node --cap ${inv.caps.join(" --cap ")}` }) : null,
+        h("details", { class: "advanced" }, h("summary", { class: "press" }, "Advanced"),
+          h("div", { class: "stack tight", style: "padding-top:14px" },
+            h("p", { class: "hint", style: "margin:0", text: `Or paste this into ${a.label} and let it set itself up, without answering by itself:` }),
+            copyBlock(agentPrompt(inv, code, a.connect), "Copy message"))));
   const view = screen("invite", tk, h("div", { class: "hero" }, diagram, h("h1", { class: "title", text: person ? `Invite ${handle}` : `Bring in ${a.label}` })),
     h("div", { class: "stack" }, status, body, done));
-  let joined = false;
+  let joined = false, connected = false;
+  const say = (text) => { const s = stickyStatus(text, true); status.replaceWith(s); status = s; };
   const t = every(view, async () => {
     try {
       const ag = (await api("GET", "/agents")).find((x) => x.handle === handle);
-      if (ag && !joined) { joined = true; const s2 = stickyStatus(`${handle} joined`, true); status.replaceWith(s2); status = s2; if (listRefresh) listRefresh(); }
-      if (ag && ag.last_seen) {
-        clearInterval(t);
-        const s3 = stickyStatus(`${handle} is connected`, true); status.replaceWith(s3); status = s3; diagram.connect(); done.classList.replace("ghost", "done");
+      if (ag && !joined) { joined = true; say(`${handle} joined`); if (listRefresh) listRefresh(); }
+      if (ag && ag.last_seen && !connected) {
+        connected = true; say(`${handle} is connected`); diagram.connect(); done.classList.replace("ghost", "done");
+        if (person || !a.connect) clearInterval(t);
       }
+      if (listening(ag)) { clearInterval(t); say(`${handle} is listening`); }
     } catch {}
   }, 2500);
 }
@@ -975,9 +1005,12 @@ function museMessage() {
   ].join("\n");
 }
 function listenCommand(a, kind) {
-  if (kind === "codex") return `codex exec "You have new Relay messages: check them with the relay tools and reply to each."`;
-  if (kind === "claude") return `claude -p "You have new Relay messages. Use the relay tools: check_replies, then reply to each." --allowedTools "mcp__relay__*"`;
   return `<the command that starts you without a window, telling you to check Relay and reply>`;
+}
+// codex and claude-code have a locked-down command built into the client: Relay's tools only
+function listenLine(a, kind) {
+  if (kind === "codex" || kind === "claude") return `python3 ~/.relay/bin/cli.py --as ${a.handle} listen --app ${kind === "codex" ? "codex" : "claude-code"}`;
+  return `python3 cli.py --as ${a.handle} listen --run '${listenCommand(a, kind)}'`;
 }
 function listenMessage(a, kind) {
   const lines = [
@@ -998,8 +1031,8 @@ function listenMessage(a, kind) {
 function wakePath(a) {
   const p = providerOf(a), client = (a.client || "").toLowerCase(), name = a.handle.toLowerCase();
   const terminal = /\bcli\b|\bcode\b|terminal/.test(client) || /claude[-_]?code/.test(name);
-  if (p === "codex") return { kind: "listen", cmd: "codex", label: "Codex" };
-  if (p === "claude" && terminal) return { kind: "listen", cmd: "claude", label: "Claude Code" };
+  if (p === "codex") return { kind: "listen", cmd: "codex", label: "Codex", app: "codex" };
+  if (p === "claude" && terminal) return { kind: "listen", cmd: "claude", label: "Claude Code", app: "claude-code" };
   if (p === "claude") return { kind: "claude" };
   if (p === "muse") return { kind: "muse" };
   if ((a.caps || []).length || terminal) return { kind: "listen", cmd: "other", label: a.handle };
@@ -1090,6 +1123,31 @@ async function wake(handle) {
     lede = "Muse checks Relay by itself, as often as it can.";
     ticker = checkIn("Checked in");
     main.replaceChildren(copyBlock(museMessage(), "Copy message for Muse"), ticker);
+  } else if (way.kind === "listen" && way.app) {
+    // the Relay helper: running on the user's computer, or one line to start it
+    lede = `${way.label} answers the moment a message lands, on your own plan.`;
+    let on = null, seenLine = null;
+    const paint = (ag) => {
+      const now = listening(ag);
+      if (now === on && !now) return;
+      on = now;
+      if (now) {
+        const w = ag.listener.woke;
+        const line = statusLine(`Running on your computer · ${w ? "last woke " + since(w) : "waiting for messages"}`, true);
+        line.classList.add("sticky-status", "ok");
+        main.replaceChildren(h("div", { class: "stack tight center wakeon" }, line,
+          h("p", { class: "hint center", style: "margin:0", text: `To stop it, run there: python3 ~/.relay/bin/cli.py --as ${a.handle} helper uninstall` })));
+        link.connect();
+      } else {
+        main.replaceChildren(h("div", { class: "stack tight" },
+          h("p", { class: "hint", style: "margin:0", text: `Paste into a terminal on the computer where ${way.label} is signed in:` }),
+          installBlock(a.handle, way.app)), seenLine = checkIn("Last seen"));
+      }
+    };
+    paint(a);
+    ticker = { update: async () => {
+      try { const x = (await api("GET", "/agents")).find((y) => y.handle === a.handle); if (x) { paint(x); if (!on && seenLine) seenLine.update(); } } catch {}
+    } };
   } else if (way.kind === "listen") {
     lede = `${way.label === a.handle ? a.handle : way.label} answers the moment a message lands.`;
     ticker = checkIn("Last seen");
@@ -1125,7 +1183,7 @@ async function wake(handle) {
       } else {
         const kind = way.kind === "listen" ? way.cmd : providerOf(a) === "claude" ? "claude" : "other";
         body.replaceChildren(h("p", { class: "hint", style: "margin:0", text: "On an always-on computer. Hears each message within a second." }),
-          copyBlock(`python3 cli.py --as ${a.handle} listen --run '${listenCommand(a, kind)}'`));
+          copyBlock(listenLine(a, kind)));
       }
     }
     render();

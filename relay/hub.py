@@ -133,6 +133,9 @@ class Store:
                 c.execute("ALTER TABLE agents ADD COLUMN owner INTEGER NOT NULL DEFAULT 0")
             if "client" not in agent_cols:          # the app it connects from, as that app names itself
                 c.execute("ALTER TABLE agents ADD COLUMN client TEXT")
+            for col in ("listener_app TEXT", "listener_seen REAL", "listener_woke REAL"):
+                if col.split()[0] not in agent_cols:   # the Relay helper on the agent's computer
+                    c.execute(f"ALTER TABLE agents ADD COLUMN {col}")
             if "provider_source" not in agent_cols:  # 'invite' | 'detected' | 'owner'
                 c.execute("ALTER TABLE agents ADD COLUMN provider_source TEXT")
             if "provider" not in {r["name"] for r in c.execute("PRAGMA table_info(invites)")}:
@@ -234,6 +237,11 @@ class ClaimInviteIn(BaseModel):
 
 class CapsIn(BaseModel):
     caps: list[str]
+
+
+class ListenerIn(BaseModel):
+    app: Optional[str] = None        # which app the Relay helper wakes: codex | claude-code
+    woke: Optional[float] = None     # when it last woke that app (the helper's own clock)
 
 
 class MessageIn(BaseModel):
@@ -560,7 +568,9 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
     web_types = {".html": "text/html; charset=utf-8", ".css": "text/css; charset=utf-8",
                  ".js": "text/javascript; charset=utf-8", ".svg": "image/svg+xml", ".png": "image/png",
                  ".jpg": "image/jpeg", ".webp": "image/webp", ".mp4": "video/mp4",
-                 ".json": "application/json"}
+                 ".json": "application/json",
+                 # the one-line installers: plain text, so `irm` hands PowerShell a string
+                 ".sh": "text/plain; charset=utf-8", ".ps1": "text/plain; charset=utf-8"}
     media_types = (".mp4", ".jpg", ".webp", ".png")
 
     def web(name: str) -> Response:
@@ -589,9 +599,34 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
         from fastapi.responses import RedirectResponse
         return RedirectResponse("/", status_code=308)
 
+    # The one-line installers carry this hub's own address, so the line people paste needs
+    # only the invite code. The address comes from the request (the deploy runs uvicorn with
+    # --proxy-headers, so it is https behind Railway) and must look like a plain origin before
+    # it goes anywhere near a shell.
+    origin_re = re.compile(r"^https?://[A-Za-z0-9.-]+(:[0-9]{1,5})?$")
+    installers = ("install.sh", "install.ps1")
+
+    def installer(name: str, request: Request) -> Response:
+        origin = f"{request.url.scheme}://{request.url.netloc}"
+        if not origin_re.match(origin):
+            raise HTTPException(400, "unexpected host")
+        if name not in web_files:
+            raise HTTPException(404, "not found")
+        with open(os.path.join(web_dir, name), encoding="utf-8") as f:
+            body = f.read().replace("__RELAY_HUB__", origin)
+        return Response(body, media_type=web_types[os.path.splitext(name)[1]], headers=page_headers)
+
+    @app.get("/install.sh", include_in_schema=False)
+    def install_sh(request: Request):
+        return installer("install.sh", request)
+
+    @app.get("/install.ps1", include_in_schema=False)
+    def install_ps1(request: Request):
+        return installer("install.ps1", request)
+
     @app.get("/static/{name}", include_in_schema=False)
-    def static_file(name: str):           # only files shipped in relay/web; the name is a dict key
-        return web(name)
+    def static_file(name: str, request: Request):   # only files shipped in relay/web; the name is a dict key
+        return installer(name, request) if name in installers else web(name)
 
     @app.get("/cli.py", include_in_schema=False)
     def cli_py():              # public: it is the open client, and holds no secrets
@@ -796,13 +831,33 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
                 if sees_emails else {}
             return [{"handle": r["handle"], "caps": _loads(r["caps"], []), "role": r["role"],
                      "provider": r["provider"], "client": r["client"], "last_seen": r["last_seen"],
-                     "owner": bool(r["owner"]),
+                     "owner": bool(r["owner"]), "listener": listener_out(r),
                      "email": emails.get(r["handle"])}
                     for r in c.execute("SELECT * FROM agents ORDER BY handle")]
 
     @app.get("/agents/me")
     def whoami(me: dict = Depends(auth)):
         return me
+
+    def listener_out(r: sqlite3.Row) -> Optional[dict]:
+        if not r["listener_seen"]:
+            return None
+        return {"app": r["listener_app"], "seen": r["listener_seen"], "woke": r["listener_woke"]}
+
+    @app.put("/agents/me/listener")
+    def set_listener(body: ListenerIn, me: dict = Depends(auth)):
+        """The Relay helper on the agent's own computer says it is running (and when it last
+        woke its app), so the owner can see it. Long-polls of the inbox keep `seen` fresh."""
+        need_agent(me)
+        if body.app is not None and body.app not in ("codex", "claude-code"):
+            raise HTTPException(400, "app must be codex or claude-code")
+        now = _now()
+        woke = min(body.woke, now) if body.woke else None
+        with store.tx() as c:
+            c.execute("UPDATE agents SET listener_app=?, listener_seen=?,"
+                      " listener_woke=COALESCE(?, listener_woke) WHERE handle=?",
+                      (body.app, now, woke, me["handle"]))
+            return listener_out(c.execute("SELECT * FROM agents WHERE handle=?", (me["handle"],)).fetchone())
 
     @app.put("/agents/me/caps")
     def set_caps(body: CapsIn, me: dict = Depends(auth)):
@@ -844,6 +899,10 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
         holds for up to N seconds until something arrives (long-poll), so a listener hears a
         message within about a second instead of at its next check."""
         need_agent(me)
+        if wait:                       # a listener: say it is still there (only one that reported in)
+            with store.tx() as c:
+                c.execute("UPDATE agents SET listener_seen=? WHERE handle=? AND listener_seen IS NOT NULL",
+                          (_now(), me["handle"]))
         deadline = time.monotonic() + wait
         while True:
             with store.ro() as c:
