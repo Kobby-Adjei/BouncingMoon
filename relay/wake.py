@@ -35,6 +35,7 @@ ROUTINE_PREFIX = "https://api.anthropic.com/v1/claude_code/routines/"
 ROUTINE_BETA = "experimental-cc-routine-2026-04-01"
 COOLDOWN = 20.0
 TIMEOUT = 15.0
+READ_WINDOW = 180.0      # how long after a fire the agent has to read its messages before we say it didn't
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS wakes(
@@ -45,6 +46,71 @@ CREATE TABLE IF NOT EXISTS wakes(
 
 class WakeError(ValueError):
     pass
+
+
+# ------------------------------------------------------------ what a wake-up's state means
+# A fire that got through only proves the agent was started. Whether it then reached Relay shows in
+# `agents.last_read`, stamped when the agent reads its inbox (check_replies, GET /inbox). The handle may
+# be shared by other clients of the same agent, so a read is good evidence, not proof.
+def wake_state(last_fired: Optional[float], last_status: Optional[str], last_read: Optional[float],
+               now: float, window: float = READ_WINDOW) -> str:
+    """ready: never fired · failed: the last fire was refused · ok: read since the last fire ·
+    waiting: fired less than `window` ago, no read yet · no_read: fired longer ago, no read since."""
+    if not last_fired:
+        return "ready"
+    if last_status and not last_status.startswith("ok"):
+        return "failed"
+    if last_read and last_read >= last_fired:
+        return "ok"
+    return "waiting" if now - last_fired < window else "no_read"
+
+
+def _code(last_status: Optional[str]) -> Optional[int]:
+    m = (last_status or "").split()
+    return int(m[1]) if len(m) > 1 and m[0] == "failed" and m[1].isdigit() else None
+
+
+def wake_problem(kind: str, state: str, last_status: Optional[str]) -> Optional[dict]:
+    """Plain words and the exact fix, never a bare code. `fix` tells the screen what to offer:
+    form (paste the link and token again) · claude (open the task in Claude) · test (try again)."""
+    routine = kind == "claude_routine"
+    if state == "no_read":
+        if routine:
+            return {"code": "no_read", "fix": "claude", "text": "Claude woke up but couldn't open Relay. In the task, "
+                    "turn on Relay under Connectors, save, then press Test again."}
+        return {"code": "no_read", "fix": "test",
+                "text": "It woke up, but nothing read its Relay messages afterwards."}
+    if state != "failed":
+        return None
+    code, st = _code(last_status), last_status or ""
+    if routine:
+        if code in (401, 403):
+            return {"code": "token", "fix": "form", "text": "That token doesn't match this task. In Claude, "
+                    "generate a new token and paste the link and token again."}
+        if code == 404:
+            return {"code": "not_found", "fix": "form",
+                    "text": "Claude can't find that task. Copy the link again from the task's API trigger."}
+        if code == 429:
+            return {"code": "rate_limited", "fix": "test",
+                    "text": "Claude is limiting how often this task runs. It'll work again within the hour."}
+        if code == 400 and st.endswith("paused"):
+            return {"code": "paused", "fix": "claude", "text": "This task is paused in Claude. Turn it back on."}
+        if code == 400:
+            return {"code": "rejected", "fix": "form", "text": "Claude didn't accept the wake-up. "
+                    "Copy the link and token again from the task's API trigger."}
+        if code and code >= 500:
+            return {"code": "server", "fix": "test", "text": "Claude had a problem on its side. Try again in a minute."}
+        return {"code": "unreachable", "fix": "test", "text": "Relay couldn't reach Claude. Try again in a minute."}
+    if code in (401, 403):
+        return {"code": "refused", "fix": "test",
+                "text": "Your server turned the wake-up away. Check that it accepts Relay's signature."}
+    if code == 404:
+        return {"code": "not_found", "fix": "test", "text": "Nothing answers at that address. Check the URL."}
+    if code == 429:
+        return {"code": "rate_limited", "fix": "test", "text": "Your server is limiting requests. It'll work again soon."}
+    if code:
+        return {"code": "server", "fix": "test", "text": "Your server answered with an error."}
+    return {"code": "unreachable", "fix": "test", "text": "Relay couldn't reach that address."}
 
 
 def _cipher(admin_token: str, override: Optional[str]):
@@ -69,6 +135,15 @@ def _public_https(url: str) -> str:
         if not ipaddress.ip_address(info[4][0]).is_global:
             raise WakeError("the wake-up URL must be a public address")
     return url.strip()
+
+
+def _says_paused(e) -> bool:
+    """Only a yes/no is kept from the error body; the body itself is never stored or shown."""
+    try:
+        body = (e.read(2048) or b"").decode("utf-8", "replace").lower()
+    except Exception:
+        return False
+    return "paus" in body or "disabled" in body
 
 
 class Waker:
@@ -109,7 +184,7 @@ class Waker:
         with self.store.tx() as c:
             c.execute("INSERT INTO wakes(handle,kind,url,secret,created) VALUES (?,?,?,?,?)"
                       " ON CONFLICT(handle) DO UPDATE SET kind=excluded.kind, url=excluded.url,"
-                      " secret=excluded.secret, last_status=NULL",
+                      " secret=excluded.secret, last_status=NULL, last_fired=NULL",
                       (handle, kind, url, self.fernet.encrypt(secret.encode()).decode(), time.time()))
         out = self.get(handle)
         if shown:
@@ -119,12 +194,17 @@ class Waker:
     def get(self, handle: str) -> Optional[dict]:
         with self.store.ro() as c:
             r = c.execute("SELECT * FROM wakes WHERE handle=?", (handle,)).fetchone()
+            a = c.execute("SELECT last_read FROM agents WHERE handle=?", (handle,)).fetchone() if r else None
         if not r:
             return None
+        last_read = a["last_read"] if a else None
         u = urllib.parse.urlparse(r["url"])
         shown_url = r["url"] if r["kind"] == "webhook" else f"{u.scheme}://{u.netloc}{u.path[:60]}…/fire"
+        state = wake_state(r["last_fired"], r["last_status"], last_read, time.time())
         return {"handle": handle, "kind": r["kind"], "url": shown_url, "last_fired": r["last_fired"],
-                "last_status": r["last_status"], "fires": r["fires"]}
+                "last_status": r["last_status"], "fires": r["fires"], "last_read": last_read,
+                "state": state, "read_window": READ_WINDOW,
+                "problem": wake_problem(r["kind"], state, r["last_status"])}
 
     def remove(self, handle: str) -> bool:
         with self.store.tx() as c:
@@ -191,14 +271,17 @@ class Waker:
             req = urllib.request.Request(r["url"], data=body, method="POST", headers={
                 "Content-Type": "application/json", "X-Relay-Timestamp": ts,
                 "X-Relay-Signature": f"sha256={sig}", "User-Agent": "relay-hub"})
+        started = time.time()                 # before the request: a quick agent may read before it returns
         try:
             with self.open(req) as resp:
                 status = f"ok {getattr(resp, 'status', 200)}"
         except urllib.error.HTTPError as e:
             status = f"failed {e.code}"
+            if e.code == 400 and r["kind"] == "claude_routine" and _says_paused(e):
+                status += " paused"
         except Exception as e:
             status = f"failed: {type(e).__name__}"
         with self.store.tx() as c:
             c.execute("UPDATE wakes SET last_fired=?, last_status=?, fires=fires+1 WHERE handle=?",
-                      (time.time(), status, handle))
+                      (started, status, handle))
         return status

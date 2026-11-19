@@ -145,6 +145,9 @@ function seg(options, value, onChange) {
 function tick(cls = "tick") {
   return svg("0 0 24 24", [{ tag: "circle", cx: "12", cy: "12", r: "11" }, { d: "M7 12.5l3.2 3.2L17 9" }], cls);
 }
+function cross() {
+  return svg("0 0 24 24", [{ tag: "circle", cx: "12", cy: "12", r: "11" }, { d: "M8.6 8.6l6.8 6.8M15.4 8.6l-6.8 6.8" }], "tick cross");
+}
 function bigTick() { return h("span", { class: "burst" }, tick("tick big")); }
 function statusLine(text, ok = false) {
   return h("div", { class: "status" + (ok ? " ok" : "") }, ok ? tick() : h("span", { class: "dot wait" }), h("span", { text }));
@@ -199,6 +202,7 @@ function linkup(left) {
   const node = h("span", { class: "node" }, h("span", { class: "dot wait" }));
   const el = h("div", { class: "linkup" }, left, h("div", { class: "wire" }, line, node), relay);
   el.connect = () => { if (el.classList.contains("done")) return; el.classList.add("done"); node.replaceChildren(tick()); };
+  el.disconnect = () => { el.classList.remove("done"); node.replaceChildren(h("span", { class: "dot wait" })); };
   return el;
 }
 
@@ -1033,10 +1037,9 @@ function wakePath(a) {
   const terminal = /\bcli\b|\bcode\b|terminal/.test(client) || /claude[-_]?code/.test(name);
   const helper = a.listener && a.listener.app;     // the Relay helper said which app it wakes
   if (helper === "codex") return { kind: "listen", cmd: "codex", label: "Codex", app: "codex" };
-  if (helper === "claude-code") return { kind: "listen", cmd: "claude", label: "Claude Code", app: "claude-code" };
   if (p === "codex") return { kind: "listen", cmd: "codex", label: "Codex", app: "codex" };
-  if (p === "claude" && terminal) return { kind: "listen", cmd: "claude", label: "Claude Code", app: "claude-code" };
-  if (p === "claude") return { kind: "claude" };
+  // Claude: on the user's computer through the Relay helper, or in Anthropic's cloud as a routine
+  if (p === "claude" || helper === "claude-code") return { kind: "claude", cmd: "claude", label: "Claude Code", app: "claude-code" };
   if (p === "muse") return { kind: "muse" };
   if ((a.caps || []).length || terminal) return { kind: "listen", cmd: "other", label: a.handle };
   return { kind: "other" };
@@ -1056,28 +1059,39 @@ async function wake(handle) {
   const link = linkup(avatar(a, 64));
   const main = h("div", { class: "stack" });
 
-  // the one place a stored wake-up turns into words, whichever way it was set
+  // the one place a stored wake-up turns into words, whichever way it was set. A fire that got through
+  // only proves the agent was started; `state` (from the hub) also says whether it then read its messages.
   function onState(c) {
-    const bad = c.last_status && !c.last_status.startsWith("ok");
-    return { ok: !bad, text: bad ? `On · the last try didn't get through (${c.last_status.replace(/^failed:?\s*/, "")})`
-                                 : `On · ${c.last_fired ? "last woke " + since(c.last_fired) : "ready"}` };
+    const st = c.state || (c.last_status && !c.last_status.startsWith("ok") ? "failed" : c.last_fired ? "ok" : "ready");
+    if (st === "failed") return { ok: false, text: (c.problem && c.problem.text) || "The last try didn't get through." };
+    if (st === "waiting") return { ok: false, text: `On · woke ${since(c.last_fired)}, waiting for it to read` };
+    if (st === "no_read") return { ok: false, text: (c.problem && c.problem.text) || `On · woke ${since(c.last_fired)}, but nothing read its messages` };
+    return { ok: st === "ok", text: `On · ${c.last_fired ? "last woke " + since(c.last_fired) : "ready"}` };
   }
   function showOn(c, celebrate) {
     cur = c;
+    if (c.kind === "claude_routine") {                  // a routine, however it was saved: the two-part check
+      if (way.kind === "claude") { tab = "cloud"; drawTab(); }
+      else { main.replaceChildren(routineArea); drawRoutine(c); }
+      return;
+    }
     const s = onState(c);
     const line = statusLine(s.text, s.ok);
     line.classList.add("sticky-status"); if (s.ok && celebrate) line.classList.add("ok");
     main.replaceChildren(h("div", { class: "stack tight center wakeon" }, line,
+      c.last_status && !s.ok ? h("p", { class: "raw", text: rawStatus(c) }) : null,
       h("div", { class: "alt" }, h("button", { class: "link sm muted press", type: "button", onclick: turnOff }, "Turn off"))));
-    if (s.ok) link.connect();
+    if (s.ok) link.connect(); else link.disconnect();
   }
+  const rawStatus = (c) => `Last try: ${c.last_status.replace(/^ok\s+/, "HTTP ").replace(/^failed:?\s*/, (m) => /\d/.test(c.last_status) ? "HTTP " : "")}`;
   async function turnOff() {
     await api("DELETE", path).catch(() => {});
+    if (way.kind === "claude") { cur = {}; watching++; link.disconnect(); drawTab(); return; }
     nav(route, { replace: true });        // draw the screen afresh, off
   }
   // saving is the same call from the plain flow and from Advanced: same body, same test, same status after
   async function saveRoutine(url, token) {
-    await api("PUT", path, { kind: "claude_routine", url: url.trim(), token: token.trim() });
+    await api("PUT", path, { kind: "claude_routine", url, token });
     const t = await api("POST", `${path}/test`);
     showOn(t, true);
     return t;
@@ -1098,30 +1112,176 @@ async function wake(handle) {
     return line;
   }
 
-  function routineForm(submitLabel) {
-    const url = h("input", { class: "field", type: "url", placeholder: "https://api.anthropic.com/…", autocomplete: "off", spellcheck: "false",
-                             "aria-label": "The link Claude gives you" });
-    const tok = h("input", { class: "field", type: "password", placeholder: "The code", autocomplete: "off", "aria-label": "The code" });
-    const err = h("p", { class: "err", role: "alert" }), save = h("button", { class: "btn press", type: "submit" }, submitLabel);
-    return h("form", { class: "stack tight", onsubmit: async (e) => {
+  // ---- a Claude routine: the link and token from its API trigger, checked here before anything is saved
+  const TRIGGER = "https://api.anthropic.com/v1/claude_code/routines/trig_";
+  function linkProblem(v) {
+    if (!v) return "Paste the link from the API trigger.";
+    if (v.startsWith("sk-ant-")) return "That's the token. The link starts with https://api.anthropic.com.";
+    if (!v.startsWith(TRIGGER) || !v.endsWith("/fire") || v.length < TRIGGER.length + 8) return "That's not the trigger link. Copy the URL under API trigger. It ends in /fire.";
+    return "";
+  }
+  function tokenProblem(v) {
+    if (!v) return "Paste the token too.";
+    if (/^https?:/.test(v)) return "That's the link. Paste the token here.";
+    if (!v.startsWith("sk-ant-oat01-")) return "Tokens start with sk-ant-oat01-. Copy it again.";
+    if (v.length < 40) return "That token looks cut off. Copy it again in full.";
+    return "";
+  }
+  function routineFields() {
+    const url = h("input", { class: "field", type: "url", placeholder: "https://api.anthropic.com/…/fire", autocomplete: "off", spellcheck: "false", "aria-label": "Link" });
+    const tok = h("input", { class: "field", type: "password", placeholder: "sk-ant-oat01-…", autocomplete: "off", "aria-label": "Token" });
+    const urlErr = h("p", { class: "fielderr", role: "alert" }), tokErr = h("p", { class: "fielderr", role: "alert" });
+    const clean = (el) => el.value.replace(/\s+/g, "");      // a copy that wrapped across lines still works
+    const show = (el, err, msg) => { err.textContent = msg; el.setAttribute("aria-invalid", msg ? "true" : "false"); };
+    url.addEventListener("input", () => show(url, urlErr, ""));
+    tok.addEventListener("input", () => show(tok, tokErr, ""));
+    return {
+      nodes: [h("label", { class: "fieldlabel", text: "Link" }), url, urlErr, h("label", { class: "fieldlabel", text: "Token" }), tok, tokErr],
+      check() {
+        const u = linkProblem(clean(url)), t = tokenProblem(clean(tok));
+        show(url, urlErr, u); show(tok, tokErr, t);
+        if (u) url.focus(); else if (t) tok.focus();
+        return !u && !t;
+      },
+      values: () => [clean(url), clean(tok)],
+      clear() { tok.value = ""; },
+    };
+  }
+  // the save button for a set of fields: check here, then save, test and show the result
+  function saver(fields, label) {
+    const err = h("p", { class: "err", role: "alert" }), btn = h("button", { class: "btn press", type: "submit" }, label);
+    const submit = async (e) => {
       e.preventDefault(); err.textContent = "";
-      if (!url.value.trim() || !tok.value.trim()) { err.textContent = "Paste both the link and the code."; return; }
-      save.disabled = true;
-      try { await saveRoutine(url.value, tok.value); tok.value = ""; } catch (x) { err.textContent = x.message; }
-      save.disabled = false;
-    } }, h("label", { class: "fieldlabel", text: "Paste the link Claude gives you" }), url,
-       h("label", { class: "fieldlabel", text: "Paste the code" }), tok, save, err);
+      if (!fields.check()) return;
+      btn.disabled = true; btn.textContent = "Testing…";
+      try { await saveRoutine(...fields.values()); fields.clear(); } catch (x) { err.textContent = x.message; }
+      btn.disabled = false; btn.textContent = label;
+    };
+    return { btn, err, submit };
+  }
+  function routineForm(submitLabel) {
+    const f = routineFields(), s = saver(f, submitLabel);
+    return h("form", { class: "stack tight", novalidate: true, onsubmit: s.submit }, ...f.nodes, s.btn, s.err);
+  }
+  const openClaude = (label = "Open Claude") => h("a", { class: "btn quiet small press", href: "https://claude.ai/code/routines", target: "_blank", rel: "noopener noreferrer" }, label);
+  const needsRelay = () => h("div", { class: "needs" }, avatar("relay", 28), h("span", null, "Turn on ", h("b", { text: "Relay" }), " under Connectors"));
+  function copyInstructions() {
+    const b = h("button", { class: "btn quiet small press", type: "button" }, "Copy instructions");
+    b.addEventListener("click", () => copy(routinePrompt(a.handle), b, "Copy instructions"));
+    return b;
+  }
+
+  // the two-part check: did Claude wake up, and did it then read its messages?
+  function checkRow(kind, text, when) {
+    const ic = kind === "ok" ? tick() : kind === "fail" ? cross() : h("span", { class: "ring" });
+    return h("li", { class: "is-" + kind }, ic, h("span", { class: "grow", text }), when ? h("span", { class: "when", text: when }) : null);
+  }
+  function checks(c) {
+    const st = c ? c.state : "idle";
+    const fired = st !== "idle" && st !== "ready" && st !== "failed";
+    return h("ul", { class: "checks" },
+      st === "failed" ? checkRow("fail", "Claude didn't wake up") : checkRow(fired ? "ok" : "idle", "Claude woke up", fired ? since(c.last_fired) : null),
+      st === "ok" ? checkRow("ok", "Claude read its messages", since(c.last_read))
+        : st === "waiting" ? checkRow("wait", "Claude read its messages", "Waiting…")
+        : st === "no_read" ? checkRow("fail", "Claude didn't read its messages")
+        : checkRow("idle", "Claude read its messages"));
+  }
+  // steps to set a routine up; the test is step 3, so the check sits right where it will happen
+  function routineSteps() {
+    const f = routineFields(), s = saver(f, "Save and test");
+    const step = (title, ...kids) => h("li", null, h("div", null, h("div", { class: "stt", text: title }), ...kids));
+    return h("form", { novalidate: true, onsubmit: s.submit }, h("ol", { class: "steps wsteps" },
+      step("Make the task in Claude",
+        h("div", { class: "btnrow" }, openClaude(), copyInstructions()),
+        needsRelay()),
+      step("Add an API trigger",
+        h("p", { class: "sub", text: "Generate a token, then paste the link and the token here." }),
+        h("div", { class: "stack tight" }, ...f.nodes)),
+      step("Test", checks(null), s.btn, s.err)));
+  }
+  // after setup: the check, what went wrong in plain words, and the one thing that fixes it
+  let watching = 0;
+  function drawRoutine(c) {
+    cur = c;
+    const p = c.problem, waiting = c.state === "waiting";
+    const again = h("button", { class: "btn quiet small press", type: "button", disabled: waiting, onclick: async () => {
+      again.disabled = true; again.textContent = "Testing…";
+      try { drawRoutine(await api("POST", `${path}/test`)); } catch { again.disabled = false; again.textContent = "Test again"; }
+    } }, waiting ? "Checking…" : "Test again");
+    routineArea.replaceChildren(h("div", { class: "stack tight wcard" },
+      checks(c),
+      p ? h("div", { class: "wprob" }, h("p", { text: p.text }), p.code === "no_read" ? needsRelay() : null) : null,
+      p && p.fix === "form" ? routineForm("Save and test") : null,
+      h("div", { class: "wactions" },
+        p && p.fix === "claude" ? openClaude() : null,
+        p && p.fix === "form" ? null : again,
+        h("button", { class: "link sm muted press", type: "button", onclick: turnOff }, "Turn off")),
+      c.last_status ? h("p", { class: "raw", text: rawStatus(c) }) : null));
+    if (c.state === "ok") link.connect(); else link.disconnect();
+    if (waiting) watch();
+  }
+  // while Claude has a few minutes to read, ask the hub every 3 s; repaint only when something changes
+  function watch() {
+    const mine = ++watching, until = Date.now() + 200000;
+    const step = async () => {
+      if (mine !== watching || !main.isConnected || Date.now() > until) return;
+      let c = null;
+      try { c = await api("GET", path); } catch {}
+      if (mine !== watching) return;
+      if (c && c.kind === "claude_routine") {
+        if (c.state !== cur.state || c.last_fired !== cur.last_fired) return drawRoutine(c);
+        cur = c;
+      }
+      setTimeout(step, 3000);
+    };
+    setTimeout(step, 3000);
+  }
+
+  // ---- Claude on the user's computer: the Relay helper, one line in Terminal
+  let invite = null;
+  async function drawComputer(ag) {
+    if (listening(ag)) {
+      const w = ag.listener.woke;
+      const line = statusLine(`Running on your computer${w ? " · woke " + since(w) : ""}`, true);
+      line.classList.add("sticky-status", "ok");
+      computerArea.replaceChildren(h("div", { class: "stack tight center wakeon" }, line,
+        h("p", { class: "hint center", style: "margin:0", text: `To stop it, run there: python3 ~/.relay/bin/cli.py --as ${a.handle} helper uninstall` })));
+      link.connect();
+      return;
+    }
+    const slot = h("div", { class: "msgcard" }, h("pre", { class: "block muted", text: "…" }));
+    computerArea.replaceChildren(h("div", { class: "stack tight" },
+      h("p", { class: "hint", style: "margin:0", text: "Paste this into Terminal:" }), slot,
+      h("p", { class: "hint center", style: "margin:0", text: "Your computer needs to be on. Runs on your Claude plan." }),
+      h("div", { class: "alt" }, statusLine("Not running yet"))));
+    if (!invite) {      // a one-time code for this same agent; its key elsewhere keeps working
+      try { invite = (await api("POST", "/invites", { handle: a.handle, hours: 24, rejoin: true })).code; } catch { invite = a.handle; }
+    }
+    slot.replaceWith(installBlock(invite, "claude-code"));
+  }
+  function drawTab() {
+    choose.querySelectorAll("button").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.v === tab)));
+    if (tab === "computer") { watching++; pane.replaceChildren(computerArea); drawComputer(a); return; }
+    pane.replaceChildren(routineArea);
+    if (cur.kind === "claude_routine") drawRoutine(cur);
+    else { link.disconnect(); routineArea.replaceChildren(routineSteps()); }
   }
 
   // the plain path
-  let lede, ticker = null;
+  let lede, ticker = null, tab = "computer";
+  const routineArea = h("div"), computerArea = h("div"), pane = h("div");
+  const choose = seg([["computer", "On my computer"], ["cloud", "When my computer is off"]], tab, (v) => { tab = v; drawTab(); });
+  choose.classList.add("wseg");
   if (way.kind === "claude") {
     lede = "Claude answers the moment a message lands.";
-    main.replaceChildren(h("ol", { class: "steps" },
-      h("li", null, h("div", null, h("span", { text: "Open Claude and create a new task with the Relay connector on." }),
-        h("a", { class: "btn quiet small press opener", href: "https://claude.ai/code/routines", target: "_blank", rel: "noopener noreferrer" }, "Open Claude"))),
-      h("li", null, h("div", null, h("span", { text: "Give it these instructions:" }), copyBlock(routinePrompt(a.handle), "Copy instructions"))),
-      h("li", null, h("div", null, h("span", { text: "Have it start from a link. Claude shows you a link and a code." }), routineForm("Save")))));
+    tab = listening(a) || cur.kind !== "claude_routine" ? "computer" : "cloud";
+    main.replaceChildren(choose, pane);
+    drawTab();
+    let on = listening(a);
+    ticker = { update: async () => {
+      if (tab !== "computer") return;
+      try { const x = (await api("GET", "/agents")).find((y) => y.handle === a.handle); if (x && listening(x) !== on) { on = listening(x); a = x; drawComputer(x); } } catch {}
+    } };
   } else if (way.kind === "muse") {
     lede = "Muse checks Relay by itself, as often as it can.";
     ticker = checkIn("Checked in");
@@ -1158,7 +1318,7 @@ async function wake(handle) {
   } else {
     lede = `Ask ${a.handle}'s developer to connect a wake-up link.`;
   }
-  if (cur.kind) {
+  if (cur.kind && !(way.kind === "claude" && cur.kind === "claude_routine")) {     // Claude's routine lives in its own tab
     if (way.kind === "other" || way.kind === "muse") lede = `${a.handle} answers the moment a message lands.`;
     showOn(cur, false);
   }

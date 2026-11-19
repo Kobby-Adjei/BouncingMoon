@@ -197,3 +197,39 @@ def test_admin_removes_an_agent_and_its_key_dies(hub):
     assert hub.delete("/agents/muse-laptop", headers=H(ADMIN)).status_code == 404
     # the name is free again
     assert hub.post("/invites", headers=H(ADMIN), json={"handle": "muse-laptop"}).status_code == 200
+
+
+def test_a_rejoin_code_adds_a_key_and_the_old_one_keeps_working(hub):
+    """The Relay helper on another computer, for an agent whose key is already in use elsewhere
+    (say, Claude's connector): a one-time code that adds a key instead of replacing it."""
+    old = hub.post("/agents", headers=H(ADMIN), json={"handle": "claude", "provider": "claude"}).json()["token"]
+    person = hub.post("/agents", headers=H(ADMIN), json={"handle": "kobby", "role": "human"}).json()["token"]
+    other = hub.post("/agents", headers=H(ADMIN), json={"handle": "codex"}).json()["token"]
+    # owner-only, existing agents only, never for people
+    assert hub.post("/invites", headers=H(other), json={"handle": "claude", "rejoin": True}).status_code == 403
+    assert hub.post("/invites", headers=H(ADMIN), json={"handle": "ghost", "rejoin": True}).status_code == 404
+    assert hub.post("/invites", headers=H(ADMIN), json={"handle": "kobby", "rejoin": True}).status_code == 400
+    assert hub.post("/invites", headers=H(ADMIN), json={"handle": "claude"}).status_code == 409   # a plain invite still can't
+    first = invite(hub, "claude", rejoin=True)
+    inv = invite(hub, "claude", rejoin=True)                       # only the newest code works
+    assert inv["rejoin"] and inv["state"] == "pending" and inv["expires"] - inv["created"] == pytest.approx(24 * 3600)
+    assert hub.post("/invites/claim", json={"code": first["code"]}).status_code == 404
+    got = hub.post("/invites/claim", json={"code": inv["code"]}).json()
+    assert got["handle"] == "claude" and got["token"] != old
+    assert hub.post("/invites/claim", json={"code": inv["code"]}).status_code == 404       # one time
+    for tok in (old, got["token"]):                                # both keys act as the same agent
+        assert hub.get("/agents/me", headers=H(tok)).json()["handle"] == "claude"
+    assert [a["handle"] for a in hub.get("/agents", headers=H(ADMIN)).json()].count("claude") == 1
+    assert not any("claude joined" in m["text"] for m in hub.get("/messages", headers=H(person), params={"channel": "general"}).json())
+    # a new key from the agent's page retires every old one
+    new = hub.post("/agents/claude/token", headers=H(ADMIN)).json()["token"]
+    assert hub.get("/agents/me", headers=H(got["token"])).status_code == 401
+    assert hub.get("/agents/me", headers=H(old)).status_code == 401
+    assert hub.get("/agents/me", headers=H(new)).status_code == 200
+    # and removing the agent removes its extra keys
+    again = hub.post("/invites/claim", json={"code": invite(hub, "claude", rejoin=True)["code"]}).json()["token"]
+    hub.delete("/agents/claude", headers=H(ADMIN))
+    assert hub.get("/agents/me", headers=H(again)).status_code == 401
+    late = invite(hub, "codex", rejoin=True)
+    hub.delete("/agents/codex", headers=H(ADMIN))
+    assert hub.post("/invites/claim", json={"code": late["code"]}).status_code == 404

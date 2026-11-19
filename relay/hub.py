@@ -75,6 +75,8 @@ CREATE TABLE IF NOT EXISTS sessions(
 CREATE TABLE IF NOT EXISTS contacts(
   owner TEXT NOT NULL, name TEXT NOT NULL, address TEXT NOT NULL, created REAL,
   PRIMARY KEY(owner, name));
+CREATE TABLE IF NOT EXISTS agent_keys(
+  token_hash TEXT PRIMARY KEY, handle TEXT NOT NULL, created REAL);
 """
 
 HANDLE_RE = re.compile(r"^[a-z0-9][a-z0-9_.-]{0,31}$")
@@ -138,8 +140,13 @@ class Store:
                     c.execute(f"ALTER TABLE agents ADD COLUMN {col}")
             if "provider_source" not in agent_cols:  # 'invite' | 'detected' | 'owner'
                 c.execute("ALTER TABLE agents ADD COLUMN provider_source TEXT")
-            if "provider" not in {r["name"] for r in c.execute("PRAGMA table_info(invites)")}:
+            if "last_read" not in agent_cols:        # when the agent last read its inbox (wake-up checks)
+                c.execute("ALTER TABLE agents ADD COLUMN last_read REAL")
+            invite_cols = {r["name"] for r in c.execute("PRAGMA table_info(invites)")}
+            if "provider" not in invite_cols:
                 c.execute("ALTER TABLE invites ADD COLUMN provider TEXT")
+            if "rejoin" not in invite_cols:          # a code that adds a key to an agent that already exists
+                c.execute("ALTER TABLE invites ADD COLUMN rejoin INTEGER NOT NULL DEFAULT 0")
         finally:
             c.close()
 
@@ -178,6 +185,40 @@ class Store:
 
 
 # --------------------------------------------------------------------------- shapes
+CONTEXT_MESSAGES, CONTEXT_CHARS = 6, 2000
+
+
+def _fit(texts: list, budget: int) -> list:
+    """Trim the longest texts first (with "…") until all of them fit in `budget` characters."""
+    if sum(len(t) for t in texts) <= budget:
+        return texts
+    lo, hi = 0, max(len(t) for t in texts)          # the largest per-text cap that still fits
+    while lo < hi:
+        mid = (lo + hi + 1) // 2
+        lo, hi = (mid, hi) if sum(min(len(t), mid) for t in texts) <= budget else (lo, mid - 1)
+    cap = max(lo, 2)
+    return [t if len(t) <= cap else t[:cap - 1].rstrip() + "…" for t in texts]
+
+
+def with_context(c, msgs: list) -> list:
+    """A woken agent starts with no memory: a reply such as "do this" means nothing without what came
+    before it. The first message of each thread in a batch gets `context`, the thread's earlier
+    messages (oldest first, the last few, trimmed to a budget). Context is never marked read."""
+    seen = set()
+    for m in msgs:
+        t = m.get("thread")
+        if t is None or t in seen:
+            continue
+        seen.add(t)
+        rows = c.execute("SELECT id, sender, text, time FROM messages WHERE thread=? AND id<? ORDER BY id DESC LIMIT ?",
+                         (t, m["id"], CONTEXT_MESSAGES)).fetchall()[::-1]
+        if rows:
+            texts = _fit([r["text"] or "" for r in rows], CONTEXT_CHARS)
+            m["context"] = [{"id": r["id"], "from": r["sender"], "time": r["time"], "text": tx}
+                            for r, tx in zip(rows, texts)]
+    return msgs
+
+
 def msg_out(r: sqlite3.Row) -> dict:
     return {"id": r["id"], "from": r["sender"], "channel": r["channel"],
             "thread": r["thread"], "reply_to": r["reply_to"], "time": r["time"],
@@ -219,6 +260,7 @@ class InviteIn(BaseModel):
     provider: Optional[str] = None
     hours: float = 24
     note: Optional[str] = None
+    rejoin: bool = False             # for an agent that already exists: one more key, on another computer
 
 
 class OwnerIn(BaseModel):
@@ -353,7 +395,9 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
                 if r:
                     c.execute("UPDATE sessions SET last_used=? WHERE token_hash=?", (_now(), _hash(tok)))
             else:
-                r = c.execute("SELECT * FROM agents WHERE token_hash=?", (_hash(tok),)).fetchone()
+                r = c.execute("SELECT * FROM agents WHERE token_hash=?", (_hash(tok),)).fetchone() or \
+                    c.execute("SELECT a.* FROM agent_keys k JOIN agents a ON a.handle=k.handle"
+                              " WHERE k.token_hash=?", (_hash(tok),)).fetchone()   # a key from a re-join code
             if not r:
                 raise HTTPException(401, "unknown token")
             c.execute("UPDATE agents SET last_seen=? WHERE handle=?", (_now(), r["handle"]))
@@ -422,6 +466,11 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
             " ORDER BY m.id LIMIT ?", (last, h, h, h, h, limit)).fetchall()
         msgs = [msg_out(r) for r in rows]
         return {"messages": msgs, "cursor": msgs[-1]["id"] if msgs else last}
+
+    def mark_read(c, h: str) -> None:
+        """The agent itself fetched its messages. Unlike last_seen (any call at all), this is what tells
+        a wake-up that the agent it started really reached Relay."""
+        c.execute("UPDATE agents SET last_read=? WHERE handle=?", (_now(), h))
 
     def ack_to(c, h: str, cursor: int) -> None:
         c.execute("INSERT INTO cursors(agent,last) VALUES (?,?) ON CONFLICT(agent)"
@@ -517,7 +566,7 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
                  else "expired" if r["expires"] <= now else "pending")
         return {"id": r["id"], "handle": r["handle"], "role": r["role"],
                 "caps": _loads(r["caps"], []), "provider": r["provider"], "note": r["note"], "created": r["created"],
-                "expires": r["expires"], "claimed": r["claimed"], "state": state}
+                "expires": r["expires"], "claimed": r["claimed"], "state": state, "rejoin": bool(r["rejoin"])}
 
     # ---------------------------------------------------------------- web page
     # The dashboard is static: one HTML file and one script, no third-party code.
@@ -684,7 +733,7 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
                 raise HTTPException(404, f"no agent @{handle}")
             for table, col in (("subs", "agent"), ("follows", "agent"), ("cursors", "agent"),
                                ("contacts", "owner"), ("contacts", "address"), ("wakes", "handle"),
-                               ("people_emails", "handle"), ("sessions", "handle")):
+                               ("people_emails", "handle"), ("sessions", "handle"), ("agent_keys", "handle")):
                 c.execute(f"DELETE FROM {table} WHERE {col}=?", (handle,))
             c.execute("UPDATE jobs SET status='queued', claimed_by=NULL, lease_until=NULL"
                       " WHERE claimed_by=? AND status='claimed'", (handle,))
@@ -743,6 +792,7 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
             if not c.execute("SELECT 1 FROM agents WHERE handle=?", (handle,)).fetchone():
                 raise HTTPException(404, f"no agent @{handle}")
             c.execute("UPDATE agents SET token_hash=? WHERE handle=?", (_hash(token), handle))
+            c.execute("DELETE FROM agent_keys WHERE handle=?", (handle,))   # every old key, not just the first
         return {"handle": handle, "token": token}
 
     # ---------------------------------------------------------------- invites
@@ -752,13 +802,31 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
     @app.post("/invites")
     def new_invite(body: InviteIn, me: dict = Depends(auth)):
         need_admin(me)
-        check_new_agent(body.handle, body.role)
-        provider = check_provider(body.provider)
         if not 0.1 <= body.hours <= 168:
             raise HTTPException(400, "hours must be between 0.1 and 168")
         code = "inv_" + secrets.token_urlsafe(24)
         iid = "i_" + uuid.uuid4().hex[:12]
         now = _now()
+        if body.rejoin:
+            # The agent already exists and keeps its key (an app may be using it); claiming this adds a
+            # second key for it, e.g. for the Relay helper on another computer. Only the newest code works.
+            with store.tx() as c:
+                a = c.execute("SELECT * FROM agents WHERE handle=?", (body.handle,)).fetchone()
+                if not a:
+                    raise HTTPException(404, f"no agent @{body.handle}")
+                if a["role"] != "agent":
+                    raise HTTPException(400, "people sign in for themselves")
+                c.execute("UPDATE invites SET revoked=? WHERE handle=? AND rejoin=1 AND claimed IS NULL"
+                          " AND revoked IS NULL", (now, body.handle))
+                c.execute("INSERT INTO invites(id,code_hash,handle,role,caps,provider,note,created,expires,rejoin)"
+                          " VALUES (?,?,?,?,?,?,?,?,?,1)",
+                          (iid, _hash(code), a["handle"], a["role"], a["caps"], a["provider"], body.note, now,
+                           now + body.hours * 3600))
+                out = invite_out(c.execute("SELECT * FROM invites WHERE id=?", (iid,)).fetchone())
+            out["code"] = code
+            return out
+        check_new_agent(body.handle, body.role)
+        provider = check_provider(body.provider)
         with store.tx() as c:
             if c.execute("SELECT 1 FROM agents WHERE handle=?", (body.handle,)).fetchone():
                 raise HTTPException(409, f"@{body.handle} already exists")
@@ -812,9 +880,17 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
             r = c.execute("SELECT * FROM invites WHERE code_hash=?", (_hash(body.code.strip()),)).fetchone()
             if not r or r["claimed"] or r["revoked"] or r["expires"] <= now:
                 raise HTTPException(404, "invite is not valid: it was used, revoked, expired or mistyped")
+            token = "rly_" + secrets.token_urlsafe(32)
+            if r["rejoin"]:                    # one more key for an existing agent; its other keys keep working
+                a = c.execute("SELECT * FROM agents WHERE handle=?", (r["handle"],)).fetchone()
+                if not a:
+                    raise HTTPException(404, "invite is not valid: that agent was removed")
+                c.execute("INSERT INTO agent_keys(token_hash,handle,created) VALUES (?,?,?)",
+                          (_hash(token), a["handle"], now))
+                c.execute("UPDATE invites SET claimed=? WHERE id=?", (now, r["id"]))
+                return {"handle": a["handle"], "token": token, "role": a["role"], "caps": _loads(a["caps"], [])}
             if c.execute("SELECT 1 FROM agents WHERE handle=?", (r["handle"],)).fetchone():
                 raise HTTPException(409, f"@{r['handle']} already exists")
-            token = "rly_" + secrets.token_urlsafe(32)
             c.execute("INSERT INTO agents(handle,token_hash,caps,role,created,provider) VALUES (?,?,?,?,?,?)",
                       (r["handle"], _hash(token), r["caps"], r["role"], now, r["provider"]))
             c.execute("INSERT OR IGNORE INTO cursors(agent,last) VALUES (?,0)", (r["handle"],))
@@ -899,14 +975,18 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
         holds for up to N seconds until something arrives (long-poll), so a listener hears a
         message within about a second instead of at its next check."""
         need_agent(me)
-        if wait:                       # a listener: say it is still there (only one that reported in)
-            with store.tx() as c:
+        with store.tx() as c:
+            if wait:                   # a listener: say it is still there (only one that reported in)
                 c.execute("UPDATE agents SET listener_seen=? WHERE handle=? AND listener_seen IS NOT NULL",
                           (_now(), me["handle"]))
+            else:                      # the agent reading (a long-poll is a listener keeping watch, not a read)
+                mark_read(c, me["handle"])
         deadline = time.monotonic() + wait
         while True:
             with store.ro() as c:
                 box = inbox_for(c, me["handle"], limit)
+                if box["messages"] and not wait:          # a reader gets each thread's earlier messages too
+                    with_context(c, box["messages"])
             if box["messages"] or time.monotonic() >= deadline:
                 return box
             time.sleep(0.5)
@@ -1129,8 +1209,8 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
     from types import SimpleNamespace
     from . import connector
     connector.mount(app, SimpleNamespace(
-        store=store, auth=auth, post=post, inbox_for=inbox_for, ack_to=ack_to,
-        msg_out=msg_out, now=_now, loads=_loads, handle_re=HANDLE_RE))
+        store=store, auth=auth, post=post, inbox_for=inbox_for, ack_to=ack_to, mark_read=mark_read,
+        msg_out=msg_out, with_context=with_context, now=_now, loads=_loads, handle_re=HANDLE_RE))
     from . import people
     sb_url = supabase_url or os.environ.get("SUPABASE_URL")
     sb_key = supabase_key or os.environ.get("SUPABASE_PUBLISHABLE_KEY")

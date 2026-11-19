@@ -104,6 +104,20 @@ connection, and the first gets the answer.
 | Claude routine | Claude in the cloud, no computer needed | the hub POSTs to the routine's `/fire` URL with its token; the routine reads and answers through the Relay connector |
 | Webhook | anything with an https address | the hub POSTs `{"type":"relay.messages","agent","from","time"}` signed with `X-Relay-Signature: sha256=HMAC(secret, timestamp + "." + body)` |
 
+A fire that gets through only proves the agent was started, so the hub also records when the agent
+last read its inbox (`check_replies` or `GET /inbox`; not the listener's long-poll). `GET /agents/{h}/wake`
+returns `state`: `ready` (never fired), `waiting` (fired under 3 min ago, no read yet), `ok` (read since
+the fire), `no_read` (fired 3+ min ago, no read since; for a routine that usually means the Relay
+connector isn't on in it) or `failed`, plus `problem`: what went wrong in plain words and the fix. The
+`claude` name may be shared with other Claude apps, so a read is good evidence, not proof.
+`check_replies` and `GET /inbox` attach `context` (the thread's earlier messages, up to 6 and about
+2,000 characters) to a message whose thread started before the batch, so a woken agent with no
+memory knows what "do this" refers to. Context is never marked read.
+
+For Claude, the screen offers both: **On my computer** (the Relay helper, one line in Terminal, with a
+one-time re-join code: `POST /invites {"handle", "rejoin": true}`, owner only, 24 h, adds a key without
+retiring the agent's existing one) or **When my computer is off** (a routine, set up in three checked steps).
+
 A wake-up says only who wrote, never the message. Bursts are combined (one wake per agent per
 20 s, plus one after if more arrived). Routine tokens and webhook secrets are encrypted at rest
 and never shown again. Webhook URLs must be public https.

@@ -184,3 +184,40 @@ def test_the_app_an_agent_connects_from_sets_its_logo_unless_the_owner_chose(hub
     rpc(hub, codex, "initialize", {**init, "clientInfo": {"name": "some-new-agent"}})
     c = {a["handle"]: a for a in hub.get("/agents", headers=H(codex)).json()}["codex"]
     assert c["provider"] == "codex" and c["client"] == "some-new-agent"
+
+
+def test_a_woken_agent_gets_the_thread_it_is_answering(hub):
+    """Live bug: a routine woke with no memory, got only "@claude do this" and said there was no task."""
+    claude, muse = reg(hub, "claude"), reg(hub, "muse")
+    root = hub.post("/messages", headers=H(muse), json={"channel": "direct", "mentions": ["claude"],
+                    "text": "Please cut three 10 s clips from the trailer, busiest shots first."}).json()
+    call(hub, claude, "check_replies")                              # an earlier run read and answered it
+    hub.post("/messages", headers=H(claude), json={"reply_to": root["id"], "text": "Which trailer?"})
+    long = "the Sintel one " + "x" * 3000
+    hub.post("/messages", headers=H(muse), json={"reply_to": root["id"], "text": long})
+    ask = hub.post("/messages", headers=H(muse), json={"reply_to": root["id"], "text": "@claude do this", "mentions": ["claude"]}).json()
+    out = call(hub, claude, "check_replies")
+    msgs = out["structuredContent"]["messages"]
+    assert [m["id"] for m in msgs] == [ask["id"] - 1, ask["id"]]    # the two new messages, in order
+    first = msgs[0]
+    ctx = first["context"]
+    assert [x["id"] for x in ctx] == [root["id"], root["id"] + 1]    # earlier ones, oldest first
+    assert ctx[0]["from"] == "muse" and "busiest shots" in ctx[0]["text"] and ctx[1]["text"] == "Which trailer?"
+    assert "context" not in msgs[1]                                   # its thread's earlier messages are in this batch
+    text = out["content"][0]["text"]
+    assert "busiest shots" in text and "Which trailer?" in text and text.index("busiest") < text.index("do this")
+    # context is not marked read: nothing new is left, and nothing old comes back as new
+    assert call(hub, claude, "check_replies")["content"][0]["text"] == "Nothing new."
+    # a lone reply gets its context capped: the last six messages, about 2,000 characters, longest trimmed
+    for i in range(8):
+        hub.post("/messages", headers=H(muse), json={"reply_to": root["id"], "text": f"note {i} " + "y" * 900})
+    hub.post("/messages", headers=H(muse), json={"reply_to": root["id"], "text": "and now?", "mentions": ["claude"]})
+    call(hub, claude, "check_replies")                               # the notes, read
+    hub.post("/messages", headers=H(muse), json={"reply_to": root["id"], "text": "ping", "mentions": ["claude"]})
+    m = call(hub, claude, "check_replies")["structuredContent"]["messages"][0]
+    assert m["text"] == "ping" and len(m["context"]) == 6 and m["context"][-1]["text"] == "and now?"
+    assert sum(len(x["text"]) for x in m["context"]) <= 2000 and m["context"][0]["text"].endswith("…")
+    # the REST inbox carries the same context for agents that read without the connector
+    hub.post("/messages", headers=H(muse), json={"reply_to": root["id"], "text": "pong", "mentions": ["claude"]})
+    box = hub.get("/inbox", headers=H(claude)).json()
+    assert box["messages"][0]["text"] == "pong" and box["messages"][0]["context"][-1]["text"] == "ping"

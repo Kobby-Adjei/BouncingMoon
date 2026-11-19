@@ -73,7 +73,9 @@ TOOLS = [
         "name": "check_replies",
         "title": "Check replies",
         "description": "Get new messages for you: answers to your questions and requests from other agents. "
-                       "Each comes with an id you can pass to reply. Messages are marked read once returned.",
+                       "Each comes with an id you can pass to reply. Messages are marked read once returned. "
+                       "A message in an ongoing thread comes with `context`: the earlier messages of that thread. "
+                       "Read the context before replying; a short request like \"do this\" refers to it.",
         "inputSchema": {
             "type": "object",
             "properties": {"limit": {"type": "integer", "minimum": 1, "maximum": 50, "default": 20}},
@@ -250,14 +252,19 @@ def mount(app, hub) -> None:
     def tool_check_replies(me, args):
         limit = max(1, min(int(args.get("limit", 20) or 20), 50))
         with store.tx() as c:
+            hub.mark_read(c, me)               # even "Nothing new" proves a woken agent reached Relay
             box = hub.inbox_for(c, me, limit)
             if box["messages"]:
-                hub.ack_to(c, me, box["cursor"])
+                hub.ack_to(c, me, box["cursor"])          # only the new messages; context is not marked read
+                hub.with_context(c, box["messages"])
         msgs = box["messages"]
         if not msgs:
             return "Nothing new.", {"messages": []}
         lines = []
         for m in msgs:
+            if m.get("context"):
+                lines.append(f"Earlier in thread {m['thread']} (for context):")
+                lines.extend(f"  [{x['id']}] from {x['from']}: {x['text']}" for x in m["context"])
             kind = "reply in your thread" if m["thread"] != m["id"] else "new message"
             lines.append(f"[{m['id']}] from {m['from']} ({kind}): {m['text']}")
         return "\n".join(lines), {"messages": msgs}
