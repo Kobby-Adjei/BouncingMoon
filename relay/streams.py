@@ -350,8 +350,8 @@ class Watcher:
             count[i] += 1
             if REACTION.search(m["text"] or ""):
                 react[i] += 1
-            if m["amount"]:
-                money[i] += m["amount"]
+            if m["kind"] == "super":
+                money[i] += 1          # how many, not how much: amounts come in every currency
             if len(texts[i]) < 400:
                 texts[i].append(m["text"] or "")
         # each bucket against the stream's own pace over the previous 5 minutes (not the whole stream:
@@ -359,9 +359,18 @@ class Watcher:
         win = max(6, 300 // bucket)
         score = [0.0] * n
         for i in range(n):
-            prev = sorted(count[max(0, i - win):i]) or [count[i]]
+            window = count[max(0, i - win):i]
+            # only judge a moment against a full picture of what came before it: the first minutes of
+            # watching, and the sparse old messages YouTube hands over at the start (pinned Super Chats
+            # from hours earlier), would otherwise look like huge spikes
+            if count[i] < 10 or len(window) < win or sum(1 for x in window if x) < win * 0.6:
+                continue
+            prev = sorted(window)
             base = max(prev[len(prev) // 2], 1)
-            score[i] = (count[i] / base) * (1 + react[i] / max(count[i], 1)) + min(money[i] / 20, 3)
+            # reactions count only above this chat's usual share ("W" spam is normal for some streams)
+            usual = sum(react[max(0, i - win):i]) / max(sum(window), 1)
+            extra = max(0.0, react[i] / max(count[i], 1) - usual)
+            score[i] = (count[i] / base) * (1 + extra) + min(money[i] * 0.25, 1.5)
         # merge neighbouring hot buckets into one moment, best first
         order = sorted(range(n), key=lambda i: score[i], reverse=True)
         used, picks = set(), []
@@ -387,7 +396,7 @@ class Watcher:
                 "chat_per_min": round(sum(count[lo:hi + 1]) * 60 / ((hi - lo + 1) * bucket)),
                 "vs_usual": round(score[i], 1),
                 "reaction_share": round(sum(react[lo:hi + 1]) / max(sum(count[lo:hi + 1]), 1), 2),
-                "super_chats": round(sum(money[lo:hi + 1]), 2) or None,
+                "super_chats": int(sum(money[lo:hi + 1])) or None,
                 "chat_sample": [t[:120] for t, _ in sample.most_common(8)],
             })
         return {**st, "bucket_seconds": bucket, "moments": picks,
@@ -459,7 +468,7 @@ def mount(app, hub, watcher: Watcher) -> dict:
         if not m["moments"]:
             return m.get("note") or "No standout moments in chat yet.", m
         lines = [f"{i + 1}. {x['clip_from']}–{x['clip_to']} (peak {x['peak']}): chat {x['vs_usual']}× usual"
-                 f"{', $' + str(x['super_chats']) + ' in Super Chats' if x['super_chats'] else ''}. "
+                 f"{', ' + str(x['super_chats']) + ' Super Chats' if x['super_chats'] else ''}. "
                  f"Chat: {' | '.join(x['chat_sample'][:4])}" for i, x in enumerate(m["moments"])]
         return (f"Top chat moments in \"{m['title']}\" (covered {m['covered_from']}–{m['covered_to']}):\n"
                 + "\n".join(lines) + "\n" + m["note"]), m

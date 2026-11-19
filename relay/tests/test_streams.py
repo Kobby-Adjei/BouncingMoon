@@ -124,7 +124,17 @@ def test_super_chats_count_and_duplicates_are_ignored(make):
     w.step(VID); w.step(VID)
     assert w.status(VID)["messages"] == 420
     top = w.moments(VID)["moments"][0]
-    assert top["super_chats"] == 1000.0
+    assert top["super_chats"] == 20
+
+
+def test_sparse_old_chat_and_the_first_minutes_are_not_moments(make):
+    # the first page brings a few old pinned Super Chats from an hour earlier, then live chat starts
+    old = msgs(0, 5, "old super", every=600.0, kind="superChatEvent", money=1000)
+    live = msgs(4000, 1200, "w", every=0.25)          # steady 40 a bucket for 5 minutes
+    client, tok, w, _ = make([{"items": old + live}])
+    client.post("/streams", headers=H(tok), json={"url": VID})
+    w.step(VID)
+    assert w.moments(VID)["moments"] == []            # nothing stood out, and nothing was made up
 
 
 def test_chat_end_and_errors_in_plain_words(make):
