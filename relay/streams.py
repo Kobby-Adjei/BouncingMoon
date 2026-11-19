@@ -95,6 +95,68 @@ def hms(sec: float) -> str:
     return f"{sec // 3600}:{sec % 3600 // 60:02d}:{sec % 60:02d}"
 
 
+ASK = re.compile(r"\b(play|do|go|try|react(?: to)?|watch|make|buy|drive|steal|rob|visit|fight|call|collab(?: with)?|"
+                 r"join|stream|show|use|get|build|race|sing|dance|bring|invite|let'?s|you should|can you|"
+                 r"pls|please|plz|next)\b\s+(.{2,60})", re.I)
+NOT_A_REQUEST = re.compile(r"(shout ?out|follow me|sub(scribe)? to|notice me|say my name|heart my|pin me|"
+                           r"bitcoin|btc|bc1|http|www\.|\.com|giveaway|free robux|ps5 for me)", re.I)
+FILLER = {"pls", "please", "plz", "speed", "bro", "now", "rn", "man", "lol", "lmao", "bruh", "the", "a", "an",
+          "it", "to", "for", "me", "us", "yo", "yoo", "ishowspeed", "omg", "just", "again", "already"}
+STOP = FILLER | {"i", "you", "he", "is", "and", "of", "in", "on", "that", "this", "my", "your", "be", "are",
+                 "was", "what", "so", "no", "not", "do", "go", "get", "like", "with", "at", "we", "w", "l",
+                 "u", "im", "its", "they", "his", "who", "why", "how", "can", "if", "all", "have", "dont"}
+WORD = re.compile(r"[a-z0-9']+")
+
+
+def _clean(text: str) -> str:
+    t = re.sub(r"(.)\1{2,}", r"\1\1", (text or "").lower())        # "nooooo" -> "noo"
+    return re.sub(r"\s+", " ", re.sub(r"[^a-z0-9' ]+", " ", t)).strip()
+
+
+def requests_in(texts, top: int = 15, weights=None) -> list:
+    """Group asks like 'play fortnite next', 'go to vice city beach' by their first words."""
+    groups: dict = {}
+    for i, raw in enumerate(texts):
+        if not raw or NOT_A_REQUEST.search(raw):
+            continue
+        m = ASK.search(_clean(raw))
+        if not m:
+            continue
+        verb = m.group(1).lower()
+        if verb in ("pls", "please", "plz", "can you", "you should", "lets", "let's"):
+            words = [w for w in WORD.findall(m.group(2)) if w not in FILLER][:4]
+        else:
+            words = [verb] + [w for w in WORD.findall(m.group(2)) if w not in FILLER][:3]
+        if len(words) < 2:
+            continue
+        key = " ".join(words)
+        g = groups.setdefault(key, {"ask": key, "count": 0, "examples": []})
+        g["count"] += (weights[i] if weights else 1)
+        if len(g["examples"]) < 3 and raw.strip() not in g["examples"]:
+            g["examples"].append(raw.strip()[:140])
+    ranked = sorted(groups.values(), key=lambda g: g["count"], reverse=True)
+    return [g for g in ranked if g["count"] >= 2][:top]
+
+
+def topics_in(texts, top: int = 15) -> list:
+    """The words and word pairs chat keeps coming back to, minus filler."""
+    words, pairs = Counter(), Counter()
+    for raw in texts:
+        ws = [w for w in WORD.findall(_clean(raw)) if w not in STOP and len(w) > 2 and not w.isdigit()]
+        words.update(set(ws))
+        pairs.update({f"{a} {b}" for a, b in zip(ws, ws[1:])})
+    both = [(k, v) for k, v in pairs.most_common(top) if v >= 3] + [(k, v) for k, v in words.most_common(top * 2)]
+    seen, out = set(), []
+    for k, v in sorted(both, key=lambda x: x[1], reverse=True):
+        if k in seen or any(k in s2.split() for s2 in seen if " " in s2):
+            continue
+        seen.add(k)
+        out.append({"topic": k, "messages": v})
+        if len(out) >= top:
+            break
+    return out
+
+
 class YouTube:
     def __init__(self, key: str, opener: Callable = urllib.request.urlopen):
         self.key, self.opener = key, opener
@@ -404,6 +466,50 @@ class Watcher:
                         "so each clip starts about 20 s before chat took off."}
 
 
+    # ------------------------------------------------------------ what the audience asks for
+    def audience(self, vid: str, top: int = 15, comments: bool = True) -> dict:
+        """What viewers ask the streamer to do or play, from chat and the video's public comments,
+        grouped and counted. Only message text is used; who wrote it is never kept."""
+        top = max(1, min(int(top), 40))
+        st = self.status(vid)
+        with self.store.ro() as c:
+            texts = [r["text"] or "" for r in c.execute(
+                "SELECT text FROM stream_chat WHERE video_id=? AND kind='text'", (vid,))]
+        out = {**st, "chat_messages": len(texts), "chat_requests": requests_in(texts, top),
+               "chat_topics": topics_in(texts, top)}
+        if comments:
+            out["comments"] = self._comments(vid, top)
+        out["note"] = ("Counts are how many chat messages or comments asked for each thing; spam of the same "
+                       "line counts once per person-message, so treat very high counts as loud, not as votes.")
+        return out
+
+    def _comments(self, vid: str, top: int) -> dict:
+        self.need_key()
+        got, token = [], None
+        for _ in range(3):                                     # up to 300 comments, 3 units
+            self._spend(1)
+            params = {"part": "snippet", "videoId": vid, "order": "relevance", "maxResults": 100,
+                      "textFormat": "plainText"}
+            if token:
+                params["pageToken"] = token
+            try:
+                data = self.yt.get("commentThreads", **params)
+            except ApiError as e:
+                if e.reason == "commentsDisabled":
+                    return {"available": False, "why": "Comments are turned off on this video."}
+                return {"available": False, "why": plain(e)}
+            for item in data.get("items") or []:
+                sn = ((item.get("snippet") or {}).get("topLevelComment") or {}).get("snippet") or {}
+                got.append((sn.get("textOriginal") or sn.get("textDisplay") or "", int(_num(sn.get("likeCount")))))
+            token = data.get("nextPageToken")
+            if not token:
+                break
+        liked = sorted(got, key=lambda x: x[1], reverse=True)[:top]
+        return {"available": True, "count": len(got),
+                "requests": requests_in([t for t, _ in got], top, weights=[1 + l for _, l in got]),
+                "most_liked": [{"text": t[:220], "likes": l} for t, l in liked if t.strip()]}
+
+
 class WatchIn(BaseModel):
     url: str = Field(min_length=5, max_length=500)
 
@@ -439,6 +545,10 @@ def mount(app, hub, watcher: Watcher) -> dict:
     def moments(vid: str, top: int = 10, bucket: int = 10, me: dict = Depends(auth)):
         return guard(watcher.moments, guard(video_id, vid), top, bucket)
 
+    @app.get("/streams/{vid}/audience")
+    def audience(vid: str, top: int = 15, comments: bool = True, me: dict = Depends(auth)):
+        return guard(watcher.audience, guard(video_id, vid), top, comments)
+
     @app.delete("/streams/{vid}")
     def stop(vid: str, me: dict = Depends(auth)):
         if me["role"] != "admin" and not me.get("owner"):
@@ -473,6 +583,23 @@ def mount(app, hub, watcher: Watcher) -> dict:
         return (f"Top chat moments in \"{m['title']}\" (covered {m['covered_from']}–{m['covered_to']}):\n"
                 + "\n".join(lines) + "\n" + m["note"]), m
 
+    def tool_audience(me, args):
+        try:
+            a = watcher.audience(video_id(str(args.get("url", ""))), args.get("top", 15))
+        except StreamError as e:
+            raise ToolFail(str(e)) from None
+        lines = [f"What viewers ask for on \"{a['title']}\" ({a['chat_messages']} chat messages, "
+                 f"covered {a['covered_from']}–{a['covered_to']}):"]
+        lines += [f"- {r['ask']} ({r['count']}): e.g. {r['examples'][0]}" for r in a["chat_requests"][:10]] or ["- no repeated asks in chat yet"]
+        lines.append("Chat keeps talking about: " + ", ".join(t["topic"] for t in a["chat_topics"][:12]))
+        cm = a.get("comments") or {}
+        if cm.get("available"):
+            lines.append(f"Comments ({cm['count']} read), asks weighted by likes:")
+            lines += [f"- {r['ask']} ({r['count']}): e.g. {r['examples'][0]}" for r in cm["requests"][:8]] or ["- no repeated asks"]
+        elif cm:
+            lines.append(f"Comments: {cm.get('why')}")
+        return "\n".join(lines), a
+
     tools = [
         {"name": "watch_stream",
          "description": "Start watching a public YouTube live stream's chat (the hub does it, in the cloud). "
@@ -488,4 +615,13 @@ def mount(app, hub, watcher: Watcher) -> dict:
                                                           "top": {"type": "integer", "minimum": 1, "maximum": 30, "default": 10}},
                          "required": ["url"]}},
     ]
-    return {"tools": tools, "handlers": {"watch_stream": tool_watch, "stream_moments": tool_moments}}
+    tools.append(
+        {"name": "stream_audience",
+         "description": "What viewers keep asking for on a stream the hub is watching: grouped requests from live chat "
+                        "(play this, go there, react to that) with counts and examples, the topics chat keeps returning to, "
+                        "and asks from the video's public comments weighted by likes. Use it to plan what the audience wants next.",
+         "inputSchema": {"type": "object", "properties": {"url": {"type": "string"},
+                                                          "top": {"type": "integer", "minimum": 1, "maximum": 40, "default": 15}},
+                         "required": ["url"]}})
+    return {"tools": tools, "handlers": {"watch_stream": tool_watch, "stream_moments": tool_moments,
+                                         "stream_audience": tool_audience}}

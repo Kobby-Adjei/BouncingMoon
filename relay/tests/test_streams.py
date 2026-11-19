@@ -30,6 +30,7 @@ class FakeYouTube:
 
     def __init__(self, chat_pages, video=None):
         self.pages, self.calls, self.headers = list(chat_pages), [], []
+        self.comments = []
         self.video = video if video is not None else {
             "snippet": {"title": "PLAYING GTA 6 EARLY ACCESS GAMEPLAY", "channelTitle": "IShowSpeed"},
             "liveStreamingDetails": {"actualStartTime": ts(0), "activeLiveChatId": "CHAT1"}}
@@ -41,6 +42,11 @@ class FakeYouTube:
         assert KEY not in req.full_url                       # the key never travels in a URL
         if url.path.endswith("/videos"):
             body = {"items": [self.video] if self.video else []}
+        elif url.path.endswith("/commentThreads"):
+            if isinstance(self.comments, Exception):
+                raise self.comments
+            body = {"items": [{"snippet": {"topLevelComment": {"snippet": {"textOriginal": t, "likeCount": str(l)}}}}
+                              for t, l in self.comments]}
         else:
             page = self.pages.pop(0) if self.pages else {"items": [], "pollingIntervalMillis": 5000}
             if isinstance(page, Exception):
@@ -183,7 +189,7 @@ def test_connector_tools(make):
 
     listed = client.post("/mcp", headers=H(tok), json={"jsonrpc": "2.0", "id": 1, "method": "tools/list"}).json()
     names = {t["name"] for t in listed["result"]["tools"]}
-    assert {"watch_stream", "stream_moments", "ask", "check_replies"} <= names
+    assert {"watch_stream", "stream_moments", "stream_audience", "ask", "check_replies"} <= names
     r = call("watch_stream", {"url": f"https://youtu.be/{VID}"})
     assert not r["isError"] and "Watching chat" in r["content"][0]["text"]
     w.step(VID)
@@ -212,3 +218,32 @@ def test_only_the_owner_stops_watching(make):
     owner = client.post("/owner", headers=H(ADMIN), json={"handle": "kobby"}).json()["token"]
     assert client.delete(f"/streams/{VID}", headers=H(owner)).status_code == 200
     assert w.status(VID)["state"] == "stopped"
+
+
+def test_what_the_audience_asks_for(make):
+    chat = (msgs(0, 6, "PLAY FORTNITE NEXT SPEED") + msgs(10, 4, "pls play fortnite") +
+            msgs(20, 5, "go to the beach bro") + msgs(30, 3, "react to the trailer pls") +
+            msgs(40, 9, "shout out pls speed") + msgs(50, 4, "send bitcoin bc1qxyz pls play") +
+            msgs(60, 20, "vice city looks crazy") + msgs(90, 1, "do a backflip"))
+    client, tok, w, fake = make([{"items": chat}])
+    fake.comments = [("Please play Minecraft with Kai next", 900), ("play minecraft!!", 40), ("first", 2)]
+    client.post("/streams", headers=H(tok), json={"url": VID})
+    w.step(VID)
+    a = client.get(f"/streams/{VID}/audience", headers=H(tok)).json()
+    asks = {r["ask"]: r["count"] for r in a["chat_requests"]}
+    assert asks.get("play fortnite next") == 6 and asks.get("play fortnite") == 4
+    assert asks.get("go beach") == 5 and asks.get("react to trailer") == 3
+    assert not any("shout" in k or "bitcoin" in k or "backflip" in k for k in asks)   # noise, scams, one-offs
+    assert any(t["topic"] in ("vice city", "city", "vice") for t in a["chat_topics"][:3])
+    cm = a["comments"]
+    assert cm["available"] and cm["requests"][0]["ask"].startswith("minecraft") or cm["requests"][0]["ask"].startswith("play minecraft")
+    assert cm["most_liked"][0] == {"text": "Please play Minecraft with Kai next", "likes": 900}
+
+
+def test_comments_turned_off(make):
+    client, tok, w, fake = make([{"items": msgs(0, 3, "play gta")}])
+    fake.comments = api_error(403, "commentsDisabled")
+    client.post("/streams", headers=H(tok), json={"url": VID})
+    w.step(VID)
+    a = w.audience(VID)
+    assert a["comments"] == {"available": False, "why": "Comments are turned off on this video."}
