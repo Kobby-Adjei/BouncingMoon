@@ -104,6 +104,7 @@ class YouTube:
             except Exception:
                 err = {}
             reasons = [x.get("reason", "") for x in err.get("errors", [])] or [str(err.get("status", ""))]
+            print(f"[relay] youtube {path}: {e.code} {reasons[0] if reasons else ''} {str(err.get('message', ''))[:200]}", flush=True)
             raise ApiError(e.code, reasons[0] if reasons else "", err.get("message", "")) from None
         except (urllib.error.URLError, TimeoutError, OSError) as e:
             raise ApiError(0, "network", str(e)) from None
@@ -129,8 +130,15 @@ def plain(e: ApiError) -> str:
         return "The hub's YouTube key isn't valid. The owner can replace YOUTUBE_API_KEY in the hub's settings."
     if r in ("accessNotConfigured", "SERVICE_DISABLED") or "has not been used" in (e.message or ""):
         return "The YouTube Data API isn't turned on for the hub's Google project yet."
+    if "referer" in (e.message or "").lower() or "referrer" in (e.message or "").lower():
+        return ("YouTube refused the hub's key because it is limited to websites. In Google Cloud, set the key's "
+                "Application restrictions to None (keep the API restriction to YouTube Data API v3).")
+    if "blocked" in (e.message or "").lower() or r in ("API_KEY_SERVICE_BLOCKED",):
+        return ("The hub's key isn't allowed to use the YouTube Data API. In Google Cloud, under the key's "
+                "API restrictions, tick YouTube Data API v3.")
     if r == "forbidden" or e.status == 403:
-        return "YouTube refused the request for that stream."
+        detail = (e.message or "").strip()[:200]
+        return f"YouTube refused the request ({r or e.status}{': ' + detail if detail else ''})."
     if e.status == 0:
         return "Couldn't reach YouTube just now."
     return f"YouTube said no ({e.status} {r})."
