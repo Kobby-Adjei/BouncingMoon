@@ -83,6 +83,13 @@ def iso(ts: Optional[str]) -> Optional[float]:
         return None
 
 
+def _num(v) -> float:
+    try:
+        return float(v or 0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
 def hms(sec: float) -> str:
     sec = max(0, int(sec))
     return f"{sec // 3600}:{sec % 3600 // 60:02d}:{sec % 60:02d}"
@@ -258,7 +265,7 @@ class Watcher:
             try:
                 wait = self.step(vid)
             except Exception as e:                    # never let one stream take the hub down
-                print(f"[relay] stream {vid}: {type(e).__name__}", flush=True)
+                print(f"[relay] stream {vid}: {type(e).__name__}: {str(e)[:200]}", flush=True)
                 wait = 60
             if wait is None:
                 return
@@ -304,7 +311,7 @@ class Watcher:
             t = iso(sn.get("publishedAt"))
             text = (sn.get("displayMessage") or (sn.get("textMessageDetails") or {}).get("messageText") or "")[:300]
             sc = sn.get("superChatDetails") or sn.get("superStickerDetails") or {}
-            amount = (sc.get("amountMicros") or 0) / 1e6 if sc else None
+            amount = _num(sc.get("amountMicros")) / 1e6 if sc else None   # the API sends 64-bit numbers as strings
             if t is None or not m.get("id"):
                 continue
             rows.append((vid, m["id"], t, text, "super" if sc else "text", amount))
@@ -317,7 +324,7 @@ class Watcher:
         if ended or data.get("offlineAt"):
             self.stop(vid, "ended")
             return None
-        interval = (data.get("pollingIntervalMillis") or 0) / 1000
+        interval = _num(data.get("pollingIntervalMillis")) / 1000
         # behind real time with a full page: read on sooner; otherwise keep to the daily allowance
         if len(data.get("items") or []) >= 1900:
             return max(interval, 3.0)

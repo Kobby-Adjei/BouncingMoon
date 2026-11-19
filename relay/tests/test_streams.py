@@ -54,7 +54,7 @@ def msgs(start, n, text="hello", every=1.0, kind="textMessageEvent", money=None)
     for i in range(n):
         sn = {"type": kind, "publishedAt": ts(start + i * every), "displayMessage": text}
         if money:
-            sn["superChatDetails"] = {"amountMicros": int(money * 1e6), "currency": "USD"}
+            sn["superChatDetails"] = {"amountMicros": str(int(money * 1e6)), "currency": "USD"}   # a string, as the API sends it
         out.append({"id": f"m{start}-{i}-{text}", "snippet": sn})
     return out
 
