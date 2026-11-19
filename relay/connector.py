@@ -278,6 +278,9 @@ def mount(app, hub) -> None:
 
     handlers = {"contacts": tool_contacts, "ask": tool_ask, "check_replies": tool_check_replies,
                 "reply": tool_reply, "save_contact": tool_save_contact}
+    extra = getattr(hub, "extra_tools", None) or {}          # tools other parts of the hub add (streams)
+    handlers.update(extra.get("handlers", {}))
+    tool_list = TOOLS + list(extra.get("tools", []))
 
     # ------------------------------------------------------------ JSON-RPC
     def rpc_error(mid, code, message):
@@ -312,7 +315,7 @@ def mount(app, hub) -> None:
         if method == "ping":
             return {"jsonrpc": "2.0", "id": mid, "result": {}}
         if method == "tools/list":
-            return {"jsonrpc": "2.0", "id": mid, "result": {"tools": TOOLS}}
+            return {"jsonrpc": "2.0", "id": mid, "result": {"tools": tool_list}}
         if method == "tools/call":
             name, args = params.get("name"), params.get("arguments") or {}
             fn = handlers.get(name)
