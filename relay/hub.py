@@ -344,7 +344,9 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
                wake_opener=None, wake_check_url: bool = True, wake_cooldown: Optional[float] = None,
                youtube_key: Optional[str] = None, youtube_opener=None, youtube_threads: bool = True,
                supabase_url: Optional[str] = None, supabase_key: Optional[str] = None,
-               supabase_send=None) -> FastAPI:
+               supabase_send=None, caption_transcriber=None, caption_threads: bool = True,
+               caption_public_url: Optional[str] = None, caption_tool_wait: Optional[float] = None,
+               caption_idle_seconds: Optional[float] = None) -> FastAPI:
     data_dir = data_dir or os.environ.get("RELAY_DATA", "./relay-data")
     os.makedirs(data_dir, exist_ok=True)
     admin_token = admin_token or os.environ.get("RELAY_ADMIN_TOKEN")
@@ -1220,10 +1222,22 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
     stream_tools = streams.mount(app, SimpleNamespace(auth=auth), watcher)
     watcher.resume()
 
+    # ---------------------------------------------------------------- captioned shorts (made here, in the cloud)
+    from . import captions
+    captioner = captions.Captioner(store, private_host, transcriber=caption_transcriber, threads=caption_threads,
+                                   allow_private=allow_private, public_url=caption_public_url,
+                                   idle_seconds=600 if caption_idle_seconds is None else caption_idle_seconds)
+    app.state.captioner = captioner
+    caption_tools = captions.mount(app, SimpleNamespace(auth=auth), captioner,
+                                   tool_wait=captions.TOOL_WAIT if caption_tool_wait is None else caption_tool_wait)
+    captioner.resume()
+    extra_tools = {"tools": stream_tools["tools"] + caption_tools["tools"],
+                   "handlers": {**stream_tools["handlers"], **caption_tools["handlers"]}}
+
     # ---------------------------------------------------------------- contacts + connector
     from . import connector
     connector.mount(app, SimpleNamespace(
-        extra_tools=stream_tools, store=store, auth=auth, post=post, inbox_for=inbox_for, ack_to=ack_to,
+        extra_tools=extra_tools, store=store, auth=auth, post=post, inbox_for=inbox_for, ack_to=ack_to,
         mark_read=mark_read, msg_out=msg_out, with_context=with_context, now=_now, loads=_loads, handle_re=HANDLE_RE))
     from . import people
     sb_url = supabase_url or os.environ.get("SUPABASE_URL")

@@ -122,6 +122,33 @@ A wake-up says only who wrote, never the message. Bursts are combined (one wake 
 20 s, plus one after if more arrived). Routine tokens and webhook secrets are encrypted at rest
 and never shown again. Webhook URLs must be public https.
 
+## Caption clip (vertical shorts, made on the hub)
+
+Hand the hub a gameplay clip and get back a short ready to post: 9:16 at 1080x1920, H.264 + AAC
+(CRF 20), the streamer's facecam cropped out, and word-by-word captions burned into the middle of the
+screen (at most three words at a time, big white Montserrat ExtraBold with a black outline and a soft
+shadow, the word being spoken in yellow). At most 180 s. Everything runs in the hub process, in the
+cloud: nobody needs a key.
+
+- **Sources:** `url` (a direct video link, a Google Drive share link, a Dropbox link; YouTube is refused
+  because it blocks cloud servers) or `file_id` (a file uploaded with `POST /artifacts`). Downloads are
+  limited to 1 GB and 10 minutes, and every hop, redirects included, must reach a public address.
+- **Trim and crop:** `start`/`end` in seconds or mm:ss; `crop` is `center` (default), `left`, `right` or 0-1.
+- **How:** ffmpeg cuts the trimmed audio to 16 kHz mono, a local speech model (faster-whisper, CPU,
+  int8, `small.en` baked into the image; `RELAY_WHISPER_MODEL` picks another) gives word timings,
+  `captions.py` writes ASS subtitles, and one ffmpeg pass crops, scales and burns them in with libass.
+- **Queue:** one short at a time in a background thread, from the `captions` table. After a restart a
+  short that was mid-way starts again once; a second restart fails it with a plain reason.
+- **Result:** stored as an artifact (kind `short`), with a share link `/s/<token>.mp4`: 256 random bits,
+  looked up by its hash (the token itself is kept on the short's row so its status can show the link
+  again), no key needed, byte ranges, gone after 7 days. Only shorts get share links.
+  Links are absolute when `RELAY_PUBLIC_URL` or Railway's `RAILWAY_PUBLIC_DOMAIN` is set.
+- **Agents:** connector tools `caption_clip(url?, file_id?, start?, end?, crop?)` (waits up to ~45 s)
+  and `clip_status(id)`. Nothing is posted anywhere; a person approves first.
+- **People:** *Shorts* in the app: drop a file, optional start/end and crop, *Make short*, then a
+  preview with *Download* and *Copy link*.
+- **REST:** `POST /captions`, `GET /captions/{id}`, `GET /captions`.
+
 ## Use your own subscription (Relay helper)
 
 People already pay for ChatGPT or a Claude plan, and Codex or Claude Code is already signed in

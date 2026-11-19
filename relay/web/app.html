@@ -23,6 +23,7 @@
 .page { max-width: 680px; margin: 0 auto; padding: 8px 16px calc(120px + env(safe-area-inset-bottom)); }
 .head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 12px 0 16px; }
 .topseg { width: 200px; }
+.topseg:has(> :nth-child(3):not(.hidden)) { width: 252px; }
 .brandmini { display: inline-flex; align-items: center; gap: 8px; font: 650 17px/1 var(--display); letter-spacing: -.02em; }
 .brandmini .mark { width: 22px; height: 22px; }
 @media (max-width: 480px) { .brandmini .word { display: none; } }
@@ -181,6 +182,43 @@ pre.block.muted { color: var(--ink2); }
 .advanced[open] > summary::after { transform: rotate(-135deg); margin-bottom: -1px; }
 .advanced > summary:hover { color: var(--ink); }
 
+/* shorts: a clip in, a vertical short out. A dashed place to drop the file, three quiet options, one button. */
+.drop { display: grid; justify-items: center; gap: 4px; padding: 34px 16px 30px; border-radius: var(--r); border: 1.5px dashed var(--ink3);
+  text-align: center; cursor: pointer; transition: background-color .2s var(--ease), border-color .2s var(--ease); }
+.drop:hover { background: var(--fill); }
+.drop.over { border-color: var(--accent); background: var(--sel); }
+.drop.has { border-style: solid; border-color: var(--line); }
+.drop .dropic { width: 28px; height: 28px; color: var(--ink2); margin-bottom: 6px; }
+.drop.has .dropic { color: var(--accent); }
+.drop .t { font-weight: 600; font-size: 16px; overflow-wrap: anywhere; }
+.drop .s { color: var(--ink2); font-size: 14px; }
+.swaprow { display: flex; justify-content: center; margin-top: -4px; }
+.shortopts { display: grid; grid-template-columns: 1fr 1fr; gap: 10px 12px; }
+.shortopts .tfield, .shortopts .cropfield { display: grid; gap: 8px; }
+.shortopts .cropfield { grid-column: 1 / -1; }
+.shortopts .fieldlabel { margin: 0; }
+.shortopts .seg button { height: 34px; }
+.shortframe { position: relative; justify-self: center; width: min(100%, calc(min(62vh, 600px) * 9 / 16)); aspect-ratio: 9 / 16;
+  border-radius: 16px; overflow: hidden; background: var(--raise); display: grid; place-items: center; }
+.shortframe .frametext { display: grid; justify-items: center; gap: 10px; padding: 24px; text-align: center; color: var(--ink2); font-size: 15px; }
+.shortvid { width: 100%; height: 100%; display: block; background: #000; object-fit: contain; }
+.meter { justify-self: center; width: min(100%, 220px); height: 4px; border-radius: 999px; background: var(--fill2); overflow: hidden; }
+.meter > span { display: block; height: 100%; width: 0; background: var(--accent); border-radius: inherit; transition: width .6s var(--ease); }
+.shortbody { justify-items: stretch; gap: 16px; }
+.shortbody .btnrow { width: min(100%, 360px); justify-self: center; }
+.shortbody .btnrow .btn { flex: 1 1 0; }
+.shortbody .hint { margin: 0; }
+.shortbody .advanced { width: min(100%, 360px); justify-self: center; }
+.shortbody .advanced .small { margin: 4px 0 0; text-align: center; }
+.shortthumb { width: 40px; height: 40px; flex: none; border-radius: 10px; background: var(--bg2); color: var(--ink); display: grid; place-items: center; }
+.shortthumb svg { width: 22px; height: 22px; }
+.shortthumb.failed { color: var(--red); }
+.shortrecent { margin-top: 36px; }
+.head.centerhead { justify-content: center; text-align: center; }
+.shortrecent .label { margin-bottom: 4px; }
+.listpane .group.shorts .cell + .cell::before { left: 68px; }
+.group.shorts .cell + .cell::before { left: 66px; }
+
 /* phone: lists run edge to edge, like the rest of the system's lists */
 @media (max-width: 679px) {
   .page > .group.people, .page > .group.conv { margin-inline: -16px; }
@@ -260,6 +298,8 @@ pre.block.muted { color: var(--ink2); }
     padding: 36px var(--gut) 64px; }
   .detail[data-page=addname], .detail[data-page=key], .detail[data-page=added] { --cap: 400px; }
   .detail[data-page=connect], .detail[data-page=invite], .detail[data-page=wake] { --cap: 560px; }
+  .detail[data-page=short], .detail[data-page=shortview] { --cap: 480px; }
+  .listpane .shortthumb { width: 36px; height: 36px; }
   .detail[data-page=thread] { --cap: 760px; }
   .detail[data-page=add], .detail[data-page=new] { --cap: 680px; }
   .detail .title { font-size: 24px; letter-spacing: -.025em; }
@@ -368,6 +408,7 @@ pre.block.muted { color: var(--ink2); }
     <div class="seg topseg" id="topseg" role="group">
       <button data-go="agents" aria-pressed="true">Agents</button>
       <button data-go="activity" aria-pressed="false">Activity</button>
+      <button data-go="shorts" aria-pressed="false" class="hidden">Shorts</button>
     </div>
     <div id="bar-right"></div>
   </div>
