@@ -8,7 +8,7 @@ request) talk through one hub. Three things live here:
                 Model borrowed from opencrawl-core's board (Apache-2.0): flat threads
                 keyed by root id, idempotent posts, mentions resolved at post time,
                 at-least-once delivery, client polling.
-  * jobs      - work addressed to a CAPABILITY ("fetch", "digest"), not to a named
+  * jobs      - work addressed to a CAPABILITY ("fetch", "digest", "clip"), not to a named
                 agent. Any node that declares the capability can claim it. Claims are
                 leases: a node that goes to sleep mid-job loses it back to the queue.
   * artifacts - large media moved by reference. Bytes stream straight to and from
@@ -82,6 +82,7 @@ PROVIDER_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,23}$")   # "claude", "openai", "
 RESERVED = {"relay", "admin", "me"}
 SYSTEM = "relay"            # sender name for messages the hub writes itself
 MEDIA_PREFIXES = ("video/", "audio/")
+CLIP_ASPECTS = ("9:16",)          # the shapes a clip node will cut
 
 
 def private_host(host: str) -> bool:
@@ -447,10 +448,19 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
                 raise HTTPException(400, "fetch needs params.url (http or https)")
             if not allow_private and private_host(urllib.parse.urlparse(url).hostname or ""):
                 raise HTTPException(400, "fetch may not target local or private network addresses")
-        if kind == "digest":
+        if kind in ("digest", "clip"):
             if not c.execute("SELECT 1 FROM artifacts WHERE id=?",
-                             (params.get("artifact", ""),)).fetchone():
-                raise HTTPException(400, "digest needs params.artifact (an existing artifact id)")
+                             (str(params.get("artifact", "")),)).fetchone():
+                raise HTTPException(400, f"{kind} needs params.artifact (an existing artifact id)")
+        if kind == "clip":
+            try:
+                count, seconds = int(params.get("count", 3)), float(params.get("seconds", 10))
+            except (TypeError, ValueError):
+                raise HTTPException(400, "clip: count and seconds must be numbers")
+            if not 1 <= count <= 5 or not 6 <= seconds <= 20:
+                raise HTTPException(400, "clip: count must be 1 to 5 and seconds 6 to 20")
+            if str(params.get("aspect", "9:16")) not in CLIP_ASPECTS:
+                raise HTTPException(400, f"clip: aspect must be one of {', '.join(CLIP_ASPECTS)}")
         jid = "j_" + uuid.uuid4().hex[:12]
         summary = ", ".join(f"{k}={v}" for k, v in params.items())[:300]
         text = f"job {jid} [{kind}] {summary}" + (f" — {note}" if note else "")
@@ -508,7 +518,7 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
     here = os.path.dirname(os.path.abspath(__file__))
     page_headers = {
         "Content-Security-Policy": ("default-src 'none'; script-src 'self'; connect-src 'self'; "
-                                    "style-src 'self' 'unsafe-inline'; img-src 'self' data:; "
+                                    "style-src 'self' 'unsafe-inline'; img-src 'self' data:; media-src 'self'; "
                                     "base-uri 'none'; form-action 'none'; frame-ancestors 'none'"),
         "X-Content-Type-Options": "nosniff",
         "Referrer-Policy": "no-referrer",
@@ -548,12 +558,21 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
     web_dir = os.path.join(here, "web")
     web_files = {f: f for f in (os.listdir(web_dir) if os.path.isdir(web_dir) else [])}
     web_types = {".html": "text/html; charset=utf-8", ".css": "text/css; charset=utf-8",
-                 ".js": "text/javascript; charset=utf-8", ".svg": "image/svg+xml", ".png": "image/png"}
+                 ".js": "text/javascript; charset=utf-8", ".svg": "image/svg+xml", ".png": "image/png",
+                 ".jpg": "image/jpeg", ".webp": "image/webp", ".mp4": "video/mp4",
+                 ".json": "application/json"}
+    media_types = (".mp4", ".jpg", ".webp", ".png")
 
     def web(name: str) -> Response:
         if name not in web_files:
             raise HTTPException(404, "not found")
-        mime = web_types.get(os.path.splitext(name)[1], "application/octet-stream")
+        ext = os.path.splitext(name)[1]
+        mime = web_types.get(ext, "application/octet-stream")
+        if ext in media_types:
+            # streamed with byte ranges (Safari will not play a video without them), and cacheable:
+            # these files only change with a deploy
+            return FileResponse(os.path.join(web_dir, name), media_type=mime,
+                                headers={**page_headers, "Cache-Control": "public, max-age=3600"})
         with open(os.path.join(web_dir, name), "rb") as f:
             return Response(f.read(), media_type=mime, headers=page_headers)
 
@@ -948,13 +967,13 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
                             c, j["requested_by"], "digest", {"artifact": a},
                             parent_job=jid, thread=j["thread"],
                             note="auto: digest of fetched media"))
-            if j["kind"] == "digest":
+            if j["kind"] in ("digest", "clip"):
                 src = _loads(j["params"], {}).get("artifact")
                 art = c.execute("SELECT meta FROM artifacts WHERE id=?", (src,)).fetchone()
                 if art:
                     meta = _loads(art["meta"], {})
-                    meta["digest"] = {"job": jid, "result": body.result,
-                                      "artifacts": body.artifacts}
+                    meta["digest" if j["kind"] == "digest" else "clips"] = {
+                        "job": jid, "result": body.result, "artifacts": body.artifacts}
                     c.execute("UPDATE artifacts SET meta=? WHERE id=?", (json.dumps(meta), src))
             return {"job": job_out(j), "follow_ups": follow_ups}
 

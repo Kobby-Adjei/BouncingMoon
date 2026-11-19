@@ -28,6 +28,7 @@ Move media by reference:
 
 Be the hands and eyes for other agents:
     relay node --cap fetch --cap digest          # one command; runs until stopped
+    relay job clip --param artifact=ID --param count=3   # vertical clips of the best moments
 """
 from __future__ import annotations
 
@@ -343,7 +344,15 @@ def _font():
     return None
 
 
-def contact_sheet(path, shots, specs, out, cols=6, max_tiles=60) -> int:
+def sheet_columns(n: int) -> int:
+    """4 to 8 tiles a row, whichever leaves the fewest empty cells (then the nearest to 6),
+    so a sheet is a full rectangle whenever it can be."""
+    if n < 4:
+        return max(n, 1)
+    return min(range(4, 9), key=lambda c: (-n % c, abs(c - 6)))
+
+
+def contact_sheet(path, shots, specs, out, cols=None, max_tiles=60) -> int:
     """One labelled thumbnail per shot, tiled. This is what lets an agent that cannot
     watch video still see what is in it."""
     if not shots:
@@ -351,6 +360,7 @@ def contact_sheet(path, shots, specs, out, cols=6, max_tiles=60) -> int:
     if len(shots) > max_tiles:
         step = len(shots) / max_tiles
         shots = [shots[int(i * step)] for i in range(max_tiles)]
+    cols = cols or sheet_columns(len(shots))
     landscape = (specs.get("width") or 16) >= (specs.get("height") or 9)
     w, h = (320, 180) if landscape else (180, 320)
     font = _font()
@@ -492,7 +502,164 @@ def handle_digest(hub: Hub, job: dict, work: str):
         shutil.rmtree(d, ignore_errors=True)
 
 
-HANDLERS = {"fetch": handle_fetch, "digest": handle_digest}
+CLIP_ASPECTS = {"9:16": (9, 16, 720, 1280)}        # whitelist: never interpolated from a request
+
+
+def clip_params(params: dict) -> dict:
+    """The only knobs a requester has. Checked here as well as on the hub."""
+    try:
+        count = int(params.get("count", 3))
+        seconds = float(params.get("seconds", 10))
+    except (TypeError, ValueError):
+        raise RelayError("clip: count and seconds must be numbers") from None
+    aspect = str(params.get("aspect", "9:16"))
+    if not 1 <= count <= 5:
+        raise RelayError("clip: count must be 1 to 5")
+    if not 6 <= seconds <= 20:
+        raise RelayError("clip: seconds must be 6 to 20")
+    if aspect not in CLIP_ASPECTS:
+        raise RelayError(f"clip: aspect must be one of {', '.join(CLIP_ASPECTS)}")
+    return {"artifact": str(params.get("artifact", "")), "count": count,
+            "seconds": seconds, "aspect": aspect}
+
+
+def motion(path) -> list[tuple[float, float]]:
+    """How much the picture changes from each frame to the next (mean luma difference,
+    0-255), measured on a small copy so it is quick. Best effort: [] if it cannot."""
+    p = _run(["ffmpeg", "-hide_banner", "-v", "error", "-i", path, "-an", "-vf",
+              "scale=160:-2,signalstats,metadata=print:key=lavfi.signalstats.YDIF:file=-",
+              "-f", "null", "-"], check=False)
+    out, t = [], None
+    for line in p.stdout.splitlines():
+        if "pts_time:" in line:
+            try:
+                t = float(line.split("pts_time:")[1].split()[0])
+            except ValueError:
+                t = None
+        elif "YDIF=" in line and t is not None:
+            try:
+                out.append((t, float(line.split("YDIF=")[1])))
+            except ValueError:
+                pass
+    return out
+
+
+def pick_moments(shots: list[dict], duration: float, count: int, seconds: float,
+                 activity: Optional[list] = None) -> list[dict]:
+    """The clip rule: the busiest moments, never overlapping.
+
+    Every shot offers one window of `seconds`: centred inside the shot when the shot is
+    long enough, otherwise starting on the shot's cut so the clip opens cleanly, and kept
+    inside the video. Windows are ranked by how much happens in them - the mean frame-to-
+    frame change in the picture, ignoring the jumps at the cuts themselves - so a bunny
+    chasing a butterfly beats a slow pan over a sky. Without a motion reading (or on a tie)
+    the longer shot wins. Busiest first, a window that would overlap one already chosen is
+    skipped, so a short video simply yields fewer clips. Returned in film order."""
+    length = round(min(seconds, duration), 3)
+    if length <= 0:
+        return []
+    cuts = [s["start"] for s in shots[1:]]
+    cands = []
+    for s in shots:
+        span = s["end"] - s["start"]
+        start = s["start"] + (span - length) / 2 if span >= length else s["start"]
+        start = round(max(0.0, min(start, duration - length)), 3)
+        end = round(start + length, 3)
+        score = 0.0
+        if activity:
+            w = [y for t, y in activity if start <= t < end and all(not 0 <= t - c < 0.15 for c in cuts)]
+            score = round(sum(w) / len(w), 3) if w else 0.0
+        cands.append({"start": start, "end": end, "seconds": length, "shot": s.get("i"),
+                      "activity": score, "_len": span})
+    cands.sort(key=lambda c: (-c["activity"], -c["_len"], c["start"]))
+    picked: list[dict] = []
+    for c in cands:
+        if len(picked) >= count:
+            break
+        if any(c["start"] < p["end"] and p["start"] < c["end"] for p in picked):
+            continue
+        picked.append({k: v for k, v in c.items() if k != "_len"})
+    return sorted(picked, key=lambda p: p["start"])
+
+
+def _shots_for(hub: Hub, meta: dict, src: str, d: str) -> tuple[list[dict], str]:
+    """Reuse the digest's shot list when the hub has one, else find the cuts here."""
+    dig = ((meta.get("meta") or {}).get("digest") or {}).get("result") or {}
+    if dig.get("digest"):
+        try:
+            with open(hub.download(dig["digest"], os.path.join(d, "digest.json"))) as f:
+                shots = json.load(f).get("shots") or []
+            if shots:
+                return shots, "digest"
+        except (RelayError, OSError, ValueError):
+            pass
+    dur = probe(src)["duration"]
+    bounds = [0.0] + [t for t in scene_cuts(src) if 0 < t < dur] + [dur]
+    shots = [{"i": i, "start": round(a, 3), "end": round(b, 3), "len": round(b - a, 3)}
+             for i, (a, b) in enumerate(zip(bounds, bounds[1:])) if b - a >= 0.3]
+    return [dict(s, i=n) for n, s in enumerate(shots)], "scene detection"
+
+
+def handle_clip(hub: Hub, job: dict, work: str):
+    """Cut the strongest distinct moments of a video into short vertical clips (H.264, no
+    audio, fast start) with a poster frame each, stored as artifacts of the source."""
+    p = clip_params(job.get("params") or {})
+    aid = p["artifact"]
+    wn, hn, out_w, out_h = CLIP_ASPECTS[p["aspect"]]
+    d = tempfile.mkdtemp(dir=work, prefix="clip_")
+    try:
+        meta = hub.get(f"/artifacts/{aid}/meta")
+        ext = os.path.splitext(meta.get("name") or "")[1] or ".bin"
+        src = hub.download(aid, os.path.join(d, "src" + ext))
+        specs = probe(src)
+        if not specs["has_video"] or not specs["width"] or not specs["height"]:
+            raise RelayError("clip needs a video")
+        shots, via = _shots_for(hub, meta, src, d)
+        if not shots:
+            shots, via = [{"i": 0, "start": 0.0, "end": specs["duration"]}], "whole video"
+        moments = pick_moments(shots, specs["duration"], p["count"], p["seconds"], motion(src))
+        if not moments:
+            raise RelayError("clip: the video is too short to cut")
+        # centre crop to the target shape; even sizes, whatever the source's shape
+        sw, sh = specs["width"], specs["height"]
+        cw, ch = sw, sh
+        if sw * hn > sh * wn:
+            cw = int(sh * wn / hn) // 2 * 2
+        else:
+            ch = int(sw * hn / wn) // 2 * 2
+        cx, cy = (sw - cw) // 2, (sh - ch) // 2
+        vf = f"crop={cw}:{ch}:{cx}:{cy},scale={out_w}:{out_h}:flags=lanczos,setsar=1"
+        stem = os.path.splitext(os.path.basename(meta.get("name") or "video"))[0][:60] or "video"
+        clips, arts = [], []
+        for n, m in enumerate(moments, 1):
+            mp4 = os.path.join(d, f"clip{n}.mp4")
+            _run(["ffmpeg", "-y", "-v", "error", "-ss", f"{m['start']:.3f}", "-i", src,
+                  "-t", f"{m['seconds']:.3f}", "-vf", vf, "-an",
+                  "-c:v", "libx264", "-preset", "slow", "-crf", "28", "-profile:v", "high",
+                  "-maxrate", "2M", "-bufsize", "4M", "-pix_fmt", "yuv420p",
+                  "-movflags", "+faststart", mp4])
+            jpg = os.path.join(d, f"clip{n}.jpg")
+            # the poster is the clip's own first frame, so pressing play never jumps
+            _run(["ffmpeg", "-y", "-v", "error", "-i", mp4, "-frames:v", "1",
+                  "-vf", f"scale={out_w // 2}:{out_h // 2}", "-q:v", "4", jpg])
+            v = hub.upload(mp4, name=f"{stem}_clip{n}.mp4", mime="video/mp4", kind="clip", parent=aid)
+            j = hub.upload(jpg, name=f"{stem}_clip{n}.jpg", mime="image/jpeg", kind="poster", parent=aid)
+            arts += [v["id"], j["id"]]
+            clips.append({"artifact": v["id"], "poster": j["id"], "start": m["start"],
+                          "end": m["end"], "seconds": m["seconds"], "shot": m["shot"],
+                          "activity": m["activity"], "size": v["size"]})
+        secs = f"{moments[0]['seconds']:g}"
+        res = {"summary": (f"{len(clips)} vertical clip{'s' if len(clips) != 1 else ''} "
+                           f"({p['aspect']}, {secs} s each) from {len(shots)} shots"),
+               "clips": clips, "aspect": p["aspect"], "width": out_w, "height": out_h,
+               "shots_from": via,
+               "rule": "one window per shot, busiest (most frame-to-frame change) first, no overlaps, in film order"}
+        return res, arts
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
+HANDLERS = {"fetch": handle_fetch, "digest": handle_digest, "clip": handle_clip}
 
 
 def run_node(hub: Hub, caps: list[str], once=False, poll=5.0, work=None, log=print):
@@ -500,7 +667,8 @@ def run_node(hub: Hub, caps: list[str], once=False, poll=5.0, work=None, log=pri
     unknown = [c for c in caps if c not in HANDLERS]
     if unknown:
         raise RelayError(f"this node has no handler for: {', '.join(unknown)}")
-    for tool in (["yt-dlp"] if "fetch" in caps else []) + (["ffmpeg", "ffprobe"] if "digest" in caps else []):
+    media = bool({"digest", "clip"} & set(caps))
+    for tool in (["yt-dlp"] if "fetch" in caps else []) + (["ffmpeg", "ffprobe"] if media else []):
         if not shutil.which(tool):
             raise RelayError(f"{tool} is not installed on this machine")
     work = work or tempfile.mkdtemp(prefix="relay_node_")

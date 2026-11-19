@@ -127,7 +127,7 @@ python3 relay/cli.py --token "$(cat relay-data/admin_token)" register kobby --hu
 
 **3. On the machine with hands and eyes** — one file, standard library only, needs `yt-dlp` and `ffmpeg`
 ```bash
-RELAY_URL=... RELAY_TOKEN=<muse-laptop token> python3 cli.py node --cap fetch --cap digest
+RELAY_URL=... RELAY_TOKEN=<muse-laptop token> python3 cli.py node --cap fetch --cap digest --cap clip
 ```
 It can be off most of the time. Jobs queue until it wakes.
 
@@ -136,7 +136,12 @@ It can be off most of the time. Jobs queue until it wakes.
 RELAY_TOKEN=<claude token> python3 relay/cli.py job fetch --param url=https://...
 python3 relay/cli.py inbox --ack
 python3 relay/cli.py meta <artifact-id>          # specs, shots, contact sheet, derived files
+python3 relay/cli.py job clip --param artifact=<id> --param count=3 --param seconds=10
 ```
+`clip` cuts vertical 720x1280 H.264 clips (no audio, fast start, each with a poster frame) from a
+video artifact. The rule: every shot from the digest offers one window of `seconds` (centred in the
+shot, or starting on its cut), ranked by how much the picture changes frame to frame, busiest first,
+never overlapping, returned in film order. Clips and posters are stored as children of the source.
 
 Full loop, one command: `relay/demo.sh <media-url> [out-dir]`
 
