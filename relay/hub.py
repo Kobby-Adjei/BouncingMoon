@@ -30,6 +30,7 @@ import sqlite3
 import tempfile
 import time
 import urllib.parse
+import urllib.request
 import uuid
 from contextlib import asynccontextmanager, contextmanager
 from typing import Any, Optional
@@ -341,6 +342,7 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
                retry_base_seconds: Optional[float] = None,
                allow_private_fetch: Optional[bool] = None,
                wake_opener=None, wake_check_url: bool = True, wake_cooldown: Optional[float] = None,
+               youtube_key: Optional[str] = None, youtube_opener=None, youtube_threads: bool = True,
                supabase_url: Optional[str] = None, supabase_key: Optional[str] = None,
                supabase_send=None) -> FastAPI:
     data_dir = data_dir or os.environ.get("RELAY_DATA", "./relay-data")
@@ -1209,12 +1211,20 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
                 "SELECT * FROM artifacts WHERE parent=? ORDER BY created", (aid,))]
             return out
 
-    # ---------------------------------------------------------------- contacts + connector
+    # ---------------------------------------------------------------- live stream chat (YouTube)
     from types import SimpleNamespace
+    from . import streams
+    watcher = streams.Watcher(store, youtube_key if youtube_key is not None else os.environ.get("YOUTUBE_API_KEY"),
+                              opener=youtube_opener or urllib.request.urlopen, threads=youtube_threads)
+    app.state.watcher = watcher
+    stream_tools = streams.mount(app, SimpleNamespace(auth=auth), watcher)
+    watcher.resume()
+
+    # ---------------------------------------------------------------- contacts + connector
     from . import connector
     connector.mount(app, SimpleNamespace(
-        store=store, auth=auth, post=post, inbox_for=inbox_for, ack_to=ack_to, mark_read=mark_read,
-        msg_out=msg_out, with_context=with_context, now=_now, loads=_loads, handle_re=HANDLE_RE))
+        extra_tools=stream_tools, store=store, auth=auth, post=post, inbox_for=inbox_for, ack_to=ack_to,
+        mark_read=mark_read, msg_out=msg_out, with_context=with_context, now=_now, loads=_loads, handle_re=HANDLE_RE))
     from . import people
     sb_url = supabase_url or os.environ.get("SUPABASE_URL")
     sb_key = supabase_key or os.environ.get("SUPABASE_PUBLISHABLE_KEY")
