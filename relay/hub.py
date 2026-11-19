@@ -142,6 +142,10 @@ class Store:
                 c.execute("ALTER TABLE agents ADD COLUMN provider_source TEXT")
             if "last_read" not in agent_cols:        # when the agent last read its inbox (wake-up checks)
                 c.execute("ALTER TABLE agents ADD COLUMN last_read REAL")
+                # reads were never recorded before: a fire that got through says nothing yet, so start at
+                # "ready" (press Test) rather than claim the agent never read anything
+                if c.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='wakes'").fetchone():
+                    c.execute("UPDATE wakes SET last_fired=NULL, last_status=NULL WHERE last_status LIKE 'ok%'")
             invite_cols = {r["name"] for r in c.execute("PRAGMA table_info(invites)")}
             if "provider" not in invite_cols:
                 c.execute("ALTER TABLE invites ADD COLUMN provider TEXT")

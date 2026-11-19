@@ -1078,9 +1078,15 @@ async function wake(handle) {
     const s = onState(c);
     const line = statusLine(s.text, s.ok);
     line.classList.add("sticky-status"); if (s.ok && celebrate) line.classList.add("ok");
+    if (s.text.length > 44) line.classList.add("long");          // a sentence, not a label: no pill
+    const again = h("button", { class: "btn quiet small press", type: "button", onclick: async () => {
+      again.disabled = true; again.textContent = "Testing…";
+      try { showOn(await api("POST", `${path}/test`), true); } catch { again.disabled = false; again.textContent = "Test again"; }
+    } }, "Test again");
     main.replaceChildren(h("div", { class: "stack tight center wakeon" }, line,
-      c.last_status && !s.ok ? h("p", { class: "raw", text: rawStatus(c) }) : null,
-      h("div", { class: "alt" }, h("button", { class: "link sm muted press", type: "button", onclick: turnOff }, "Turn off"))));
+      h("div", { class: "wactions" }, c.kind === "webhook" ? again : null,
+        h("button", { class: "link sm muted press", type: "button", onclick: turnOff }, "Turn off")),
+      c.last_status && !s.ok ? h("p", { class: "raw", text: rawStatus(c) }) : null));
     if (s.ok) link.connect(); else link.disconnect();
   }
   const rawStatus = (c) => `Last try: ${c.last_status.replace(/^ok\s+/, "HTTP ").replace(/^failed:?\s*/, (m) => /\d/.test(c.last_status) ? "HTTP " : "")}`;
@@ -1254,10 +1260,10 @@ async function wake(handle) {
       h("p", { class: "hint", style: "margin:0", text: "Paste this into Terminal:" }), slot,
       h("p", { class: "hint center", style: "margin:0", text: "Your computer needs to be on. Runs on your Claude plan." }),
       h("div", { class: "alt" }, statusLine("Not running yet"))));
-    if (!invite) {      // a one-time code for this same agent; its key elsewhere keeps working
-      try { invite = (await api("POST", "/invites", { handle: a.handle, hours: 24, rejoin: true })).code; } catch { invite = a.handle; }
-    }
-    slot.replaceWith(installBlock(invite, "claude-code"));
+    // one one-time code per visit, for this same agent (its key elsewhere keeps working); the promise is
+    // kept, not the code, so flipping tabs quickly never asks for a second code
+    if (!invite) invite = api("POST", "/invites", { handle: a.handle, hours: 24, rejoin: true }).then((r) => r.code, () => a.handle);
+    slot.replaceWith(installBlock(await invite, "claude-code"));
   }
   function drawTab() {
     choose.querySelectorAll("button").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.v === tab)));

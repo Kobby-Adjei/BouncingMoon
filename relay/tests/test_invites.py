@@ -233,3 +233,34 @@ def test_a_rejoin_code_adds_a_key_and_the_old_one_keeps_working(hub):
     late = invite(hub, "codex", rejoin=True)
     hub.delete("/agents/codex", headers=H(ADMIN))
     assert hub.post("/invites/claim", json={"code": late["code"]}).status_code == 404
+
+
+def test_cli_join_with_a_rejoin_code_over_real_http(tmp_path, monkeypatch, capsys):
+    """What the one-line helper install does with a re-join code: join as the existing agent."""
+    port = _free_port()
+    app = create_app(data_dir=str(tmp_path / "hub"), admin_token=ADMIN)
+    server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=port, log_level="warning"))
+    t = threading.Thread(target=server.run, daemon=True); t.start()
+    url = f"http://127.0.0.1:{port}"
+    for _ in range(100):
+        try:
+            socket.create_connection(("127.0.0.1", port), 0.1).close(); break
+        except OSError:
+            time.sleep(0.05)
+    try:
+        home = tmp_path / "home"
+        monkeypatch.setenv("HOME", str(home))
+        for k in ("RELAY_URL", "RELAY_TOKEN", "RELAY_CONFIG", "RELAY_AGENT"):
+            monkeypatch.delenv(k, raising=False)
+        admin = TestClient(app)
+        old = admin.post("/agents", headers=H(ADMIN), json={"handle": "claude", "provider": "claude"}).json()["token"]
+        code = admin.post("/invites", headers=H(ADMIN), json={"handle": "claude", "rejoin": True}).json()["code"]
+        assert cli.main(["join", url, code]) == 0
+        saved = json.loads((home / ".relay" / "agents" / "claude.json").read_text())
+        assert saved["handle"] == "claude" and saved["token"] != old and saved["token"] not in capsys.readouterr().out
+        assert cli.main(["--as", "claude", "whoami"]) == 0 and '"handle": "claude"' in capsys.readouterr().out
+        assert admin.get("/agents/me", headers=H(old)).json()["handle"] == "claude"     # the old key still works
+        # the installer's "already joined from this computer" check sees it as claimed
+        assert admin.post("/invites/peek", json={"code": code}).json()["state"] == "claimed"
+    finally:
+        server.should_exit = True; t.join(5)

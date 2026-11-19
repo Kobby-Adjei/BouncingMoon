@@ -328,4 +328,5 @@ def test_an_existing_database_gains_the_read_column(tmp_path):
         """)
     c = TestClient(create_app(data_dir=str(tmp_path), admin_token=ADMIN, wake_opener=Switch(), wake_check_url=False))
     w = c.get("/agents/claude/wake", headers=H(ADMIN)).json()
-    assert w["last_read"] is None and w["state"] == "no_read" and w["fires"] == 1
+    # reads were never recorded before, so an old fire proves nothing either way: press Test
+    assert w["last_read"] is None and w["state"] == "ready" and w["fires"] == 1 and w["problem"] is None
