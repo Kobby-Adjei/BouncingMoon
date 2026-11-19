@@ -1031,6 +1031,9 @@ function listenMessage(a, kind) {
 function wakePath(a) {
   const p = providerOf(a), client = (a.client || "").toLowerCase(), name = a.handle.toLowerCase();
   const terminal = /\bcli\b|\bcode\b|terminal/.test(client) || /claude[-_]?code/.test(name);
+  const helper = a.listener && a.listener.app;     // the Relay helper said which app it wakes
+  if (helper === "codex") return { kind: "listen", cmd: "codex", label: "Codex", app: "codex" };
+  if (helper === "claude-code") return { kind: "listen", cmd: "claude", label: "Claude Code", app: "claude-code" };
   if (p === "codex") return { kind: "listen", cmd: "codex", label: "Codex", app: "codex" };
   if (p === "claude" && terminal) return { kind: "listen", cmd: "claude", label: "Claude Code", app: "claude-code" };
   if (p === "claude") return { kind: "claude" };

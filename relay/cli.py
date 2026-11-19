@@ -190,10 +190,10 @@ def listen(hub: "Hub", run: Optional[str] = None, once: bool = False, log=print,
     The command gets RELAY_AGENT and RELAY_NEW_IDS in its environment. Messages are not
     marked read here: the agent does that when it reads them (check_replies / inbox --ack),
     and this listener remembers what it has already announced so it never wakes twice for
-    the same message. A wake that fails (the app signed out, rate limited, crashed) is
-    retried with a growing pause instead of being forgotten, a wake that hangs is stopped
-    after `timeout` seconds, and at most `max_wakes` happen in an hour, so two agents that
-    keep answering each other cannot burn through anyone's plan."""
+    the same message. With --app, a wake that fails (the app signed out, rate limited,
+    crashed) is retried with a growing pause instead of being forgotten, a wake that hangs is
+    stopped after `timeout` seconds, and at most `max_wakes` happen in an hour, so two agents
+    that keep answering each other cannot burn through anyone's plan. --run is left as it was."""
     out = None
     if logfile:
         os.makedirs(os.path.dirname(os.path.abspath(logfile)), exist_ok=True)
@@ -240,12 +240,12 @@ def listen(hub: "Hub", run: Optional[str] = None, once: bool = False, log=print,
             if app:
                 _helper_state(me, last_poll=time.time())
             new = [m for m in box["messages"] if m["id"] > seen]
-            if new and (run or app):
+            if new and app:
                 wakes = [t for t in wakes if t > time.time() - 3600]
                 if len(wakes) >= max_wakes:
                     pause = max(30.0, (wakes[0] + 3600 - time.time()) if wakes else 600)
                     log(f"{len(wakes)} wakes in the last hour; pausing {pause:.0f} s before the next")
-                    time.sleep(min(pause, 600))
+                    _nap(min(pause, 600), hub, app)
                     continue
             if new:
                 before = seen
@@ -259,12 +259,14 @@ def listen(hub: "Hub", run: Optional[str] = None, once: bool = False, log=print,
                     env = {**os.environ, "RELAY_AGENT": me,
                            "RELAY_NEW_IDS": ",".join(str(m["id"]) for m in new)}
                     wakes.append(time.time())
+                    if app:
+                        _report(hub, app, time.time())
                     code = _wake(run, app, hub, me, env, out, timeout, log)
                     log(f"woke the agent (exit {code})")
                     if app:
                         _helper_state(me, last_wake=time.time(), last_exit=code)
-                        _report(hub, app, time.time())
-                    if code != 0:
+                        _report(hub, app, None)
+                    if code != 0 and app:
                         # not read: ask again after a pause rather than forget these messages
                         failures += 1
                         seen = before
@@ -274,7 +276,7 @@ def listen(hub: "Hub", run: Optional[str] = None, once: bool = False, log=print,
                         log(f"the agent did not finish; trying again in {pause} s")
                         if once:
                             return
-                        time.sleep(pause)
+                        _nap(pause, hub, app)
                         continue
                     failures = 0
                 if once:
@@ -304,7 +306,9 @@ def _wake(run, app, hub, me, env, out, timeout, log) -> int:
             return 127
         kw["cwd"] = cwd
         if os.name == "nt":
-            kw["creationflags"] = 0x08000000          # CREATE_NO_WINDOW: no console popping up
+            kw["creationflags"] = 0x08000000 | 0x00000200   # no console window; own process group
+        else:
+            kw["start_new_session"] = True                  # so a timeout stops its children too
     else:
         argv = run
         kw["shell"] = True
@@ -313,13 +317,41 @@ def _wake(run, app, hub, me, env, out, timeout, log) -> int:
     except OSError as e:
         log(f"cannot start the agent: {e}")
         return 127
-    try:
-        return p.wait(timeout=timeout)
-    except subprocess.TimeoutExpired:
-        p.kill()
-        p.wait()
+    if not app:
+        return p.wait()                     # --run: the user's own command, as before
+    deadline = time.time() + timeout
+    while True:
+        try:
+            return p.wait(timeout=max(1.0, min(60.0, deadline - time.time())))
+        except subprocess.TimeoutExpired:
+            if time.time() < deadline:
+                _report(hub, app, None)      # still running: keep "running" fresh for the owner
+                continue
+        _kill_tree(p)
         log(f"the agent ran for over {timeout:.0f} s; stopped it")
         return 124
+
+
+def _kill_tree(p) -> None:
+    """Stop the app and anything it started (npm's codex is a node wrapper around a binary)."""
+    try:
+        if os.name == "nt":
+            subprocess.run(["taskkill", "/PID", str(p.pid), "/T", "/F"], capture_output=True)
+        else:
+            import signal
+            os.killpg(p.pid, signal.SIGKILL)
+    except OSError:
+        p.kill()
+    p.wait()
+
+
+def _nap(seconds: float, hub, app) -> None:
+    """Sleep, saying every minute that the helper is still there."""
+    end = time.time() + seconds
+    while time.time() < end:
+        time.sleep(max(0.0, min(60.0, end - time.time())))
+        if app and time.time() < end:
+            _report(hub, app, None)
 
 
 def _report(hub, app, woke) -> None:

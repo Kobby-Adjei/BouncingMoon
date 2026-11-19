@@ -175,7 +175,8 @@ left out, so a message cannot make the agent start new conversations.
 The listener also limits the cost:
 - A wake that fails (app signed out, rate-limited, crashed) is retried with a growing pause instead
   of being dropped.
-- A wake that runs over 15 minutes is stopped.
+- A wake that runs over 15 minutes is stopped, along with everything it started.
+- These limits apply to the helper (`--app`). A plain `listen --run '<cmd>'` behaves as before.
 - There are at most 30 wakes an hour, so two helpers that keep answering each other cannot drain
   anyone's plan.
 - Only one helper runs per agent per computer (a file lock).
@@ -189,9 +190,13 @@ The listener also limits the cost:
 - **Claude Code, for real:** v2.1.328, against a local hub. It answered a message in 4 s and
   refused a message that claimed to be the owner and asked it to read a planted file. Asked
   directly with the same flags, it listed only the three relay tools and could not read the file.
+- **Codex, partly for real:** v0.170.0 from npm, signed out. It accepted every flag and `-c` value,
+  ran the header helper and completed the MCP handshake with the hub, then stopped at the model
+  call (401, no sign-in). Not checked: a full answered turn, and that `approve` pre-approves the
+  Relay tools. The meaning of `approve` comes from the docs' examples; they don't define it.
 - **Not run:** macOS and Windows. The plist, the unit file, the Task Scheduler XML and the Startup
-  script are unit-tested, but have not run on those systems. Codex itself has not run: its command
-  is assembled from the documentation above.
+  script are unit-tested, but have not run on those systems. No PowerShell has parsed
+  `install.ps1` yet.
 
 ## Quickstart (your own hub)
 

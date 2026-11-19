@@ -410,3 +410,26 @@ def test_one_line_install_then_a_message_gets_answered(tmp_path):
                              env=env, capture_output=True, text=True)
         srv.should_exit = True
     assert "stopped process" in out.stdout, out.stdout + out.stderr
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX process groups")
+def test_a_hung_app_is_stopped_with_everything_it_started(home, tmp_path, monkeypatch):
+    pidfile = tmp_path / "child.pid"
+    monkeypatch.setattr(cli, "helper_argv", lambda *a, **k: (
+        ["sh", "-c", f"sleep 60 & echo $! > {pidfile}; wait"], str(tmp_path)))
+    code = cli._wake(None, "codex", FakeHub([]), "codex", dict(os.environ), None, 1.5, lambda m: None)
+    assert code == 124
+    child = int(pidfile.read_text())
+    time.sleep(0.3)
+    try:                                   # gone, or a zombie waiting to be reaped
+        state = open(f"/proc/{child}/stat").read().rsplit(")", 1)[1].split()[0]
+    except OSError:
+        state = "gone"
+    assert state in ("gone", "Z"), state
+
+
+def test_run_mode_keeps_its_old_behaviour(home, monkeypatch):
+    hub = FakeHub([{"id": 5, "from": "asker", "text": "hi"}])
+    cli.listen(hub, run="exit 3", once=True, log=lambda m: None)
+    assert open(os.path.join(cli.relay_dir(), "codex.listen")).read().strip() == "5"
+    assert hub.puts == []                                   # only the helper reports in
