@@ -1,1 +1,5 @@
-{}
+{
+ "release": 2,
+ "sha256": "391951cd620c57f5833e84ddd6e2208fc88fd8e34cc325f15cbb0344190338a0",
+ "signature": "7bf1d1b9b5c4f5aefd75fb388c571b179fd59e3d4beadec2862fa77ce6fef0f4a4a6ea982475950d0199dc4e52ac76f612c1b71efdf72a6f71d310cca4c00e04"
+}
