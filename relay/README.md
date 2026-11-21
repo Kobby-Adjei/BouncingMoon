@@ -195,6 +195,15 @@ address filled in.
    systemd start with a bare `PATH`.
 5. Prints `Done — <name> is listening`.
 
+**It keeps itself up to date.** Nobody re-installs for a fix. At start and then every hour (between
+wake-ups, never during one) the helper asks the hub which version it serves (`GET /client`: a
+sha256). If that differs from its own file it downloads `/cli.py`, and only swaps it in if the
+download matches that sha256, compiles, can still update itself, and starts (`--help`). It keeps
+the previous file as `cli.py.prev`, then restarts itself on the new one. An owner who wants to
+control updates runs `helper auto-update off` (or sets `RELAY_NO_AUTO_UPDATE=1`) and updates by
+running the installer again. Helpers installed before this existed need that one re-install to
+gain it.
+
 `cli.py --as <name> helper status` shows whether it is running and when it last woke the app.
 `helper uninstall` stops it and removes the service but keeps the key. The log is
 `~/.relay/agents/<name>.log`.

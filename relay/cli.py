@@ -36,6 +36,7 @@ from __future__ import annotations
 import argparse
 import copy
 import glob
+import hashlib
 import ipaddress
 import json
 import mimetypes
@@ -179,9 +180,86 @@ def connect_app(app: str, url: str, handle: str, token: str) -> str:
                      "add a custom connector in Settings → Connectors)")
 
 
+UPDATE_EVERY = 3600          # how often a running helper asks the hub for a newer version of itself
+MAX_CLIENT = 5 * 2**20
+
+
+def auto_update_on(name: str) -> bool:
+    """On unless the owner turned it off (`helper auto-update off`, or RELAY_NO_AUTO_UPDATE=1)."""
+    if os.environ.get("RELAY_NO_AUTO_UPDATE"):
+        return False
+    return _read_json(helper_files(name)["config"]).get("auto_update", True) is not False
+
+
+def _fetch(url: str) -> bytes:
+    req = urllib.request.Request(url, headers={"User-Agent": "relay-helper"})
+    with urllib.request.urlopen(req, timeout=60) as r:
+        data = r.read(MAX_CLIENT + 1)
+    if len(data) > MAX_CLIENT:
+        raise RelayError("the client the hub serves is unexpectedly large")
+    return data
+
+
+def self_update(hub: "Hub", log=print, path: Optional[str] = None, fetch=_fetch,
+                run=subprocess.run) -> bool:
+    """Replace this file with the version the hub serves, if it is newer. Returns True when the file
+    was replaced (the caller then restarts). Every check must pass or nothing changes: the hub names
+    the sha256, the download must match it, it must be Python that compiles, still able to update
+    itself, and start (`--help`). The previous version is kept next to it as cli.py.prev."""
+    path = path or _cli_path()
+    try:
+        info = hub.get("/client")
+        want = str((info or {}).get("sha256", ""))
+        if not re.fullmatch(r"[0-9a-f]{64}", want):
+            return False                                   # an older hub: nothing to compare with
+        with open(path, "rb") as f:
+            mine = hashlib.sha256(f.read()).hexdigest()
+        if mine == want:
+            return False
+        data = fetch(hub.url + "/cli.py")
+        if hashlib.sha256(data).hexdigest() != want:
+            log("update skipped: the download did not match what the hub announced")
+            return False
+        text = data.decode("utf-8")
+        if "python" not in text.split("\n", 1)[0] or "def self_update(" not in text:
+            log("update skipped: the download is not a Relay helper that can keep itself updated")
+            return False
+        compile(text, path, "exec")
+        part = path + ".part"
+        with open(part, "wb") as f:
+            f.write(data)
+        os.chmod(part, os.stat(path).st_mode & 0o777)
+        probe = run([sys.executable, part, "--help"], capture_output=True, timeout=60)
+        if probe.returncode != 0:
+            os.remove(part)
+            log("update skipped: the new version did not start")
+            return False
+        shutil.copy2(path, path + ".prev")
+        os.replace(part, path)
+        log(f"updated the Relay helper ({mine[:8]} -> {want[:8]}); restarting on the new version")
+        return True
+    except Exception as e:                                 # never stop answering over an update
+        log(f"update check failed ({type(e).__name__}: {e}); staying on this version")
+        return False
+
+
+def _restart(lock, out) -> None:
+    """Start this same helper again on the updated file, and stop this process."""
+    if lock is not None:
+        _LOCKS.remove(lock)
+        lock.close()                     # the new process takes the one-helper-per-agent lock
+    if out:
+        out.close()
+    argv = [sys.executable, _cli_path()] + sys.argv[1:]
+    if os.name == "nt":                  # execv mangles paths with spaces on Windows: start, then leave
+        subprocess.Popen(argv, creationflags=0x08000000 | 0x00000200, close_fds=True)
+        os._exit(0)
+    os.execv(sys.executable, argv)
+
+
 def listen(hub: "Hub", run: Optional[str] = None, once: bool = False, log=print,
            app: Optional[str] = None, logfile: Optional[str] = None, timeout: float = 900,
-           max_wakes: int = 30) -> None:
+           max_wakes: int = 30, restart=None) -> None:
     """Hear new messages the moment they arrive (long-poll), and optionally wake an agent.
 
     Without --run it prints each new message. With --run it runs that command once per
@@ -236,7 +314,15 @@ def listen(hub: "Hub", run: Optional[str] = None, once: bool = False, log=print,
         log(f"listening for @{me}" + (f"; will run: {run}" if run else f"; will wake {app}" if app else ""))
         wakes: list[float] = []
         failures = 0
+        # the installed helper keeps itself current: at start, then hourly, between wake-ups
+        next_update = time.time() if app and auto_update_on(me) else float("inf")
         while True:
+            if time.time() >= next_update:
+                next_update = time.time() + UPDATE_EVERY
+                if self_update(hub, log):
+                    _helper_state(me, updated=time.time())
+                    (restart or _restart)(lock, out)
+                    return
             try:
                 # only messages no chat of this agent owns: an answer held for a chat that already
                 # exists must not start a new one (an older hub ignores `unclaimed`)
@@ -1407,9 +1493,10 @@ def helper_install(hub: "Hub", app: str, log=print, run=subprocess.run,
     before = _read_json(f["state"]).get("started", 0)
     spec = service_spec(name, app)
     helper_argv(app, name, hub.url, exe=exe)         # validates, and writes Claude's MCP file
-    _write_json(f["config"], {"app": app, "exe": exe, "installed": time.time()})
+    keep = {"auto_update": old["auto_update"]} if "auto_update" in old else {}   # the owner's choice survives a reinstall
+    _write_json(f["config"], {"app": app, "exe": exe, "installed": time.time(), **keep})
     svc = install_service(spec, platform=platform, run=run)
-    _write_json(f["config"], {"app": app, "exe": exe, "installed": time.time(), **svc})
+    _write_json(f["config"], {"app": app, "exe": exe, "installed": time.time(), **keep, **svc})
     deadline = time.time() + wait
     while time.time() < deadline:
         st = _read_json(f["state"])
@@ -1430,7 +1517,9 @@ def helper_status(name: str, hub: Optional["Hub"] = None) -> list[str]:
              f"  last check for messages: {ago_(st.get('last_poll'))}",
              f"  last woke {cfg.get('app')}: {ago_(st.get('last_wake'))}"
              + (f" (exit {st['last_exit']})" if st.get("last_wake") else ""),
-             f"  log: {f['log']}"]
+             f"  log: {f['log']}",
+             f"  updates itself from the hub: {'on' if auto_update_on(name) else 'off'}"
+             + (f" (last update {ago_(st['updated'])})" if st.get("updated") else "")]
     if cfg.get("file"):
         lines.append(f"  service file: {cfg['file']}")
     if hub:
@@ -1532,6 +1621,8 @@ def main(argv=None):
     x.add_argument("--app", required=True, choices=sorted(HELPER_APPS))
     hs.add_parser("status", help="is the helper running, and when did it last wake the app")
     hs.add_parser("uninstall", help="stop the helper and remove its service (the agent's key stays)")
+    x = hs.add_parser("auto-update", help="let the helper update itself from the hub (on by default)")
+    x.add_argument("state", choices=["on", "off"])
     x = hs.add_parser("setup", help="what the one-line installer runs: join (or reuse) and install")
     x.add_argument("hub_url"); x.add_argument("who", help="invite code, or the name of an agent that joined here")
     x.add_argument("--app", required=True, choices=sorted(HELPER_APPS))
@@ -1576,10 +1667,17 @@ def main(argv=None):
             out = helper_setup(a.hub_url, a.who, a.app)
             return _helper_done(out)
         cfg = {} if (a.url and a.token) else load_config(a.agent)
-        if a.cmd == "helper" and a.action in ("status", "uninstall"):
+        if a.cmd == "helper" and a.action in ("status", "uninstall", "auto-update"):
             name = cfg.get("handle") or a.agent
             if not name:
                 raise RelayError("say which agent with --as NAME")
+            if a.action == "auto-update":
+                f = helper_files(_check_name(name))
+                _write_json(f["config"], {**_read_json(f["config"]), "auto_update": a.state == "on"})
+                print(f"@{name}: the helper {'updates itself from the hub' if a.state == 'on' else 'no longer updates itself'}"
+                      + ("" if a.state == "on" else "; run the one-line installer again to update by hand")
+                      + ". Takes effect when it next restarts.")
+                return 0
             if a.action == "status":
                 hub = Hub(cfg["url"], cfg["token"]) if cfg.get("token") else None
                 print("\n".join(helper_status(_check_name(name), hub)))
