@@ -472,12 +472,14 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
 
     warned: set = set()
 
-    def no_session(handle: str, what: str) -> None:
-        """An old client: delivery falls back to the whole identity, as before sessions existed."""
+    def no_session(handle: str, what: str, header_names=None) -> None:
+        """An old client: delivery falls back to the whole identity, as before sessions existed.
+        The header *names* it sent (never values) show what that app could identify a chat by."""
         if handle not in warned:
             warned.add(handle)
             log.warning("@%s %s without a session id; replies to it go to the identity as a whole, "
-                        "not to the chat that asked (send X-Relay-Session or Mcp-Session-Id)", handle, what)
+                        "not to the chat that asked (send X-Relay-Session or Mcp-Session-Id)%s", handle, what,
+                        f"; headers sent: {', '.join(sorted(header_names))}" if header_names else "")
 
     def start_session(c, h: str, session: str) -> None:
         """The chat called: note that it is alive. A session first seen starts where its identity's
@@ -1198,7 +1200,23 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
                 " JOIN session_cursors s ON s.handle=r.handle AND s.session=r.session"
                 " WHERE r.session!='' AND m.sender!=r.handle AND root.sender!=r.handle AND m.id>s.last"
                 " AND (s.ended IS NOT NULL OR COALESCE(s.seen, 0)<?)", (_now() - session_idle,)).fetchall()
-            return sum(release(c, p["handle"], p["session"]) for p in pairs)
+            n = sum(release(c, p["handle"], p["session"]) for p in pairs)
+            prune(c)
+            return n
+
+    PRUNE_AFTER = 30 * 86400
+
+    def prune(c) -> None:
+        """Forget chats unheard of for 30 days that have nothing left waiting for them."""
+        old = c.execute(
+            "SELECT s.handle, s.session, s.last FROM session_cursors s WHERE COALESCE(s.seen, 0)<?"
+            " AND NOT EXISTS (SELECT 1 FROM routes r JOIN messages m ON m.id=r.msg WHERE r.handle=s.handle"
+            " AND r.session=s.session AND r.msg>s.last AND m.sender!=s.handle)", (_now() - PRUNE_AFTER,)).fetchall()
+        for o in old:
+            k = (o["handle"], o["session"])
+            c.execute("DELETE FROM thread_sessions WHERE handle=? AND session=?", k)
+            c.execute("DELETE FROM delivered WHERE handle=? AND session=?", k)
+            c.execute("DELETE FROM session_cursors WHERE handle=? AND session=?", k)
 
     def sweeper():
         while True:

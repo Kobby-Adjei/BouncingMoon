@@ -371,7 +371,7 @@ def mount(app, hub) -> None:
     def rpc_error(mid, code, message):
         return {"jsonrpc": "2.0", "id": mid, "error": {"code": code, "message": message}}
 
-    def handle(msg: Any, me: str, session: Optional[str] = None) -> Optional[dict]:
+    def handle(msg: Any, me: str, session: Optional[str] = None, header_names=None) -> Optional[dict]:
         if not isinstance(msg, dict) or msg.get("jsonrpc") != "2.0":
             return rpc_error(None, -32600, "invalid request")
         method, mid = msg.get("method"), msg.get("id")
@@ -411,7 +411,7 @@ def mount(app, hub) -> None:
             try:
                 if name in routed:
                     if not session:
-                        hub.no_session(me, f"called {name}")
+                        hub.no_session(me, f"called {name}", header_names)
                     text, data = fn(me, args, session=session)
                 else:
                     text, data = fn(me, args)
@@ -458,11 +458,12 @@ def mount(app, hub) -> None:
             # a chat starting up: give it its own id, which MCP clients send back on every later call
             session = issued = "rs_" + uuid.uuid4().hex
         headers = {"Mcp-Session-Id": issued} if issued else None
+        names = sorted(request.headers.keys())                # names only: values may be secrets
         from starlette.concurrency import run_in_threadpool   # `ask` may wait; keep the event loop free
         if isinstance(body, list):
-            out = [r for r in [await run_in_threadpool(handle, m, me, session) for m in body] if r is not None]
+            out = [r for r in [await run_in_threadpool(handle, m, me, session, names) for m in body] if r is not None]
             return JSONResponse(out, headers=headers) if out else Response(status_code=202, headers=headers)
-        out = await run_in_threadpool(handle, body, me, session)
+        out = await run_in_threadpool(handle, body, me, session, names)
         return JSONResponse(out, headers=headers) if out is not None else Response(status_code=202, headers=headers)
 
     @app.get("/mcp", include_in_schema=False)

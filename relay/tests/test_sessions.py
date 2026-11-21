@@ -319,3 +319,23 @@ def test_new_chats_do_not_get_messages_from_before_session_routing(tmp_path):
     assert [m["text"] for m in call(c, tok["claude"], "check_replies", session="fresh")["messages"]] == ["new"]
     legacy = [m["text"] for m in call(c, tok["claude"], "check_replies")["messages"]]
     assert legacy[:3] == ["old 0", "old 1", "old 2"]      # identity-wide readers still get them, as before
+
+
+def test_chats_unheard_of_for_30_days_are_forgotten_unless_something_waits_for_them(hub):
+    c, rec, t = hub
+    ask(c, t, "old-done", "q1")                           # its answer was read: nothing waits
+    ask(c, t, "old-waiting", "q2")                        # an answer still waits for it
+    call(c, t["muse"], "check_replies", session="m")
+    msgs = c.get("/messages", params={"channel": "direct"}, headers={"Authorization": f"Bearer {t['muse']}"}).json()
+    for m in msgs:
+        if m["from"] == "claude":
+            call(c, t["muse"], "reply", {"message_id": m["id"], "text": "a"}, "m")
+    call(c, t["claude"], "check_replies", session="old-done")
+    import sqlite3
+    db = sqlite3.connect(c.app.state.store.db_path)
+    db.execute("UPDATE session_cursors SET seen=0 WHERE session LIKE 'old-%'"); db.commit()
+    c.app.state.sweep()
+    left = {r[0] for r in db.execute("SELECT session FROM session_cursors WHERE handle='claude'")}
+    db.close()
+    assert left == {"old-waiting"}
+    assert [m["text"] for m in call(c, t["claude"], "check_replies", session="old-waiting")["messages"]] == ["a"]
