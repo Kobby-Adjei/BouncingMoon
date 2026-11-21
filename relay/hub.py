@@ -23,6 +23,7 @@ from __future__ import annotations
 import hashlib
 import ipaddress
 import json
+import logging
 import os
 import re
 import secrets
@@ -78,10 +79,28 @@ CREATE TABLE IF NOT EXISTS contacts(
   PRIMARY KEY(owner, name));
 CREATE TABLE IF NOT EXISTS agent_keys(
   token_hash TEXT PRIMARY KEY, handle TEXT NOT NULL, created REAL);
+CREATE TABLE IF NOT EXISTS routes(
+  msg INTEGER NOT NULL, handle TEXT NOT NULL, session TEXT NOT NULL, PRIMARY KEY(msg, handle));
+CREATE TABLE IF NOT EXISTS thread_sessions(
+  thread INTEGER NOT NULL, handle TEXT NOT NULL, session TEXT NOT NULL, PRIMARY KEY(thread, handle));
+CREATE TABLE IF NOT EXISTS session_cursors(
+  handle TEXT NOT NULL, session TEXT NOT NULL, last INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(handle, session));
 """
+# Routing by session. One identity (say `claude`) is used from many chats at once, so a message is
+# also routed to the exact chat that should handle it:
+#   messages.origin_session  the chat that sent it (never shown to anyone; only used for routing)
+#   routes(msg, handle)      which session of `handle` owns this message. No row: nobody yet, and
+#                            the first session of that identity to read it claims it. '' marks a
+#                            claim by an old client that sends no session id.
+#   thread_sessions          the session of an identity that is taking part in a thread, so a later
+#                            message in the thread reaches that chat and not a fresh one.
+#   session_cursors          each session's own read position; it starts at the identity's cursor.
+
+log = logging.getLogger("relay")
 
 HANDLE_RE = re.compile(r"^[a-z0-9][a-z0-9_.-]{0,31}$")
 PROVIDER_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,23}$")   # "claude", "openai", "gemini", ... (display only)
+SESSION_RE = re.compile(r"^[\x21-\x7e]{1,200}$")     # visible ASCII, as MCP session ids are
 RESERVED = {"relay", "admin", "me"}
 SYSTEM = "relay"            # sender name for messages the hub writes itself
 MEDIA_PREFIXES = ("video/", "audio/")
@@ -134,6 +153,9 @@ class Store:
                 c.execute("ALTER TABLE agents ADD COLUMN provider TEXT")
             if "owner" not in agent_cols:
                 c.execute("ALTER TABLE agents ADD COLUMN owner INTEGER NOT NULL DEFAULT 0")
+            msg_cols = {r["name"] for r in c.execute("PRAGMA table_info(messages)")}
+            if "origin_session" not in msg_cols:     # the exact chat that sent it (routing only)
+                c.execute("ALTER TABLE messages ADD COLUMN origin_session TEXT")
             if "client" not in agent_cols:          # the app it connects from, as that app names itself
                 c.execute("ALTER TABLE agents ADD COLUMN client TEXT")
             for col in ("listener_app TEXT", "listener_seen REAL", "listener_woke REAL"):
@@ -417,8 +439,49 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
             raise HTTPException(403, "admin token is for registration only; use an agent token")
 
     # ---------------------------------------------------------------- internals
+    def check_session(session: Optional[str]) -> Optional[str]:
+        session = (session or "").strip()
+        if not session:
+            return None
+        if not SESSION_RE.match(session):
+            raise HTTPException(400, "a session id is 1-200 visible ASCII characters")
+        return session
+
+    warned: set = set()
+
+    def no_session(handle: str, what: str) -> None:
+        """An old client: delivery falls back to the whole identity, as before sessions existed."""
+        if handle not in warned:
+            warned.add(handle)
+            log.warning("@%s %s without a session id; replies to it go to the identity as a whole, "
+                        "not to the chat that asked (send X-Relay-Session or Mcp-Session-Id)", handle, what)
+
+    def start_session(c, h: str, session: str) -> None:
+        # a session first seen starts where its identity's cursor is, so it isn't handed old history
+        c.execute("INSERT OR IGNORE INTO session_cursors(handle,session,last)"
+                  " SELECT ?, ?, COALESCE((SELECT last FROM cursors WHERE agent=?), 0)", (h, session, h))
+
+    def route_for(c, h: str, thread: int, reply_to: Optional[int]) -> Optional[str]:
+        """The session of `h` that must get a message in `thread`: the chat that sent the message being
+        answered, else the chat of `h` already in the thread. None: a new request, any chat may take it."""
+        if reply_to is not None:
+            p = c.execute("SELECT sender, origin_session FROM messages WHERE id=?", (reply_to,)).fetchone()
+            if p and p["sender"] == h and p["origin_session"]:
+                return p["origin_session"]
+        r = c.execute("SELECT session FROM thread_sessions WHERE thread=? AND handle=?", (thread, h)).fetchone()
+        return r["session"] if r else None
+
+    def take(c, h: str, session: Optional[str], msgs: list) -> None:
+        """A chat read these: the ones no chat of `h` owned yet are now its own, and so is their thread.
+        An old client (no session) claims them as '' so that no chat handles them a second time."""
+        for m in msgs:
+            c.execute("INSERT OR IGNORE INTO routes(msg,handle,session) VALUES (?,?,?)", (m["id"], h, session or ""))
+            if session and m.get("thread") is not None:
+                c.execute("INSERT OR IGNORE INTO thread_sessions(thread,handle,session) VALUES (?,?,?)",
+                          (m["thread"], h, session))
+
     def post(c, sender, text, channel=None, reply_to=None, mentions=(), artifacts=(),
-             idem=None, job=None) -> dict:
+             idem=None, job=None, session=None) -> dict:
         mentions = sorted({m.lstrip("@") for m in mentions})
         if idem:
             prev = c.execute("SELECT * FROM messages WHERE sender=? AND idem=?",
@@ -446,32 +509,57 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
             if not c.execute("SELECT 1 FROM artifacts WHERE id=?", (a,)).fetchone():
                 raise HTTPException(400, f"unknown artifact {a}")
         cur = c.execute(
-            "INSERT INTO messages(sender,idem,channel,thread,reply_to,time,text,mentions,artifacts,job)"
-            " VALUES (?,?,?,?,?,?,?,?,?,?)",
+            "INSERT INTO messages(sender,idem,channel,thread,reply_to,time,text,mentions,artifacts,job,origin_session)"
+            " VALUES (?,?,?,?,?,?,?,?,?,?,?)",
             (sender, idem, channel, thread, reply_to, _now(), text,
-             json.dumps(mentions), json.dumps(list(artifacts)), job))
+             json.dumps(mentions), json.dumps(list(artifacts)), job, session))
         mid = cur.lastrowid
         if thread is None:
             thread = mid
             c.execute("UPDATE messages SET thread=? WHERE id=?", (mid, mid))
         if sender != SYSTEM:
             c.execute("INSERT OR IGNORE INTO follows(agent,thread) VALUES (?,?)", (sender, thread))
+        if session:                    # this chat is in the thread now: later messages in it come back here
+            start_session(c, sender, session)
+            c.execute("INSERT INTO thread_sessions(thread,handle,session) VALUES (?,?,?)"
+                      " ON CONFLICT(thread,handle) DO UPDATE SET session=excluded.session", (thread, sender, session))
+            c.execute("INSERT OR IGNORE INTO routes(msg,handle,session) VALUES (?,?,?)", (mid, sender, session))
         # who should hear about this right away: mentioned, following the thread, or subscribed
-        who = set(mentions) | {r["agent"] for r in c.execute(
+        who = (set(mentions) | {r["agent"] for r in c.execute(
             "SELECT agent FROM follows WHERE thread=? UNION SELECT agent FROM subs WHERE channel=?",
-            (thread, channel))}
-        waker.notify(who - {sender}, sender)
+            (thread, channel))}) - {sender}
+        wake = set()
+        for h in who:
+            target = route_for(c, h, thread, reply_to)
+            if target:                 # an answer for a chat that exists: held for it, never a new chat
+                c.execute("INSERT OR IGNORE INTO routes(msg,handle,session) VALUES (?,?,?)", (mid, h, target))
+            else:                      # a new request: whichever chat of `h` reads it first takes it
+                wake.add(h)
+        waker.notify(wake, sender)
         return msg_out(c.execute("SELECT * FROM messages WHERE id=?", (mid,)).fetchone())
 
-    def inbox_for(c, h: str, limit: int = 20) -> dict:
-        cur = c.execute("SELECT last FROM cursors WHERE agent=?", (h,)).fetchone()
+    def inbox_for(c, h: str, limit: int = 20, session: Optional[str] = None, unclaimed: bool = False) -> dict:
+        """What is waiting for `h`. With a session: that chat's own messages plus new requests no chat
+        of `h` has taken, read from that chat's own cursor. Without one (an old client): everything for
+        `h`, as before. `unclaimed` keeps only messages no chat owns: what may start a new chat."""
+        if session:
+            start_session(c, h, session)
+            cur = c.execute("SELECT last FROM session_cursors WHERE handle=? AND session=?", (h, session)).fetchone()
+        else:
+            cur = c.execute("SELECT last FROM cursors WHERE agent=?", (h,)).fetchone()
         last = cur["last"] if cur else 0
-        rows = c.execute(
-            "SELECT m.* FROM messages m WHERE m.id>? AND m.sender!=? AND ("
-            " EXISTS (SELECT 1 FROM json_each(m.mentions) WHERE value=?)"
-            " OR m.channel IN (SELECT channel FROM subs WHERE agent=?)"
-            " OR m.thread IN (SELECT thread FROM follows WHERE agent=?))"
-            " ORDER BY m.id LIMIT ?", (last, h, h, h, h, limit)).fetchall()
+        q = ("SELECT m.* FROM messages m WHERE m.id>? AND m.sender!=? AND ("
+             " EXISTS (SELECT 1 FROM json_each(m.mentions) WHERE value=?)"
+             " OR m.channel IN (SELECT channel FROM subs WHERE agent=?)"
+             " OR m.thread IN (SELECT thread FROM follows WHERE agent=?))")
+        a: list = [last, h, h, h, h]
+        if session:
+            q += " AND NOT EXISTS (SELECT 1 FROM routes r WHERE r.msg=m.id AND r.handle=? AND r.session!=?)"
+            a += [h, session]
+        elif unclaimed:
+            q += " AND NOT EXISTS (SELECT 1 FROM routes r WHERE r.msg=m.id AND r.handle=?)"
+            a += [h]
+        rows = c.execute(q + " ORDER BY m.id LIMIT ?", a + [limit]).fetchall()
         msgs = [msg_out(r) for r in rows]
         return {"messages": msgs, "cursor": msgs[-1]["id"] if msgs else last}
 
@@ -480,7 +568,11 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
         a wake-up that the agent it started really reached Relay."""
         c.execute("UPDATE agents SET last_read=? WHERE handle=?", (_now(), h))
 
-    def ack_to(c, h: str, cursor: int) -> None:
+    def ack_to(c, h: str, cursor: int, session: Optional[str] = None) -> None:
+        if session:
+            start_session(c, h, session)
+            c.execute("UPDATE session_cursors SET last=MAX(last, ?) WHERE handle=? AND session=?", (cursor, h, session))
+            return
         c.execute("INSERT INTO cursors(agent,last) VALUES (?,?) ON CONFLICT(agent)"
                   " DO UPDATE SET last=MAX(last, excluded.last)", (h, cursor))
 
@@ -506,7 +598,7 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
                           (_now(), j["id"]))
 
     def create_job(c, me_handle, kind, params, requires_approval=False, reply_to=None,
-                   note=None, parent_job=None, thread=None) -> dict:
+                   note=None, parent_job=None, thread=None, session=None) -> dict:
         if kind == "fetch":
             url = str(params.get("url", ""))
             if not url.startswith(("http://", "https://")):
@@ -530,12 +622,13 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
         summary = ", ".join(f"{k}={v}" for k, v in params.items())[:300]
         text = f"job {jid} [{kind}] {summary}" + (f" — {note}" if note else "")
         sender = me_handle if is_agent(c, me_handle) else SYSTEM
+        session = session if sender == me_handle else None
         if thread is not None:
-            m = post(c, sender, text, reply_to=thread, job=jid)
+            m = post(c, sender, text, reply_to=thread, job=jid, session=session)
         elif reply_to is not None:
-            m = post(c, sender, text, reply_to=reply_to, job=jid)
+            m = post(c, sender, text, reply_to=reply_to, job=jid, session=session)
         else:
-            m = post(c, sender, text, channel="jobs", job=jid)
+            m = post(c, sender, text, channel="jobs", job=jid, session=session)
         status = "needs_approval" if requires_approval else "queued"
         c.execute("INSERT INTO jobs(id,kind,params,requested_by,status,thread,requires_approval,"
                   "parent_job,created,updated) VALUES (?,?,?,?,?,?,?,?,?,?)",
@@ -953,12 +1046,15 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
 
     # ---------------------------------------------------------------- messages
     @app.post("/messages")
-    def send(body: MessageIn, me: dict = Depends(auth)):
+    def send(body: MessageIn, me: dict = Depends(auth), x_relay_session: str = Header(default="")):
         need_agent(me)
+        session = check_session(x_relay_session)
+        if not session:
+            no_session(me["handle"], "sent a message")
         with store.tx() as c:
             return post(c, me["handle"], body.text, channel=body.channel,
                         reply_to=body.reply_to, mentions=body.mentions,
-                        artifacts=body.artifacts, idem=body.idem)
+                        artifacts=body.artifacts, idem=body.idem, session=session)
 
     @app.get("/messages")
     def read(channel: Optional[str] = None, thread: Optional[int] = None,
@@ -977,12 +1073,18 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
 
     @app.get("/inbox")
     def inbox(limit: int = Query(20, ge=1, le=200), wait: float = Query(0, ge=0, le=50),
-              me: dict = Depends(auth)):
+              unclaimed: bool = False, me: dict = Depends(auth), x_relay_session: str = Header(default="")):
         """What is waiting for me: mentions, my channels, threads I follow.
         At-least-once: nothing is consumed until I ack the cursor. With wait=N the request
         holds for up to N seconds until something arrives (long-poll), so a listener hears a
-        message within about a second instead of at its next check."""
+        message within about a second instead of at its next check.
+        X-Relay-Session: only this chat's messages and new requests no other chat has taken; reading
+        them makes them this chat's. unclaimed=true (a listener that starts new chats): only messages
+        no chat owns, so an answer meant for a chat that already exists never starts a new one."""
         need_agent(me)
+        session = check_session(x_relay_session)
+        if not session and not unclaimed and not wait:
+            no_session(me["handle"], "read its inbox")
         with store.tx() as c:
             if wait:                   # a listener: say it is still there (only one that reported in)
                 c.execute("UPDATE agents SET listener_seen=? WHERE handle=? AND listener_seen IS NOT NULL",
@@ -990,20 +1092,23 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
             else:                      # the agent reading (a long-poll is a listener keeping watch, not a read)
                 mark_read(c, me["handle"])
         deadline = time.monotonic() + wait
+        writes = bool(session) or not wait    # a plain long-poll only reads; keep it off the write lock
         while True:
-            with store.ro() as c:
-                box = inbox_for(c, me["handle"], limit)
+            with (store.tx() if writes else store.ro()) as c:
+                box = inbox_for(c, me["handle"], limit, session=session, unclaimed=unclaimed and not session)
                 if box["messages"] and not wait:          # a reader gets each thread's earlier messages too
+                    take(c, me["handle"], session, box["messages"])
                     with_context(c, box["messages"])
             if box["messages"] or time.monotonic() >= deadline:
                 return box
             time.sleep(0.5)
 
     @app.post("/inbox/ack")
-    def ack(body: AckIn, me: dict = Depends(auth)):
+    def ack(body: AckIn, me: dict = Depends(auth), x_relay_session: str = Header(default="")):
         need_agent(me)
+        session = check_session(x_relay_session)
         with store.tx() as c:
-            ack_to(c, me["handle"], body.cursor)
+            ack_to(c, me["handle"], body.cursor, session)
         return {"ok": True, "cursor": body.cursor}
 
     @app.post("/subscriptions")
@@ -1024,11 +1129,12 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
 
     # ---------------------------------------------------------------- jobs
     @app.post("/jobs")
-    def new_job(body: JobIn, me: dict = Depends(auth)):
+    def new_job(body: JobIn, me: dict = Depends(auth), x_relay_session: str = Header(default="")):
         need_agent(me)
+        session = check_session(x_relay_session)
         with store.tx() as c:
             return create_job(c, me["handle"], body.kind, body.params,
-                              body.requires_approval, body.reply_to, body.note)
+                              body.requires_approval, body.reply_to, body.note, session=session)
 
     @app.get("/jobs")
     def list_jobs(status: Optional[str] = None, kind: Optional[str] = None,
@@ -1238,6 +1344,7 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
     from . import connector
     connector.mount(app, SimpleNamespace(
         extra_tools=extra_tools, store=store, auth=auth, post=post, inbox_for=inbox_for, ack_to=ack_to,
+        take=take, check_session=check_session, no_session=no_session,
         mark_read=mark_read, msg_out=msg_out, with_context=with_context, now=_now, loads=_loads, handle_re=HANDLE_RE))
     from . import people
     sb_url = supabase_url or os.environ.get("SUPABASE_URL")

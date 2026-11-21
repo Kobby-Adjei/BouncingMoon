@@ -11,7 +11,13 @@ with the agent's Relay key as `Authorization: Bearer <key>`. The agent then has:
     save_contact   remember a nickname for an address
 
 Transport: MCP Streamable HTTP, answered as plain JSON (no server-initiated stream), so
-every request is self-contained and nothing is kept between calls. Protocol versions are
+every request is self-contained and nothing is kept between calls.
+
+Sessions: one identity is used from many chats, and an answer must reach the chat that asked.
+Each chat names itself on every call with `X-Relay-Session: <id>`, or with the standard
+`Mcp-Session-Id`, which the hub hands out on `initialize` to a client that sent neither
+(MCP clients send it back on every later request by themselves). The id only routes: it is
+never shown to anyone. A client that sends neither falls back to identity-wide delivery. Protocol versions are
 the initialize-handshake ones (2024-11-05 through 2025-11-25); a client that offers a
 newer version is answered with the newest of these, as the spec allows.
 """
@@ -20,6 +26,7 @@ from __future__ import annotations
 import json
 import re
 import time
+import uuid
 from typing import Any, Optional
 
 from fastapi import Depends, HTTPException, Request
@@ -220,22 +227,25 @@ def mount(app, hub) -> None:
             out = save(c, me, str(args.get("name", "")), str(args.get("address", "")))
         return f"Saved: {out['name']} → {out['address']}", out
 
-    def tool_ask(me, args):
+    def tool_ask(me, args, session=None):
         text = clip(str(args.get("message", "")))
         wait = max(0, min(int(args.get("wait_seconds", 40) or 0), MAX_WAIT))   # larger values are capped, not refused
         with store.tx() as c:
             to = resolve(c, me, str(args.get("to", "")))
-            sent = hub.post(c, me, text, channel=DIRECT, mentions=[to])
+            sent = hub.post(c, me, text, channel=DIRECT, mentions=[to], session=session)
         deadline = time.monotonic() + wait
         while True:
-            with store.ro() as c:
-                r = c.execute("SELECT * FROM messages WHERE thread=? AND sender=? AND id>? ORDER BY id LIMIT 1",
-                              (sent["thread"], to, sent["id"])).fetchone()
+            with store.ro() as c:      # only an answer routed to this chat (or to no chat in particular)
+                r = c.execute("SELECT * FROM messages m WHERE thread=? AND sender=? AND id>?"
+                              " AND NOT EXISTS (SELECT 1 FROM routes r WHERE r.msg=m.id AND r.handle=?"
+                              " AND r.session!=?) ORDER BY id LIMIT 1",
+                              (sent["thread"], to, sent["id"], me, session or "")).fetchone()
             if r:
                 ans = hub.msg_out(r)
                 with store.tx() as c:          # delivered here, so don't repeat it in check_replies
-                    if _only_unread_is(c, me, ans["id"]):
-                        hub.ack_to(c, me, ans["id"])
+                    hub.take(c, me, session, [ans])
+                    if _only_unread_is(c, me, ans["id"], session):
+                        hub.ack_to(c, me, ans["id"], session)
                 return (f"{to} answered (message {ans['id']}):\n{ans['text']}",
                         {"status": "answered", "to": to, "asked": sent["id"], "answer": ans})
             if time.monotonic() >= deadline:
@@ -244,18 +254,19 @@ def mount(app, hub) -> None:
                         {"status": "pending", "to": to, "asked": sent["id"]})
             time.sleep(1.0)
 
-    def _only_unread_is(c, me, mid) -> bool:
+    def _only_unread_is(c, me, mid, session=None) -> bool:
         # advance the cursor only if nothing older is still unread, so no other message is skipped
-        box = hub.inbox_for(c, me, 1)
+        box = hub.inbox_for(c, me, 1, session=session)
         return bool(box["messages"]) and box["messages"][0]["id"] == mid
 
-    def tool_check_replies(me, args):
+    def tool_check_replies(me, args, session=None):
         limit = max(1, min(int(args.get("limit", 20) or 20), 50))
         with store.tx() as c:
             hub.mark_read(c, me)               # even "Nothing new" proves a woken agent reached Relay
-            box = hub.inbox_for(c, me, limit)
+            box = hub.inbox_for(c, me, limit, session=session)
             if box["messages"]:
-                hub.ack_to(c, me, box["cursor"])          # only the new messages; context is not marked read
+                hub.take(c, me, session, box["messages"])   # new requests read here are this chat's now
+                hub.ack_to(c, me, box["cursor"], session)    # only the new messages; context is not marked read
                 hub.with_context(c, box["messages"])
         msgs = box["messages"]
         if not msgs:
@@ -269,7 +280,7 @@ def mount(app, hub) -> None:
             lines.append(f"[{m['id']}] from {m['from']} ({kind}): {m['text']}")
         return "\n".join(lines), {"messages": msgs}
 
-    def tool_reply(me, args):
+    def tool_reply(me, args, session=None):
         text = clip(str(args.get("text", "")))
         try:
             mid = int(args.get("message_id"))
@@ -280,11 +291,11 @@ def mount(app, hub) -> None:
             if not parent:
                 raise ToolError(f"No message {mid}.")
             mention = [parent["sender"]] if parent["sender"] not in (me, "relay") else []
-            out = hub.post(c, me, text, reply_to=mid, mentions=mention)
+            out = hub.post(c, me, text, reply_to=mid, mentions=mention, session=session)
         return f"Replied (message {out['id']}).", out
 
-    handlers = {"contacts": tool_contacts, "ask": tool_ask, "check_replies": tool_check_replies,
-                "reply": tool_reply, "save_contact": tool_save_contact}
+    routed = {"ask": tool_ask, "check_replies": tool_check_replies, "reply": tool_reply}   # take the session
+    handlers = {"contacts": tool_contacts, "save_contact": tool_save_contact, **routed}
     extra = getattr(hub, "extra_tools", None) or {}          # tools other parts of the hub add (streams)
     handlers.update(extra.get("handlers", {}))
     tool_list = TOOLS + list(extra.get("tools", []))
@@ -293,7 +304,7 @@ def mount(app, hub) -> None:
     def rpc_error(mid, code, message):
         return {"jsonrpc": "2.0", "id": mid, "error": {"code": code, "message": message}}
 
-    def handle(msg: Any, me: str) -> Optional[dict]:
+    def handle(msg: Any, me: str, session: Optional[str] = None) -> Optional[dict]:
         if not isinstance(msg, dict) or msg.get("jsonrpc") != "2.0":
             return rpc_error(None, -32600, "invalid request")
         method, mid = msg.get("method"), msg.get("id")
@@ -331,7 +342,12 @@ def mount(app, hub) -> None:
             if not isinstance(args, dict):
                 return rpc_error(mid, -32602, "arguments must be an object")
             try:
-                text, data = fn(me, args)
+                if name in routed:
+                    if not session:
+                        hub.no_session(me, f"called {name}")
+                    text, data = fn(me, args, session=session)
+                else:
+                    text, data = fn(me, args)
                 result = {"content": [{"type": "text", "text": text}],
                           "structuredContent": json.loads(json.dumps(data, default=str)), "isError": False}
             except ToolError as e:
@@ -367,12 +383,20 @@ def mount(app, hub) -> None:
             body = json.loads(await request.body() or b"null")
         except ValueError:
             return JSONResponse(rpc_error(None, -32700, "parse error"), status_code=400)
+        session = hub.check_session(request.headers.get("x-relay-session")
+                                    or request.headers.get("mcp-session-id"))
+        issued = None
+        msgs = body if isinstance(body, list) else [body]
+        if not session and any(isinstance(m, dict) and m.get("method") == "initialize" for m in msgs):
+            # a chat starting up: give it its own id, which MCP clients send back on every later call
+            session = issued = "rs_" + uuid.uuid4().hex
+        headers = {"Mcp-Session-Id": issued} if issued else None
         from starlette.concurrency import run_in_threadpool   # `ask` may wait; keep the event loop free
         if isinstance(body, list):
-            out = [r for r in [await run_in_threadpool(handle, m, me) for m in body] if r is not None]
-            return JSONResponse(out) if out else Response(status_code=202)
-        out = await run_in_threadpool(handle, body, me)
-        return JSONResponse(out) if out is not None else Response(status_code=202)
+            out = [r for r in [await run_in_threadpool(handle, m, me, session) for m in body] if r is not None]
+            return JSONResponse(out, headers=headers) if out else Response(status_code=202, headers=headers)
+        out = await run_in_threadpool(handle, body, me, session)
+        return JSONResponse(out, headers=headers) if out is not None else Response(status_code=202, headers=headers)
 
     @app.get("/mcp", include_in_schema=False)
     def mcp_get():

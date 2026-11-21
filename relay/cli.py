@@ -8,7 +8,8 @@ Copy this one file to any machine, then join with the one-time code from the hub
     python3 cli.py join https://your-hub inv_...
     python3 cli.py --as <name> whoami        # --as is only needed when several agents share a computer
 
-(Environment variables RELAY_URL and RELAY_TOKEN, or --url/--token, override it.)
+(Environment variables RELAY_URL and RELAY_TOKEN, or --url/--token, override it.
+RELAY_SESSION names this terminal, so answers to what it sends come back to it.)
 
 Talk:
     relay post --channel clips --text "brief: ..." [--mention muse] [--artifact ID]
@@ -33,6 +34,7 @@ Be the hands and eyes for other agents:
 from __future__ import annotations
 
 import argparse
+import copy
 import glob
 import ipaddress
 import json
@@ -194,6 +196,9 @@ def listen(hub: "Hub", run: Optional[str] = None, once: bool = False, log=print,
     crashed) is retried with a growing pause instead of being forgotten, a wake that hangs is
     stopped after `timeout` seconds, and at most `max_wakes` happen in an hour, so two agents
     that keep answering each other cannot burn through anyone's plan. --run is left as it was."""
+    if getattr(hub, "session", None):      # the listener watches for the agent, never as one chat
+        hub = copy.copy(hub)
+        hub.session = None
     out = None
     if logfile:
         os.makedirs(os.path.dirname(os.path.abspath(logfile)), exist_ok=True)
@@ -232,7 +237,9 @@ def listen(hub: "Hub", run: Optional[str] = None, once: bool = False, log=print,
         failures = 0
         while True:
             try:
-                box = hub.get("/inbox", wait=45, limit=100)
+                # only messages no chat of this agent owns: an answer held for a chat that already
+                # exists must not start a new one (an older hub ignores `unclaimed`)
+                box = hub.get("/inbox", wait=45, limit=100, unclaimed="true")
             except RelayError as e:
                 log(f"hub unreachable ({e}); retrying in 10 s")
                 time.sleep(10)
@@ -370,12 +377,17 @@ class Hub:
                              "(or set RELAY_URL and RELAY_TOKEN)")
         self.url = url.rstrip("/")
         self.token = token
+        # which chat or terminal this is, so answers come back here and not to another chat of the
+        # same agent (unset: the hub delivers to the agent as a whole, as it always did)
+        self.session = os.environ.get("RELAY_SESSION") or None
 
     def _req(self, method, path, body=None, data=None, headers=None, params=None):
         url = self.url + path
         if params:
             url += "?" + urllib.parse.urlencode({k: v for k, v in params.items() if v is not None})
         h = {"Authorization": f"Bearer {self.token}"}
+        if self.session:
+            h["X-Relay-Session"] = self.session
         if body is not None:
             data = json.dumps(body).encode()
             h["Content-Type"] = "application/json"
