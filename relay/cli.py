@@ -180,6 +180,161 @@ def connect_app(app: str, url: str, handle: str, token: str) -> str:
                      "add a custom connector in Settings → Connectors)")
 
 
+# ------------------------------------------------------------------ signed releases
+# A helper only installs a new version of itself that the release key signed. The private key lives
+# on the owner's own computer (`release keygen`), never on the hub, so someone who takes the hub over
+# still cannot put code on anyone's computer. Each release has a number that only goes up, so an old
+# signed version with a known bug cannot be pushed back either. Bump HELPER_RELEASE whenever this
+# file changes, then sign it (`release sign`) and commit cli.sig.json next to it.
+HELPER_RELEASE = 1
+RELEASE_KEYS: tuple = ()     # Ed25519 public keys (hex). Empty: not signed yet, updates are checked by sha256 only.
+SIG_FILE = "cli.sig.json"
+
+# Ed25519 (RFC 8032, section 6), plain Python so the helper needs nothing installed. Verification only
+# handles public data; signing runs on the owner's computer.
+_EP = 2 ** 255 - 19
+_EQ = 2 ** 252 + 27742317777372353535851937790883648493
+_ED = -121665 * pow(121666, _EP - 2, _EP) % _EP
+_ESQ = pow(2, (_EP - 1) // 4, _EP)
+
+
+def _e_add(P, Q):
+    A, B = (P[1] - P[0]) * (Q[1] - Q[0]) % _EP, (P[1] + P[0]) * (Q[1] + Q[0]) % _EP
+    C, D = 2 * P[3] * Q[3] * _ED % _EP, 2 * P[2] * Q[2] % _EP
+    E, F, G, H = B - A, D - C, D + C, B + A
+    return (E * F, G * H, F * G, E * H)
+
+
+def _e_mul(n, P):
+    Q = (0, 1, 1, 0)
+    while n > 0:
+        if n & 1:
+            Q = _e_add(Q, P)
+        P, n = _e_add(P, P), n >> 1
+    return Q
+
+
+def _e_x(y, sign):
+    if y >= _EP:
+        return None
+    x2 = (y * y - 1) * pow(_ED * y * y + 1, _EP - 2, _EP)
+    if x2 == 0:
+        return None if sign else 0
+    x = pow(x2, (_EP + 3) // 8, _EP)
+    if (x * x - x2) % _EP:
+        x = x * _ESQ % _EP
+    if (x * x - x2) % _EP:
+        return None
+    return _EP - x if (x & 1) != sign else x
+
+
+_EGY = 4 * pow(5, _EP - 2, _EP) % _EP
+_EG = (_e_x(_EGY, 0), _EGY, 1, _e_x(_EGY, 0) * _EGY % _EP)
+
+
+def _e_enc(P) -> bytes:
+    zi = pow(P[2], _EP - 2, _EP)
+    x, y = P[0] * zi % _EP, P[1] * zi % _EP
+    return int.to_bytes(y | ((x & 1) << 255), 32, "little")
+
+
+def _e_dec(b: bytes):
+    y = int.from_bytes(b, "little")
+    sign, y = y >> 255, y & ((1 << 255) - 1)
+    x = _e_x(y, sign)
+    return None if x is None else (x, y, 1, x * y % _EP)
+
+
+def _e_h(b: bytes) -> int:
+    return int.from_bytes(hashlib.sha512(b).digest(), "little") % _EQ
+
+
+def _e_secret(seed: bytes):
+    h = hashlib.sha512(seed).digest()
+    a = int.from_bytes(h[:32], "little")
+    return (a & ((1 << 254) - 8)) | (1 << 254), h[32:]
+
+
+def ed25519_public(seed: bytes) -> bytes:
+    return _e_enc(_e_mul(_e_secret(seed)[0], _EG))
+
+
+def ed25519_sign(seed: bytes, msg: bytes) -> bytes:
+    a, prefix = _e_secret(seed)
+    A = _e_enc(_e_mul(a, _EG))
+    r = _e_h(prefix + msg)
+    R = _e_enc(_e_mul(r, _EG))
+    return R + int.to_bytes((r + _e_h(R + A + msg) * a) % _EQ, 32, "little")
+
+
+def ed25519_verify(pub: bytes, msg: bytes, sig: bytes) -> bool:
+    if len(pub) != 32 or len(sig) != 64:
+        return False
+    A, R = _e_dec(pub), _e_dec(sig[:32])
+    s = int.from_bytes(sig[32:], "little")
+    if A is None or R is None or s >= _EQ:
+        return False
+    sB, hA = _e_mul(s, _EG), _e_mul(_e_h(sig[:32] + pub + msg), A)
+    rhs = _e_add(R, hA)
+    return (sB[0] * rhs[2] - rhs[0] * sB[2]) % _EP == 0 and (sB[1] * rhs[2] - rhs[1] * sB[2]) % _EP == 0
+
+
+def release_of(text: str) -> Optional[int]:
+    m = re.search(r"^HELPER_RELEASE = (\d+)$", text, re.M)
+    return int(m.group(1)) if m else None
+
+
+def release_message(release: int, sha: str) -> bytes:
+    """Exactly what the key signs: which file (its sha256) is which release."""
+    return f"relay-helper-release\n{release}\n{sha}\n".encode()
+
+
+def check_signed(data: bytes, sig: dict, keys=None) -> int:
+    """The release number of `data` if one of `keys` signed it, else RelayError saying why."""
+    keys = RELEASE_KEYS if keys is None else keys
+    sha = hashlib.sha256(data).hexdigest()
+    if not isinstance(sig, dict) or sig.get("sha256") != sha:
+        raise RelayError("no signature for this exact file")
+    release = sig.get("release")
+    if not isinstance(release, int) or release_of(data.decode("utf-8", "replace")) != release:
+        raise RelayError("the signed release number doesn't match the file")
+    try:
+        raw = bytes.fromhex(str(sig.get("signature", "")))
+    except ValueError:
+        raise RelayError("the signature is not hex")
+    msg = release_message(release, sha)
+    if not any(ed25519_verify(bytes.fromhex(k), msg, raw) for k in keys):
+        raise RelayError("the signature is not from the release key")
+    return release
+
+
+def release_keygen(path: str) -> str:
+    """Make the release key on this computer. Returns the public key to build into the helper."""
+    if os.path.exists(path):
+        raise RelayError(f"{path} already exists; a new key would lock out every helper that trusts the old one")
+    os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
+    seed = os.urandom(32)
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(fd, "w") as f:
+        f.write(seed.hex() + "\n")
+    return ed25519_public(seed).hex()
+
+
+def release_sign(data: bytes, key_path: str) -> dict:
+    try:
+        seed = bytes.fromhex(open(key_path).read().strip())
+    except (OSError, ValueError):
+        raise RelayError(f"can't read the release key at {key_path} (make one with `release keygen`)")
+    if len(seed) != 32:
+        raise RelayError(f"{key_path} is not a release key")
+    release = release_of(data.decode("utf-8", "replace"))
+    if release is None:
+        raise RelayError("this file has no HELPER_RELEASE line: is it the Relay helper?")
+    sha = hashlib.sha256(data).hexdigest()
+    sig = ed25519_sign(seed, release_message(release, sha)).hex()
+    return {"release": release, "sha256": sha, "signature": sig, "key": ed25519_public(seed).hex()}
+
+
 UPDATE_EVERY = 3600          # how often a running helper asks the hub for a newer version of itself
 MAX_CLIENT = 5 * 2**20
 
@@ -201,25 +356,38 @@ def _fetch(url: str) -> bytes:
 
 
 def self_update(hub: "Hub", log=print, path: Optional[str] = None, fetch=_fetch,
-                run=subprocess.run) -> bool:
+                run=subprocess.run, keys=None) -> bool:
     """Replace this file with the version the hub serves, if it is newer. Returns True when the file
     was replaced (the caller then restarts). Every check must pass or nothing changes: the hub names
     the sha256, the download must match it, it must be Python that compiles, still able to update
-    itself, and start (`--help`). The previous version is kept next to it as cli.py.prev."""
+    itself, and start (`--help`). Once release keys are built in, it must also be a higher release
+    signed by one of them. The previous version is kept next to it as cli.py.prev."""
     path = path or _cli_path()
+    keys = RELEASE_KEYS if keys is None else keys
     try:
         info = hub.get("/client")
         want = str((info or {}).get("sha256", ""))
         if not re.fullmatch(r"[0-9a-f]{64}", want):
             return False                                   # an older hub: nothing to compare with
         with open(path, "rb") as f:
-            mine = hashlib.sha256(f.read()).hexdigest()
+            current = f.read()
+        mine = hashlib.sha256(current).hexdigest()
         if mine == want:
             return False
+        if keys:          # signed releases: only a higher release number, signed by the release key
+            sig = info.get("signed") or {}
+            if not isinstance(sig.get("release"), int) or sig["release"] <= (release_of(current.decode("utf-8", "replace")) or 0):
+                return False                               # not newer (or not signed yet): keep this one
         data = fetch(hub.url + "/cli.py")
         if hashlib.sha256(data).hexdigest() != want:
             log("update skipped: the download did not match what the hub announced")
             return False
+        if keys:
+            try:
+                check_signed(data, info.get("signed"), keys)
+            except RelayError as e:
+                log(f"update refused: {e}")
+                return False
         text = data.decode("utf-8")
         if "python" not in text.split("\n", 1)[0] or "def self_update(" not in text:
             log("update skipped: the download is not a Relay helper that can keep itself updated")
@@ -1595,6 +1763,39 @@ def _helper_done(out: dict) -> int:
     return 0 if out["running"] else 1
 
 
+def release_command(a) -> int:
+    if a.action == "keygen":
+        pub = release_keygen(a.key)
+        print(f"Release key made: {a.key} (keep it safe and backed up; never share it).\n"
+              f"Public key, safe to share - it goes into RELEASE_KEYS in cli.py:\n{pub}")
+        return 0
+    path = os.path.abspath(a.file or _cli_path())
+    data = open(path, "rb").read()
+    sig_path = os.path.join(os.path.dirname(path), SIG_FILE)
+    if a.action == "sign":
+        out = release_sign(data, a.key)
+        keys = re.findall(r"[0-9a-f]{64}", (re.search(r"^RELEASE_KEYS.*$", data.decode(), re.M) or [""])[0])
+        if out["key"] not in keys:
+            print(f"warning: {path} doesn't list this key in RELEASE_KEYS, so helpers on it won't trust it")
+        with open(sig_path, "w") as f:
+            json.dump({k: out[k] for k in ("release", "sha256", "signature")}, f, indent=1)
+            f.write("\n")
+        print(f"Signed release {out['release']} ({out['sha256'][:12]}). Wrote {sig_path}; commit it with cli.py.")
+        return 0
+    text = data.decode()
+    keys = tuple(re.findall(r"[0-9a-f]{64}", (re.search(r"^RELEASE_KEYS.*$", text, re.M) or [""])[0]))
+    try:
+        sig = json.load(open(sig_path))
+    except (OSError, ValueError):
+        sig = {}
+    try:
+        print(f"release {check_signed(data, sig, keys)}: signed by a key in RELEASE_KEYS")
+        return 0
+    except RelayError as e:
+        print(f"not signed: {e}" + ("" if keys else " (no RELEASE_KEYS in the file yet)"))
+        return 1
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(prog="relay", description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -1609,6 +1810,15 @@ def main(argv=None):
     p = sub.add_parser("connect", help="add this hub as a connector in a local app: claude-code or codex")
     p.add_argument("app", choices=["claude-code", "codex"])
     sub.add_parser("mcp-headers", help="print this agent's Authorization header as JSON (for app header helpers)")
+    p = sub.add_parser("release", help="owner: the key that signs helper releases")
+    rs = p.add_subparsers(dest="action", required=True)
+    x = rs.add_parser("keygen", help="make the release key on this computer; prints the public key")
+    x.add_argument("--key", default=os.path.join(os.path.expanduser("~"), ".relay", "release-key"))
+    x = rs.add_parser("sign", help="sign a helper file; writes cli.sig.json next to it")
+    x.add_argument("file", nargs="?", default=None, help="the cli.py to sign (default: this file)")
+    x.add_argument("--key", default=os.path.join(os.path.expanduser("~"), ".relay", "release-key"))
+    x = rs.add_parser("check", help="is this cli.py signed by a key built into it?")
+    x.add_argument("file", nargs="?", default=None)
     p = sub.add_parser("listen", help="hear new messages instantly; --run a command to wake your agent")
     g = p.add_mutually_exclusive_group()
     g.add_argument("--run", help="command to run when new messages arrive")
@@ -1663,6 +1873,8 @@ def main(argv=None):
             print(f"joined as @{out['handle']}{caps}. Token saved to {out['config']} - keep it private.")
             print(f"next: python3 cli.py --as {out['handle']} whoami")
             return 0
+        if a.cmd == "release":
+            return release_command(a)
         if a.cmd == "helper" and a.action == "setup":
             out = helper_setup(a.hub_url, a.who, a.app)
             return _helper_done(out)

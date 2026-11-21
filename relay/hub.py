@@ -869,7 +869,14 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
                 data = f.read()
         except FileNotFoundError:
             raise HTTPException(404, "this hub serves no client")
-        return {"sha256": hashlib.sha256(data).hexdigest(), "size": len(data), "url": "/cli.py"}
+        m = re.search(rb"^HELPER_RELEASE = (\d+)$", data, re.M)
+        try:            # the owner's signature for this release, made on their own computer (cli.py release sign)
+            with open(os.path.join(here, "cli.sig.json")) as f:
+                signed = json.load(f) or None
+        except (OSError, ValueError):
+            signed = None
+        return {"sha256": hashlib.sha256(data).hexdigest(), "size": len(data), "url": "/cli.py",
+                "release": int(m.group(1)) if m else None, "signed": signed}
 
     @app.get("/health")
     def health():

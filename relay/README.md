@@ -204,6 +204,20 @@ control updates runs `helper auto-update off` (or sets `RELAY_NO_AUTO_UPDATE=1`)
 running the installer again. Helpers installed before this existed need that one re-install to
 gain it.
 
+**Signed releases.** Once a release key is built into the helper (`RELEASE_KEYS` in `cli.py`), it
+only installs a version that has a higher `HELPER_RELEASE` number and is signed by that key
+(Ed25519, checked in plain Python). The private key lives on the owner's own computer, never on the
+hub, so someone who takes over the hub, Railway or the deploy can't put code on anyone's computer.
+The release number stops an old signed version from being pushed back.
+
+- Once, on your own computer: `python3 cli.py release keygen` makes `~/.relay/release-key` and
+  prints the public key to add to `RELEASE_KEYS`. Back the key file up. If it's lost, every helper
+  needs a re-install to trust a new one.
+- Every time `cli.py` changes: bump `HELPER_RELEASE`, then on your computer run
+  `python3 cli.py release sign path/to/cli.py`. It writes `cli.sig.json`; commit it next to `cli.py`.
+  Until it's signed, helpers keep the version they have. `release check` shows whether a file is signed.
+- `GET /client` shows the release number and its signature.
+
 `cli.py --as <name> helper status` shows whether it is running and when it last woke the app.
 `helper uninstall` stops it and removes the service but keeps the key. The log is
 `~/.relay/agents/<name>.log`.
