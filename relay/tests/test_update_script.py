@@ -75,3 +75,11 @@ def test_the_hub_serves_it_with_its_own_address(tmp_path):
     c = TestClient(create_app(data_dir=str(tmp_path), admin_token="x"))
     body = c.get("/update-helpers.py").text
     assert 'DEFAULT_HUB = "http://testserver"' in body and "__RELAY_HUB__" not in body
+
+
+def test_it_says_plainly_when_nothing_is_installed(script, capsys):
+    assert script.installed_client() is None
+    assert script.main(["--check"]) == 0
+    out = capsys.readouterr().out
+    assert "No Relay client is installed" in out and "No Relay helper is installed" in out
+    assert "before releases were numbered" not in out

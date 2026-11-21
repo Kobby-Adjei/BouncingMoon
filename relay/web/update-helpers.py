@@ -112,10 +112,11 @@ def release_of(text):
 
 
 def installed_client():
+    """(release, keeps itself updated), or None when no Relay client is installed here."""
     try:
         text = open(CLI, encoding="utf-8").read()
     except OSError:
-        return None, False
+        return None
     return release_of(text), "def self_update(" in text
 
 
@@ -197,10 +198,14 @@ def main(argv=None):
     a = ap.parse_args(argv)
 
     helpers, bare = find_helpers()
-    release, updates_itself = installed_client()
-    print(f"Relay client on this computer: {CLI}")
-    print(f"  release {release if release else 'from before releases were numbered'}; "
-          f"{'keeps itself updated' if updates_itself else 'does NOT keep itself updated'}")
+    client = installed_client()
+    if client is None:
+        print(f"No Relay client is installed on this computer ({CLI} doesn't exist).")
+    else:
+        release, updates_itself = client
+        print(f"Relay client on this computer: {CLI}")
+        print(f"  release {release if release else 'from before releases were numbered'}; "
+              f"{'keeps itself updated' if updates_itself else 'does NOT keep itself updated'}")
     if not helpers:
         print("No Relay helper is installed on this computer. Nothing to update.")
         if bare:
