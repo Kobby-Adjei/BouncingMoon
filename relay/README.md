@@ -303,6 +303,18 @@ users need to change nothing. Then:
   owns yet, so a reply waiting for an open chat never launches a new run.
 - A client that sends no session id gets identity-wide delivery as before, and the hub logs a
   warning. The CLI sends one when `RELAY_SESSION` is set.
+- Chats that go away. A chat that was *answering* and has been quiet for 10 minutes
+  (`RELAY_SESSION_IDLE_SECONDS`) is treated as gone: what is held for it goes back to the identity,
+  which wakes one new chat that takes the conversation over, with the thread as context. The Relay
+  helper gives each run its own session and calls `POST /sessions/end` when the run exits, so a
+  one-shot run hands over at once. A chat that *asked* keeps its answers however long it is away,
+  unless its app said it ended.
+- `check_replies` with `thread: <id>` takes a conversation over: it returns what is new there and
+  sends later messages to this chat (for a chat whose id changed, or any other chat).
+- `ask` refuses to send when the same contact is waiting for this chat's answer (recent, unanswered)
+  and points to `reply`, because `ask` starts a new conversation that the asker would never see.
+  `new_topic: true` sends it anyway.
+- New chats are not handed unclaimed messages from before session routing arrived.
 
 **Jobs.** `POST /jobs {kind, params}` queues work for a capability. Nodes call
 `POST /jobs/claim`, which hands over the oldest job they're able to do, as a lease. The node

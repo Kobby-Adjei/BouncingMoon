@@ -85,6 +85,9 @@ CREATE TABLE IF NOT EXISTS thread_sessions(
   thread INTEGER NOT NULL, handle TEXT NOT NULL, session TEXT NOT NULL, PRIMARY KEY(thread, handle));
 CREATE TABLE IF NOT EXISTS session_cursors(
   handle TEXT NOT NULL, session TEXT NOT NULL, last INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(handle, session));
+CREATE TABLE IF NOT EXISTS delivered(
+  msg INTEGER NOT NULL, handle TEXT NOT NULL, session TEXT NOT NULL, PRIMARY KEY(msg, handle, session));
+CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT);
 """
 # Routing by session. One identity (say `claude`) is used from many chats at once, so a message is
 # also routed to the exact chat that should handle it:
@@ -94,7 +97,12 @@ CREATE TABLE IF NOT EXISTS session_cursors(
 #                            claim by an old client that sends no session id.
 #   thread_sessions          the session of an identity that is taking part in a thread, so a later
 #                            message in the thread reaches that chat and not a fresh one.
-#   session_cursors          each session's own read position; it starts at the identity's cursor.
+#   session_cursors          each session's own read position (it starts at the identity's cursor),
+#                            when it last called (`seen`) and whether its app said it ended (`ended`).
+#   delivered                messages a chat already got by asking for a whole thread, so they are
+#                            not handed to it a second time.
+#   meta.session_floor       the newest message when session routing arrived: older messages that no
+#                            chat took are not handed to new chats (identity-wide readers still get them).
 
 log = logging.getLogger("relay")
 
@@ -153,6 +161,11 @@ class Store:
                 c.execute("ALTER TABLE agents ADD COLUMN provider TEXT")
             if "owner" not in agent_cols:
                 c.execute("ALTER TABLE agents ADD COLUMN owner INTEGER NOT NULL DEFAULT 0")
+            sc_cols = {r["name"] for r in c.execute("PRAGMA table_info(session_cursors)")}
+            for col in ("seen REAL", "ended REAL"):
+                if col.split()[0] not in sc_cols:
+                    c.execute(f"ALTER TABLE session_cursors ADD COLUMN {col}")
+            c.execute("INSERT OR IGNORE INTO meta(key,value) SELECT 'session_floor', COALESCE(MAX(id), 0) FROM messages")
             msg_cols = {r["name"] for r in c.execute("PRAGMA table_info(messages)")}
             if "origin_session" not in msg_cols:     # the exact chat that sent it (routing only)
                 c.execute("ALTER TABLE messages ADD COLUMN origin_session TEXT")
@@ -368,7 +381,9 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
                supabase_url: Optional[str] = None, supabase_key: Optional[str] = None,
                supabase_send=None, caption_transcriber=None, caption_threads: bool = True,
                caption_public_url: Optional[str] = None, caption_tool_wait: Optional[float] = None,
-               caption_idle_seconds: Optional[float] = None) -> FastAPI:
+               caption_idle_seconds: Optional[float] = None,
+               session_idle_seconds: Optional[float] = None,
+               session_sweep_seconds: Optional[float] = None) -> FastAPI:
     data_dir = data_dir or os.environ.get("RELAY_DATA", "./relay-data")
     os.makedirs(data_dir, exist_ok=True)
     admin_token = admin_token or os.environ.get("RELAY_ADMIN_TOKEN")
@@ -392,6 +407,14 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
                      else os.environ.get("RELAY_ALLOW_PRIVATE_FETCH") == "1")
 
     store = Store(data_dir)
+    # a chat that answered and then went quiet this long is treated as gone: new messages for it in
+    # a conversation someone else started go back to the identity (see release())
+    session_idle = float(session_idle_seconds if session_idle_seconds is not None
+                         else os.environ.get("RELAY_SESSION_IDLE_SECONDS", 600))
+    session_sweep = float(session_sweep_seconds if session_sweep_seconds is not None
+                          else os.environ.get("RELAY_SESSION_SWEEP_SECONDS", 30))
+    with store.ro() as c:
+        session_floor = int(c.execute("SELECT value FROM meta WHERE key='session_floor'").fetchone()["value"])
 
     @asynccontextmanager
     async def lifespan(_app):
@@ -457,9 +480,45 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
                         "not to the chat that asked (send X-Relay-Session or Mcp-Session-Id)", handle, what)
 
     def start_session(c, h: str, session: str) -> None:
-        # a session first seen starts where its identity's cursor is, so it isn't handed old history
+        """The chat called: note that it is alive. A session first seen starts where its identity's
+        cursor is, so it isn't handed old history. A chat that called after it 'ended' is back."""
         c.execute("INSERT OR IGNORE INTO session_cursors(handle,session,last)"
                   " SELECT ?, ?, COALESCE((SELECT last FROM cursors WHERE agent=?), 0)", (h, session, h))
+        c.execute("UPDATE session_cursors SET seen=?, ended=NULL WHERE handle=? AND session=?", (_now(), h, session))
+
+    def answering(c, h: str, thread: int) -> bool:
+        """`h` is answering in this thread (someone else started it), rather than waiting for an answer."""
+        r = c.execute("SELECT sender FROM messages WHERE id=?", (thread,)).fetchone()
+        return bool(r) and r["sender"] != h
+
+    def session_state(c, h: str, session: str) -> str:
+        """ended: its app said it exited · idle: no call for `session_idle` seconds · alive."""
+        r = c.execute("SELECT seen, ended FROM session_cursors WHERE handle=? AND session=?", (h, session)).fetchone()
+        if not r:
+            return "idle"
+        if r["ended"]:
+            return "ended"
+        return "idle" if (r["seen"] or 0) < _now() - session_idle else "alive"
+
+    def release(c, h: str, session: str, everything: bool = False) -> int:
+        """Give back to the identity what this chat will never read: unread messages held for it in
+        conversations it was answering (all of them when its app said it ended). They become new
+        requests, so one chat of `h` is woken and takes them, with the thread as context. Answers to
+        what this chat itself asked stay held for it unless it ended."""
+        rows = c.execute(
+            "SELECT m.id, m.thread, m.sender FROM routes r JOIN messages m ON m.id=r.msg"
+            " JOIN messages root ON root.id=m.thread"
+            " JOIN session_cursors s ON s.handle=r.handle AND s.session=r.session"
+            " WHERE r.handle=? AND r.session=? AND m.sender!=? AND m.id>s.last"
+            " AND NOT EXISTS (SELECT 1 FROM delivered d WHERE d.msg=m.id AND d.handle=r.handle AND d.session=r.session)"
+            + ("" if everything else " AND root.sender!=?"),
+            (h, session, h) + (() if everything else (h,))).fetchall()
+        for m in rows:
+            c.execute("DELETE FROM routes WHERE msg=? AND handle=?", (m["id"], h))
+            c.execute("DELETE FROM thread_sessions WHERE thread=? AND handle=? AND session=?", (m["thread"], h, session))
+        for sender in {m["sender"] for m in rows}:
+            waker.notify({h}, sender)
+        return len(rows)
 
     def route_for(c, h: str, thread: int, reply_to: Optional[int]) -> Optional[str]:
         """The session of `h` that must get a message in `thread`: the chat that sent the message being
@@ -476,9 +535,9 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
         An old client (no session) claims them as '' so that no chat handles them a second time."""
         for m in msgs:
             c.execute("INSERT OR IGNORE INTO routes(msg,handle,session) VALUES (?,?,?)", (m["id"], h, session or ""))
-            if session and m.get("thread") is not None:
-                c.execute("INSERT OR IGNORE INTO thread_sessions(thread,handle,session) VALUES (?,?,?)",
-                          (m["thread"], h, session))
+            if session and m.get("thread") is not None:     # a released thread moves to the chat taking it
+                c.execute("INSERT INTO thread_sessions(thread,handle,session) VALUES (?,?,?)"
+                          " ON CONFLICT(thread,handle) DO UPDATE SET session=excluded.session", (m["thread"], h, session))
 
     def post(c, sender, text, channel=None, reply_to=None, mentions=(), artifacts=(),
              idem=None, job=None, session=None) -> dict:
@@ -531,7 +590,11 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
         wake = set()
         for h in who:
             target = route_for(c, h, thread, reply_to)
-            if target:                 # an answer for a chat that exists: held for it, never a new chat
+            if target:
+                state = session_state(c, h, target)
+                if state == "ended" or (state == "idle" and answering(c, h, thread)):
+                    target = None      # that chat is gone: a new one takes the conversation over
+            if target:                 # for a chat that exists: held for it, never a new chat
                 c.execute("INSERT OR IGNORE INTO routes(msg,handle,session) VALUES (?,?,?)", (mid, h, target))
             else:                      # a new request: whichever chat of `h` reads it first takes it
                 wake.add(h)
@@ -554,8 +617,11 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
              " OR m.thread IN (SELECT thread FROM follows WHERE agent=?))")
         a: list = [last, h, h, h, h]
         if session:
-            q += " AND NOT EXISTS (SELECT 1 FROM routes r WHERE r.msg=m.id AND r.handle=? AND r.session!=?)"
-            a += [h, session]
+            q += (" AND NOT EXISTS (SELECT 1 FROM routes r WHERE r.msg=m.id AND r.handle=? AND r.session!=?)"
+                  " AND NOT EXISTS (SELECT 1 FROM delivered d WHERE d.msg=m.id AND d.handle=? AND d.session=?)"
+                  # from before session routing, only what was routed to this chat (no old backlog)
+                  " AND (m.id>? OR EXISTS (SELECT 1 FROM routes r WHERE r.msg=m.id AND r.handle=? AND r.session=?))")
+            a += [h, session, h, session, session_floor, h, session]
         elif unclaimed:
             q += " AND NOT EXISTS (SELECT 1 FROM routes r WHERE r.msg=m.id AND r.handle=?)"
             a += [h]
@@ -1111,6 +1177,41 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
             ack_to(c, me["handle"], body.cursor, session)
         return {"ok": True, "cursor": body.cursor}
 
+    @app.post("/sessions/end")
+    def end_session(me: dict = Depends(auth), x_relay_session: str = Header(default="")):
+        """The app behind this chat has exited (the Relay helper says so after each run). Whatever is
+        still held for it goes back to the identity at once instead of waiting to go stale."""
+        need_agent(me)
+        session = check_session(x_relay_session)
+        if not session:
+            raise HTTPException(400, "send X-Relay-Session: the session that ended")
+        with store.tx() as c:
+            c.execute("UPDATE session_cursors SET ended=? WHERE handle=? AND session=?", (_now(), me["handle"], session))
+            return {"ended": session, "released": release(c, me["handle"], session, everything=True)}
+
+    def sweep() -> int:
+        """Chats that were answering and went quiet: give their unread messages back to the identity."""
+        with store.tx() as c:
+            pairs = c.execute(
+                "SELECT DISTINCT r.handle, r.session FROM routes r JOIN messages m ON m.id=r.msg"
+                " JOIN messages root ON root.id=m.thread"
+                " JOIN session_cursors s ON s.handle=r.handle AND s.session=r.session"
+                " WHERE r.session!='' AND m.sender!=r.handle AND root.sender!=r.handle AND m.id>s.last"
+                " AND (s.ended IS NOT NULL OR COALESCE(s.seen, 0)<?)", (_now() - session_idle,)).fetchall()
+            return sum(release(c, p["handle"], p["session"]) for p in pairs)
+
+    def sweeper():
+        while True:
+            time.sleep(session_sweep)
+            try:
+                sweep()
+            except Exception as e:                 # never let routing upkeep take the hub down
+                log.warning("session sweep failed: %s", e)
+
+    import threading
+    threading.Thread(target=sweeper, name="relay-session-sweep", daemon=True).start()
+    app.state.sweep = sweep
+
     @app.post("/subscriptions")
     def subscribe(body: ChannelIn, me: dict = Depends(auth)):
         need_agent(me)
@@ -1344,7 +1445,7 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
     from . import connector
     connector.mount(app, SimpleNamespace(
         extra_tools=extra_tools, store=store, auth=auth, post=post, inbox_for=inbox_for, ack_to=ack_to,
-        take=take, check_session=check_session, no_session=no_session,
+        take=take, check_session=check_session, no_session=no_session, start_session=start_session,
         mark_read=mark_read, msg_out=msg_out, with_context=with_context, now=_now, loads=_loads, handle_re=HANDLE_RE))
     from . import people
     sb_url = supabase_url or os.environ.get("SUPABASE_URL")

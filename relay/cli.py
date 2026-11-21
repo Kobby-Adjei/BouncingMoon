@@ -52,6 +52,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+import uuid
 
 CHUNK = 1 << 20
 MEDIA_EXT = (".mp4", ".webm", ".mkv", ".mov", ".m4a", ".mp3", ".wav", ".ogg")
@@ -263,13 +264,17 @@ def listen(hub: "Hub", run: Optional[str] = None, once: bool = False, log=print,
                 for m in new:
                     log(f"#{m['id']} @{m['from']}: {m['text'][:200]}")
                 if run or app:
-                    env = {**os.environ, "RELAY_AGENT": me,
+                    # each run is its own chat; when it exits the hub is told, so whatever is still held
+                    # for it goes back to the agent at once instead of waiting for it to go quiet
+                    run_session = "run-" + uuid.uuid4().hex
+                    env = {**os.environ, "RELAY_AGENT": me, "RELAY_SESSION": run_session,
                            "RELAY_NEW_IDS": ",".join(str(m["id"]) for m in new)}
                     wakes.append(time.time())
                     if app:
                         _report(hub, app, time.time())
                     code = _wake(run, app, hub, me, env, out, timeout, log)
                     log(f"woke the agent (exit {code})")
+                    _end_session(hub, run_session)
                     if app:
                         _helper_state(me, last_wake=time.time(), last_exit=code)
                         _report(hub, app, None)
@@ -297,6 +302,15 @@ def listen(hub: "Hub", run: Optional[str] = None, once: bool = False, log=print,
         if lock is not None:
             _LOCKS.remove(lock)
             lock.close()
+
+
+def _end_session(hub, session) -> None:
+    ended = copy.copy(hub)
+    ended.session = session
+    try:
+        ended.post("/sessions/end")
+    except Exception:
+        pass                    # never stop listening over this: an older hub lets the session go stale instead
 
 
 def _wake(run, app, hub, me, env, out, timeout, log) -> int:
@@ -1585,7 +1599,10 @@ def main(argv=None):
         if a.cmd == "helper":                       # install
             return _helper_done(helper_install(hub, a.app))
         if a.cmd == "mcp-headers":
-            print(json.dumps({"Authorization": f"Bearer {hub.token}"}))
+            h = {"Authorization": f"Bearer {hub.token}"}
+            if os.environ.get("RELAY_SESSION"):       # set by the helper for each run it starts
+                h["X-Relay-Session"] = os.environ["RELAY_SESSION"]
+            print(json.dumps(h))
             return 0
         show = lambda x: print(json.dumps(x, indent=1))
         if a.cmd == "register":

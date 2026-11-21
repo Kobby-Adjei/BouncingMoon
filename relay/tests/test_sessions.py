@@ -186,3 +186,136 @@ def test_rest_clients_route_by_header_too(hub):
     assert c.get("/inbox", headers=A).json()["messages"] == []
     assert c.post("/messages", headers={**A, "X-Relay-Session": "bad id\n"},
                   json={"channel": "x", "text": "y"}).status_code in (400, 422)
+
+
+# ------------------------------------------------------------------ chats that go away
+@pytest.fixture
+def quick(tmp_path):
+    """A hub where a chat counts as idle after 0.5 s and the sweep runs every 0.2 s."""
+    rec = Recorder()
+    c = TestClient(create_app(data_dir=str(tmp_path), admin_token=ADMIN, wake_opener=rec,
+                              wake_check_url=False, wake_cooldown=0.1,
+                              session_idle_seconds=0.5, session_sweep_seconds=0.2))
+    toks = {}
+    for h in ("claude", "muse"):
+        toks[h] = c.post("/agents", headers={"Authorization": f"Bearer {ADMIN}"}, json={"handle": h}).json()["token"]
+        c.put(f"/agents/{h}/wake", headers={"Authorization": f"Bearer {ADMIN}"},
+              json={"kind": "webhook", "url": f"https://wake.example/{h}"})
+    return c, rec, toks
+
+
+def answered(c, t):
+    """Chat A asks; a one-shot Muse run (muse-1) answers; chat A reads the answer."""
+    asked = ask(c, t, "chat-A", "three hook ideas?")
+    call(c, t["muse"], "check_replies", session="muse-1")
+    ans = call(c, t["muse"], "reply", {"message_id": asked["asked"], "text": "1, 2, 3"}, "muse-1")
+    call(c, t["claude"], "check_replies", session="chat-A")
+    return asked, ans
+
+
+def test_a_follow_up_to_an_answering_chat_that_went_quiet_goes_to_a_new_chat(quick):
+    c, rec, t = quick
+    asked, ans = answered(c, t)
+    assert fired(rec, "muse") == 1
+    time.sleep(0.7)                                       # muse-1 has been quiet past the idle limit
+    call(c, t["claude"], "reply", {"message_id": ans["id"], "text": "expand on 2"}, "chat-A")
+    assert fired(rec, "muse", 2) == 2                     # a new muse chat is woken for it
+    got = call(c, t["muse"], "check_replies", session="muse-2")["messages"]
+    assert [m["text"] for m in got] == ["expand on 2"]
+    assert [x["text"] for x in got[0]["context"]] == ["three hook ideas?", "1, 2, 3"]   # with the thread
+    later = call(c, t["muse"], "reply", {"message_id": got[0]["id"], "text": "2, longer"}, "muse-2")
+    back = call(c, t["claude"], "check_replies", session="chat-A")["messages"]
+    assert [m["id"] for m in back] == [later["id"]]       # and the answer still comes back to chat A
+
+
+def test_a_follow_up_held_for_a_chat_that_then_goes_quiet_is_handed_over(quick):
+    c, rec, t = quick
+    asked, ans = answered(c, t)
+    assert fired(rec, "muse") == 1
+    call(c, t["claude"], "reply", {"message_id": ans["id"], "text": "expand on 2"}, "chat-A")   # muse-1 still fresh
+    assert fired(rec, "muse", 2) == 2                     # muse-1 went quiet: the sweep handed it over
+    got = call(c, t["muse"], "check_replies", session="muse-2")["messages"]
+    assert [m["text"] for m in got] == ["expand on 2"]
+
+
+def test_the_helper_saying_a_run_ended_hands_over_at_once(hub):
+    c, rec, t = hub                                       # idle limit 10 min: only the end signal can do it
+    asked, ans = answered(c, t)
+    assert fired(rec, "muse") == 1
+    call(c, t["claude"], "reply", {"message_id": ans["id"], "text": "expand on 2"}, "chat-A")
+    settle()
+    assert rec.count("muse") == 1                         # held for muse-1, which is still "alive"
+    r = c.post("/sessions/end", headers={"Authorization": f"Bearer {t['muse']}", "X-Relay-Session": "muse-1"})
+    assert r.status_code == 200 and r.json()["released"] == 1
+    assert fired(rec, "muse", 2) == 2
+    assert [m["text"] for m in call(c, t["muse"], "check_replies", session="muse-2")["messages"]] == ["expand on 2"]
+    call(c, t["claude"], "reply", {"message_id": ans["id"], "text": "and 3?"}, "chat-A")
+    assert [m["text"] for m in call(c, t["muse"], "check_replies", session="muse-2")["messages"]] == ["and 3?"]
+
+
+def test_an_idle_asking_chat_keeps_its_answer_however_long_it_is_away(quick):
+    c, rec, t = quick
+    asked = ask(c, t, "chat-A", "review my hook")
+    call(c, t["muse"], "check_replies", session="muse-1")
+    time.sleep(0.7)                                       # chat A is idle, well past the limit
+    call(c, t["muse"], "reply", {"message_id": asked["asked"], "text": "cut the first second"}, "muse-1")
+    time.sleep(0.8)                                       # several sweeps
+    assert rec.count("claude") == 0
+    assert call(c, t["claude"], "check_replies", session="chat-B")["messages"] == []
+    assert [m["text"] for m in call(c, t["claude"], "check_replies", session="chat-A")["messages"]] == ["cut the first second"]
+
+
+# ------------------------------------------------------------------ answering with ask
+def test_ask_refuses_to_answer_a_waiting_message_and_points_to_reply(hub):
+    c, rec, t = hub
+    req = ask(c, t, "muse-1", "can you caption this clip?", to="claude")
+    call(c, t["claude"], "check_replies", session="chat-A")
+    r = c.post("/mcp", headers={"Authorization": f"Bearer {t['claude']}", "X-Relay-Session": "chat-A"},
+               json={"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                     "params": {"name": "ask", "arguments": {"to": "muse", "message": "done, here it is", "wait_seconds": 0}}})
+    res = r.json()["result"]
+    assert res["isError"] and f"reply with message_id {req['asked']}" in res["content"][0]["text"]
+    assert call(c, t["muse"], "check_replies", session="muse-1")["messages"] == []      # nothing was sent
+    assert call(c, t["claude"], "ask", {"to": "muse", "message": "unrelated: lunch?", "wait_seconds": 0,
+                                        "new_topic": True}, "chat-A")["status"] == "pending"
+    assert call(c, t["claude"], "ask", {"to": "muse", "message": "x", "wait_seconds": 0}, "chat-B")["status"] == "pending"
+    call(c, t["claude"], "reply", {"message_id": req["asked"], "text": "done"}, "chat-A")
+    assert call(c, t["claude"], "ask", {"to": "muse", "message": "next?", "wait_seconds": 0}, "chat-A")["status"] == "pending"
+
+
+# ------------------------------------------------------------------ taking a conversation back
+def test_a_chat_can_take_a_conversation_over_by_its_id(hub):
+    c, rec, t = hub
+    asked = ask(c, t, "chat-A", "three hook ideas?")      # then chat A's id is lost (the app reconnected)
+    call(c, t["muse"], "check_replies", session="muse-1")
+    call(c, t["muse"], "reply", {"message_id": asked["asked"], "text": "1, 2, 3"}, "muse-1")
+    assert call(c, t["claude"], "check_replies", session="chat-A2")["messages"] == []
+    got = call(c, t["claude"], "check_replies", {"thread": asked["asked"]}, "chat-A2")["messages"]
+    assert [m["text"] for m in got] == ["1, 2, 3"]
+    assert call(c, t["claude"], "check_replies", session="chat-A2")["messages"] == []   # not handed twice
+    assert call(c, t["claude"], "check_replies", session="chat-A")["messages"] == []    # moved, not copied
+    call(c, t["muse"], "reply", {"message_id": got[0]["id"], "text": "and a 4th"}, "muse-1")
+    assert [m["text"] for m in call(c, t["claude"], "check_replies", session="chat-A2")["messages"]] == ["and a 4th"]
+    r = c.post("/mcp", headers={"Authorization": f"Bearer {t['muse']}", "X-Relay-Session": "x"},
+               json={"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                     "params": {"name": "check_replies", "arguments": {"thread": 999999}}})
+    assert r.json()["result"]["isError"]
+
+
+# ------------------------------------------------------------------ no old backlog for new chats
+def test_new_chats_do_not_get_messages_from_before_session_routing(tmp_path):
+    c = TestClient(create_app(data_dir=str(tmp_path), admin_token=ADMIN))
+    tok = {h: c.post("/agents", headers={"Authorization": f"Bearer {ADMIN}"}, json={"handle": h}).json()["token"]
+           for h in ("claude", "muse")}
+    for i in range(3):                                    # unread, from before the upgrade
+        c.post("/messages", headers={"Authorization": f"Bearer {tok['muse']}"},
+               json={"channel": "direct", "text": f"old {i}", "mentions": ["claude"]})
+    import sqlite3
+    db = sqlite3.connect(str(tmp_path / "relay.db"))
+    db.execute("DELETE FROM meta"); db.commit(); db.close()      # as if routing arrived only now
+    c = TestClient(create_app(data_dir=str(tmp_path), admin_token=ADMIN))
+    c.post("/messages", headers={"Authorization": f"Bearer {tok['muse']}"},
+           json={"channel": "direct", "text": "new", "mentions": ["claude"]})
+    assert [m["text"] for m in call(c, tok["claude"], "check_replies", session="fresh")["messages"]] == ["new"]
+    legacy = [m["text"] for m in call(c, tok["claude"], "check_replies")["messages"]]
+    assert legacy[:3] == ["old 0", "old 1", "old 2"]      # identity-wide readers still get them, as before
