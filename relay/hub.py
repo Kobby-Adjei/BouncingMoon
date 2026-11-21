@@ -40,6 +40,8 @@ from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
 from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel, Field
 
+from . import media as media_mod
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS agents(
   handle TEXT PRIMARY KEY, token_hash TEXT UNIQUE NOT NULL,
@@ -337,6 +339,7 @@ class MessageIn(BaseModel):
     reply_to: Optional[int] = None
     mentions: list[str] = Field(default_factory=list)
     artifacts: list[str] = Field(default_factory=list)
+    media: list[str] = Field(default_factory=list, max_length=10)
     idem: Optional[str] = None
 
 
@@ -388,7 +391,8 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
                caption_public_url: Optional[str] = None, caption_tool_wait: Optional[float] = None,
                caption_idle_seconds: Optional[float] = None,
                session_idle_seconds: Optional[float] = None,
-               session_sweep_seconds: Optional[float] = None) -> FastAPI:
+               session_sweep_seconds: Optional[float] = None,
+               media_threads: Optional[bool] = None) -> FastAPI:
     data_dir = data_dir or os.environ.get("RELAY_DATA", "./relay-data")
     os.makedirs(data_dir, exist_ok=True)
     admin_token = admin_token or os.environ.get("RELAY_ADMIN_TOKEN")
@@ -549,7 +553,7 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
                           " ON CONFLICT(thread,handle) DO UPDATE SET session=excluded.session", (m["thread"], h, session))
 
     def post(c, sender, text, channel=None, reply_to=None, mentions=(), artifacts=(),
-             idem=None, job=None, session=None) -> dict:
+             idem=None, job=None, session=None, media=()) -> dict:
         mentions = sorted({m.lstrip("@") for m in mentions})
         if idem:
             prev = c.execute("SELECT * FROM messages WHERE sender=? AND idem=?",
@@ -576,12 +580,17 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
         for a in artifacts:
             if not c.execute("SELECT 1 FROM artifacts WHERE id=?", (a,)).fetchone():
                 raise HTTPException(400, f"unknown artifact {a}")
+        for m in media:
+            if not c.execute("SELECT 1 FROM media WHERE id=?", (m,)).fetchone():
+                raise HTTPException(400, f"unknown media {m}")
         cur = c.execute(
             "INSERT INTO messages(sender,idem,channel,thread,reply_to,time,text,mentions,artifacts,job,origin_session)"
             " VALUES (?,?,?,?,?,?,?,?,?,?,?)",
             (sender, idem, channel, thread, reply_to, _now(), text,
              json.dumps(mentions), json.dumps(list(artifacts)), job, session))
         mid = cur.lastrowid
+        for m in dict.fromkeys(media):     # videos, images, audio, files that travel with this message
+            c.execute("INSERT OR IGNORE INTO message_media(msg,media) VALUES (?,?)", (mid, m))
         if thread is None:
             thread = mid
             c.execute("UPDATE messages SET thread=? WHERE id=?", (mid, mid))
@@ -1152,10 +1161,15 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
         session = check_session(x_relay_session)
         if not session:
             no_session(me["handle"], "sent a message")
+        for m in body.media:            # only media this agent may see can travel with its messages
+            try:
+                media_svc.check_access(me["handle"], m)
+            except media_mod.MediaError as e:
+                raise HTTPException(400, str(e)) from None
         with store.tx() as c:
             return post(c, me["handle"], body.text, channel=body.channel,
                         reply_to=body.reply_to, mentions=body.mentions,
-                        artifacts=body.artifacts, idem=body.idem, session=session)
+                        artifacts=body.artifacts, idem=body.idem, session=session, media=body.media)
 
     @app.get("/messages")
     def read(channel: Optional[str] = None, thread: Optional[int] = None,
@@ -1492,11 +1506,33 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
     extra_tools = {"tools": stream_tools["tools"] + caption_tools["tools"],
                    "handlers": {**stream_tools["handlers"], **caption_tools["handlers"]}}
 
+    # ---------------------------------------------------------------- media (videos, audio, images, files)
+    media_svc = media_mod.Media(
+        store, private_host, os.environ.get("RELAY_SECRET_KEY") or admin_token, transcriber=captioner.transcriber,
+        threads=caption_threads if media_threads is None else media_threads, allow_private=allow_private,
+        public_url=caption_public_url, max_upload=max_upload)
+    app.state.media = media_svc
+    media_mod.mount(app, SimpleNamespace(auth=auth), media_svc)
+
+    def delivered(link: dict, mid: str) -> None:
+        """A person used an upload link: the file goes to the chat that asked for it, in its conversation."""
+        m = media_svc.get(mid)
+        text = (f"📎 {m['name'] or 'A file'} arrived through your upload link ({media_mod.size_text(m['size'] or 0)}). "
+                f"It's being looked at now; view_media {mid} shows it.")
+        with store.tx() as c:
+            anchor = link.get("anchor")
+            if anchor and c.execute("SELECT 1 FROM messages WHERE id=?", (anchor,)).fetchone():
+                post(c, SYSTEM, text, reply_to=anchor, mentions=[link["handle"]], media=[mid])
+            else:
+                post(c, SYSTEM, text, channel="media", mentions=[link["handle"]], media=[mid])
+    media_svc.on_upload = delivered
+    media_svc.resume()
+
     # ---------------------------------------------------------------- contacts + connector
     from . import connector
     connector.mount(app, SimpleNamespace(
         extra_tools=extra_tools, store=store, auth=auth, post=post, inbox_for=inbox_for, ack_to=ack_to,
-        take=take, check_session=check_session, CONVERSATION=CONVERSATION, no_session=no_session, start_session=start_session,
+        take=take, check_session=check_session, CONVERSATION=CONVERSATION, media=media_svc, no_session=no_session, start_session=start_session,
         mark_read=mark_read, msg_out=msg_out, with_context=with_context, now=_now, loads=_loads, handle_re=HANDLE_RE))
     from . import people
     sb_url = supabase_url or os.environ.get("SUPABASE_URL")

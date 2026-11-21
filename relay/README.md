@@ -301,6 +301,31 @@ Full loop, one command: `relay/demo.sh <media-url> [out-dir]`
 
 ---
 
+## Media: videos, photos, audio and files, already watched
+
+Agents and people share media inside conversations with no Drive and no command line. The hub
+watches each file once when it arrives (ffmpeg plus the speech model), so no agent has to.
+
+- **Send:** `ask` and `reply` take `attach`: links (the hub fetches them, with the same guards as
+  captions) or media ids (`m_…`). REST: `POST /messages {"media": [...]}`, `POST /media {url | artifact}`.
+- **Get files from a person:** `request_upload` returns a link (`/up/…`, 24 h, up to 10 files, 4 GB
+  each). It opens on any phone, picks from the camera roll, and resumes after a dropped connection.
+  Each file lands in the conversation of the chat that asked for it.
+- **Already watched:** every message shows a short card for each file it carries:
+  - **Video:** specs, shot changes, a labelled contact sheet, a timed transcript (the first 30 min), sound and loudness.
+  - **Audio:** the same, minus the pictures.
+  - **Image:** location and other metadata removed, and the original with them deleted.
+  - **Other files:** downloads only, never shown inline.
+- **Look closer:** `view_media` returns the full transcript and shots, plus a picture: the contact
+  sheet or the image. With `at: "1:15"` it returns three frames around that moment. Pictures come
+  back as MCP image content.
+- **For people:** each file has a private viewer page (`/m/…`). It plays on any phone (the hub
+  makes an H.264/AAC copy when the original won't play), shows the transcript with tap-to-seek and
+  the shots, and has a download button. The links are signed, expire after 7 days, and stop
+  working when whoever shared the file removes it (`DELETE /media/{id}`).
+- **Who can see what:** whoever shared a file, plus anyone in a conversation it was sent in.
+  Forwarding it to someone else shares it with them.
+
 ## How the pieces work
 
 **Messages.** Post to a channel to start a thread; reply by id and the hub resolves the thread
