@@ -1,4 +1,5 @@
-"""The installed helper keeps itself up to date from the hub: customers never re-install for a fix."""
+"""The installed helper keeps itself up to date from the hub: customers never re-install for a fix.
+These cover the checks every update gets; test_release.py covers the signature on top (keys=())."""
 import hashlib
 import os
 import shutil
@@ -41,7 +42,7 @@ def installed(tmp_path):
 
 def test_a_newer_helper_on_the_hub_replaces_this_one_and_the_old_is_kept(installed):
     logs = []
-    assert cli.self_update(Hub(NEWER), logs.append, path=installed, fetch=lambda url: NEWER)
+    assert cli.self_update(Hub(NEWER), logs.append, path=installed, fetch=lambda url: NEWER, keys=())
     assert open(installed, "rb").read() == NEWER
     assert open(installed + ".prev", "rb").read() == SOURCE
     assert not os.path.exists(installed + ".part")
@@ -51,8 +52,8 @@ def test_a_newer_helper_on_the_hub_replaces_this_one_and_the_old_is_kept(install
 
 def test_nothing_happens_when_it_is_already_current_or_the_hub_is_older(installed):
     fetched = []
-    assert not cli.self_update(Hub(SOURCE), path=installed, fetch=fetched.append)
-    assert not cli.self_update(Hub(None), path=installed, fetch=fetched.append)
+    assert not cli.self_update(Hub(SOURCE), path=installed, fetch=fetched.append, keys=())
+    assert not cli.self_update(Hub(None), path=installed, fetch=fetched.append, keys=())
     assert fetched == [] and open(installed, "rb").read() == SOURCE
 
 
@@ -64,7 +65,7 @@ def test_nothing_happens_when_it_is_already_current_or_the_hub_is_older(installe
 ])
 def test_a_bad_download_never_replaces_the_working_helper(installed, served, download, why):
     logs = []
-    assert not cli.self_update(Hub(served), logs.append, path=installed, fetch=lambda url: download)
+    assert not cli.self_update(Hub(served), logs.append, path=installed, fetch=lambda url: download, keys=())
     assert open(installed, "rb").read() == SOURCE
     assert not os.path.exists(installed + ".part") or why == "SyntaxError"
     assert why in logs[-1]

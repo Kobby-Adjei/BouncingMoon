@@ -186,8 +186,10 @@ def connect_app(app: str, url: str, handle: str, token: str) -> str:
 # still cannot put code on anyone's computer. Each release has a number that only goes up, so an old
 # signed version with a known bug cannot be pushed back either. Bump HELPER_RELEASE whenever this
 # file changes, then sign it (`release sign`) and commit cli.sig.json next to it.
-HELPER_RELEASE = 1
-RELEASE_KEYS: tuple = ()     # Ed25519 public keys (hex). Empty: not signed yet, updates are checked by sha256 only.
+HELPER_RELEASE = 2
+RELEASE_KEYS: tuple = (     # Ed25519 public keys (hex) whose signature a new helper must carry
+    "bfe767af03a2b83e89160bccebbea800ae836d55c62dac42e1c571eedc5c9708",   # the owner's release key (Nov 2026)
+)
 SIG_FILE = "cli.sig.json"
 
 # Ed25519 (RFC 8032, section 6), plain Python so the helper needs nothing installed. Verification only
@@ -1763,6 +1765,16 @@ def _helper_done(out: dict) -> int:
     return 0 if out["running"] else 1
 
 
+def keys_in(text: str) -> tuple:
+    """The RELEASE_KEYS a helper file trusts, read with Python's own parser (however it is laid out)."""
+    import ast
+    for node in ast.parse(text).body:
+        target = getattr(node, "target", None) or (node.targets[0] if isinstance(node, ast.Assign) else None)
+        if isinstance(target, ast.Name) and target.id == "RELEASE_KEYS" and node.value is not None:
+            return tuple(ast.literal_eval(node.value))
+    return ()
+
+
 def release_command(a) -> int:
     if a.action == "keygen":
         pub = release_keygen(a.key)
@@ -1774,16 +1786,14 @@ def release_command(a) -> int:
     sig_path = os.path.join(os.path.dirname(path), SIG_FILE)
     if a.action == "sign":
         out = release_sign(data, a.key)
-        keys = re.findall(r"[0-9a-f]{64}", (re.search(r"^RELEASE_KEYS.*$", data.decode(), re.M) or [""])[0])
-        if out["key"] not in keys:
+        if out["key"] not in keys_in(data.decode()):
             print(f"warning: {path} doesn't list this key in RELEASE_KEYS, so helpers on it won't trust it")
         with open(sig_path, "w") as f:
             json.dump({k: out[k] for k in ("release", "sha256", "signature")}, f, indent=1)
             f.write("\n")
         print(f"Signed release {out['release']} ({out['sha256'][:12]}). Wrote {sig_path}; commit it with cli.py.")
         return 0
-    text = data.decode()
-    keys = tuple(re.findall(r"[0-9a-f]{64}", (re.search(r"^RELEASE_KEYS.*$", text, re.M) or [""])[0]))
+    keys = keys_in(data.decode())
     try:
         sig = json.load(open(sig_path))
     except (OSError, ValueError):

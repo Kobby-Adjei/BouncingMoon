@@ -142,13 +142,19 @@ def test_keygen_sign_and_check_commands(tmp_path, capsys):
     assert cli.main(["release", "keygen", "--key", k]) == 0
     pub = capsys.readouterr().out.strip().splitlines()[-1]
     f = tmp_path / "cli.py"
-    f.write_bytes(cli.re.sub(rb"^RELEASE_KEYS: tuple = \(\)", b'RELEASE_KEYS: tuple = ("%s",)' % pub.encode(),
-                             as_release(5), flags=cli.re.M))
+    f.write_bytes(cli.re.sub(rb"^RELEASE_KEYS: tuple = \(.*?^\)", b'RELEASE_KEYS: tuple = ("%s",)' % pub.encode(),
+                             as_release(5), flags=cli.re.M | cli.re.S))
     assert cli.main(["release", "check", str(f)]) == 1             # not signed yet
     assert cli.main(["release", "sign", str(f), "--key", k]) == 0
     assert json.load(open(tmp_path / "cli.sig.json"))["release"] == 5
     assert cli.main(["release", "check", str(f)]) == 0
     assert "release 5: signed" in capsys.readouterr().out
+
+
+def test_the_owners_release_key_is_built_in():
+    assert cli.RELEASE_KEYS == ("bfe767af03a2b83e89160bccebbea800ae836d55c62dac42e1c571eedc5c9708",)
+    assert cli.keys_in(SOURCE.decode()) == cli.RELEASE_KEYS          # what `release sign/check` read from a file
+    assert all(cli._e_dec(bytes.fromhex(k)) for k in cli.RELEASE_KEYS)
 
 
 def test_this_repo_never_ships_a_release_number_below_its_signature():
