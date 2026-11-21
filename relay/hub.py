@@ -798,7 +798,8 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
                  ".jpg": "image/jpeg", ".webp": "image/webp", ".mp4": "video/mp4",
                  ".json": "application/json",
                  # the one-line installers: plain text, so `irm` hands PowerShell a string
-                 ".sh": "text/plain; charset=utf-8", ".ps1": "text/plain; charset=utf-8"}
+                 ".sh": "text/plain; charset=utf-8", ".ps1": "text/plain; charset=utf-8",
+                 ".py": "text/x-python; charset=utf-8"}
     media_types = (".mp4", ".jpg", ".webp", ".png")
 
     def web(name: str) -> Response:
@@ -832,7 +833,7 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
     # --proxy-headers, so it is https behind Railway) and must look like a plain origin before
     # it goes anywhere near a shell.
     origin_re = re.compile(r"^https?://[A-Za-z0-9.-]+(:[0-9]{1,5})?$")
-    installers = ("install.sh", "install.ps1")
+    installers = ("install.sh", "install.ps1", "update-helpers.py")
 
     def installer(name: str, request: Request) -> Response:
         origin = f"{request.url.scheme}://{request.url.netloc}"
@@ -851,6 +852,10 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
     @app.get("/install.ps1", include_in_schema=False)
     def install_ps1(request: Request):
         return installer("install.ps1", request)
+
+    @app.get("/update-helpers.py", include_in_schema=False)
+    def update_helpers(request: Request):      # one script that updates every helper on a computer
+        return installer("update-helpers.py", request)
 
     @app.get("/static/{name}", include_in_schema=False)
     def static_file(name: str, request: Request):   # only files shipped in relay/web; the name is a dict key
