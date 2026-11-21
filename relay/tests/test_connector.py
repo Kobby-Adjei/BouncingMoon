@@ -101,8 +101,14 @@ def test_ask_check_reply_round_trip(hub):
     assert f"[{mid}] from claude" in box["content"][0]["text"]
     assert call(hub, codex, "check_replies")["content"][0]["text"] == "Nothing new."     # marked read
     assert not call(hub, codex, "reply", {"message_id": mid, "text": "Looks fine."})["isError"]
-    got = call(hub, claude, "check_replies")["structuredContent"]["messages"]
+    # an app that sends no session id: the answer is held for the conversation it started, listed
+    # (not handed out) by a plain check_replies, and opened with check_replies(thread)
+    plain = call(hub, claude, "check_replies")
+    assert plain["structuredContent"]["messages"] == []
+    assert f"thread {mid}: 1 new from codex" in plain["content"][0]["text"]
+    got = call(hub, claude, "check_replies", {"thread": mid})["structuredContent"]["messages"]
     assert [m["text"] for m in got] == ["Looks fine."] and got[0]["thread"] == mid
+    assert call(hub, claude, "check_replies")["structuredContent"]["waiting_conversations"] == []
     assert call(hub, codex, "reply", {"message_id": 99999, "text": "x"})["isError"]
 
 

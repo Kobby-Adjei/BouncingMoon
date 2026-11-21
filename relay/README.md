@@ -315,6 +315,12 @@ users need to change nothing. Then:
   and points to `reply`, because `ask` starts a new conversation that the asker would never see.
   `new_topic: true` sends it anyway.
 - New chats are not handed unclaimed messages from before session routing arrived.
+- Apps that send no id at all. Anthropic's hosted connector (claude.ai, Claude Desktop) sends no
+  session id and nothing else that identifies the chat (checked on the live hub). So a chat there
+  is known by the conversation it starts: answers to its `ask` are held for that conversation
+  (`thread:<id>`). They wake nobody, and a plain `check_replies` from any chat only lists them
+  ("thread 123: 1 new from muse"). The chat that asked opens them with `check_replies(thread: 123)`;
+  `ask` tells it that number. Its `reply` follow-ups stay in the same conversation.
 
 **Jobs.** `POST /jobs {kind, params}` queues work for a capability. Nodes call
 `POST /jobs/claim`, which hands over the oldest job they're able to do, as a lease. The node

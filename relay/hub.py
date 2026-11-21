@@ -89,6 +89,10 @@ CREATE TABLE IF NOT EXISTS delivered(
   msg INTEGER NOT NULL, handle TEXT NOT NULL, session TEXT NOT NULL, PRIMARY KEY(msg, handle, session));
 CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT);
 """
+# Apps that send no id at all (Anthropic's hosted connector, used by claude.ai and Claude Desktop) are
+# known by the conversation instead: an `ask` from such a chat gets the session "thread:<id>", and the
+# chat's model, which keeps that id in its own context, opens the answers with check_replies(thread).
+#
 # Routing by session. One identity (say `claude`) is used from many chats at once, so a message is
 # also routed to the exact chat that should handle it:
 #   messages.origin_session  the chat that sent it (never shown to anyone; only used for routing)
@@ -108,6 +112,7 @@ log = logging.getLogger("relay")
 
 HANDLE_RE = re.compile(r"^[a-z0-9][a-z0-9_.-]{0,31}$")
 PROVIDER_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,23}$")   # "claude", "openai", "gemini", ... (display only)
+CONVERSATION = "thread:"   # session of a chat whose app sends no id: it is known by the conversation it started
 SESSION_RE = re.compile(r"^[\x21-\x7e]{1,200}$")     # visible ASCII, as MCP session ids are
 RESERVED = {"relay", "admin", "me"}
 SYSTEM = "relay"            # sender name for messages the hub writes itself
@@ -468,6 +473,8 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
             return None
         if not SESSION_RE.match(session):
             raise HTTPException(400, "a session id is 1-200 visible ASCII characters")
+        if session.startswith(CONVERSATION):
+            raise HTTPException(400, f"session ids starting with '{CONVERSATION}' are reserved")
         return session
 
     warned: set = set()
@@ -627,6 +634,9 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
         elif unclaimed:
             q += " AND NOT EXISTS (SELECT 1 FROM routes r WHERE r.msg=m.id AND r.handle=?)"
             a += [h]
+        else:                  # answers held for a conversation an app without ids started: only that chat opens them
+            q += " AND NOT EXISTS (SELECT 1 FROM routes r WHERE r.msg=m.id AND r.handle=? AND r.session LIKE ?)"
+            a += [h, CONVERSATION + "%"]
         rows = c.execute(q + " ORDER BY m.id LIMIT ?", a + [limit]).fetchall()
         msgs = [msg_out(r) for r in rows]
         return {"messages": msgs, "cursor": msgs[-1]["id"] if msgs else last}
@@ -1463,7 +1473,7 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
     from . import connector
     connector.mount(app, SimpleNamespace(
         extra_tools=extra_tools, store=store, auth=auth, post=post, inbox_for=inbox_for, ack_to=ack_to,
-        take=take, check_session=check_session, no_session=no_session, start_session=start_session,
+        take=take, check_session=check_session, CONVERSATION=CONVERSATION, no_session=no_session, start_session=start_session,
         mark_read=mark_read, msg_out=msg_out, with_context=with_context, now=_now, loads=_loads, handle_re=HANDLE_RE))
     from . import people
     sb_url = supabase_url or os.environ.get("SUPABASE_URL")

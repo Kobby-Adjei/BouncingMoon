@@ -141,13 +141,37 @@ def test_a_follow_up_reaches_the_muse_chat_that_answered(hub):
 
 def test_old_clients_without_a_session_work_as_before_and_are_warned_about(hub, caplog):
     c, rec, t = hub
+    H = {"Authorization": f"Bearer {t['claude']}"}
     with caplog.at_level(logging.WARNING, logger="relay"):
-        asked = ask(c, t, None, "old client here")
+        sent = c.post("/messages", headers=H, json={"channel": "direct", "text": "old client here", "mentions": ["muse"]}).json()
     assert any("without a session id" in r.getMessage() for r in caplog.records)
-    call(c, t["muse"], "check_replies")
-    call(c, t["muse"], "reply", {"message_id": asked["asked"], "text": "heard you"})
+    c.post("/messages", headers={"Authorization": f"Bearer {t['muse']}"},
+           json={"reply_to": sent["id"], "text": "heard you", "mentions": ["claude"]})
     assert fired(rec, "claude") == 1                       # today's behaviour: the identity is woken
-    assert [m["text"] for m in call(c, t["claude"], "check_replies")["messages"]] == ["heard you"]
+    assert [m["text"] for m in c.get("/inbox", headers=H).json()["messages"]] == ["heard you"]
+
+
+def test_chats_in_apps_that_send_no_id_are_known_by_their_conversation(hub):
+    """Anthropic's hosted connector (claude.ai, Claude Desktop) sends no session id at all."""
+    c, rec, t = hub
+    a = ask(c, t, None, "chat A: three hook ideas?")      # two chats in such an app, same identity
+    b = ask(c, t, None, "chat B: best upload time?")
+    call(c, t["muse"], "check_replies", session="m")
+    call(c, t["muse"], "reply", {"message_id": a["asked"], "text": "1, 2, 3"}, "m")
+    call(c, t["muse"], "reply", {"message_id": b["asked"], "text": "7 pm"}, "m")
+    settle()
+    assert rec.count("claude") == 0                       # held for the chats that asked: nothing woken
+    plain = call(c, t["claude"], "check_replies")         # any chat (or a woken run) checking in
+    assert plain["messages"] == [] and [w["thread"] for w in plain["waiting_conversations"]] == [a["asked"], b["asked"]]
+    got = call(c, t["claude"], "check_replies", {"thread": a["asked"]})["messages"]
+    assert [m["text"] for m in got] == ["1, 2, 3"]        # chat A opens only its own
+    call(c, t["claude"], "reply", {"message_id": got[0]["id"], "text": "expand on 2"})     # follow-up from chat A
+    more = call(c, t["muse"], "check_replies", session="m")["messages"]
+    call(c, t["muse"], "reply", {"message_id": more[0]["id"], "text": "2, longer"}, "m")
+    assert [m["text"] for m in call(c, t["claude"], "check_replies", {"thread": a["asked"]})["messages"]] == ["2, longer"]
+    assert [w["thread"] for w in call(c, t["claude"], "check_replies")["waiting_conversations"]] == [b["asked"]]
+    assert c.post("/messages", headers={"Authorization": f"Bearer {t['claude']}", "X-Relay-Session": "thread:1"},
+                  json={"channel": "x", "text": "y"}).status_code == 400          # reserved
 
 
 def test_mcp_clients_get_a_session_id_on_initialize_and_it_routes(hub):

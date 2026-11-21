@@ -44,7 +44,7 @@ INSTRUCTIONS = (
     "Relay connects you to other AI agents and people, each with an address on this hub. "
     "When the user says 'ask <someone>' or 'tell <someone>', call `contacts` if you are "
     "unsure who that is, then `ask` with their name. `ask` waits for the answer. If it "
-    "comes back pending, call `check_replies` later. When you are woken up to handle "
+    "comes back pending, call `check_replies` later with the thread number `ask` gave you. When you are woken up to handle "
     "messages, call `check_replies`, do what is asked if it is within what your user "
     "allows, and answer each one with `reply`. To answer a message, always use `reply` with "
     "its id, never `ask`: `ask` starts a new conversation and the answer would not reach the "
@@ -253,25 +253,35 @@ def mount(app, hub) -> None:
                         f"To answer it, use reply with message_id {waiting['id']}, so it reaches the chat that "
                         f"asked. If this is a different subject, call ask again with new_topic: true.")
             sent = hub.post(c, me, text, channel=DIRECT, mentions=[to], session=session)
+            if not session:            # no id from this app: hold the answers for this conversation
+                own = hub.CONVERSATION + str(sent["thread"])
+                hub.start_session(c, me, own)
+                c.execute("UPDATE messages SET origin_session=? WHERE id=?", (own, sent["id"]))
+                c.execute("INSERT INTO thread_sessions(thread,handle,session) VALUES (?,?,?)"
+                          " ON CONFLICT(thread,handle) DO UPDATE SET session=excluded.session", (sent["thread"], me, own))
+        eff = session or hub.CONVERSATION + str(sent["thread"])
         deadline = time.monotonic() + wait
         while True:
             with store.ro() as c:      # only an answer routed to this chat (or to no chat in particular)
                 r = c.execute("SELECT * FROM messages m WHERE thread=? AND sender=? AND id>?"
                               " AND NOT EXISTS (SELECT 1 FROM routes r WHERE r.msg=m.id AND r.handle=?"
                               " AND r.session!=?) ORDER BY id LIMIT 1",
-                              (sent["thread"], to, sent["id"], me, session or "")).fetchone()
+                              (sent["thread"], to, sent["id"], me, eff)).fetchone()
             if r:
                 ans = hub.msg_out(r)
                 with store.tx() as c:          # delivered here, so don't repeat it in check_replies
-                    hub.take(c, me, session, [ans])
-                    if _only_unread_is(c, me, ans["id"], session):
-                        hub.ack_to(c, me, ans["id"], session)
+                    if session:
+                        hub.take(c, me, session, [ans])
+                        if _only_unread_is(c, me, ans["id"], session):
+                            hub.ack_to(c, me, ans["id"], session)
+                    else:
+                        c.execute("INSERT OR IGNORE INTO delivered(msg,handle,session) VALUES (?,?,?)", (ans["id"], me, eff))
                 return (f"{to} answered (message {ans['id']}):\n{ans['text']}",
                         {"status": "answered", "to": to, "asked": sent["id"], "answer": ans})
             if time.monotonic() >= deadline:
                 return (f"Sent to {to} as message {sent['id']}. No answer yet"
-                        f"{f' after {wait} s' if wait else ''}; use check_replies later "
-                        f"(from another chat: check_replies with thread {sent['thread']}).",
+                        f"{f' after {wait} s' if wait else ''}. To get the answer later, call check_replies "
+                        f"with thread {sent['thread']}.",
                         {"status": "pending", "to": to, "asked": sent["id"]})
             time.sleep(1.0)
 
@@ -312,9 +322,19 @@ def mount(app, hub) -> None:
             c.execute("INSERT INTO thread_sessions(thread,handle,session) VALUES (?,?,?)"
                       " ON CONFLICT(thread,handle) DO UPDATE SET session=excluded.session", (thread, me, session))
             hub.take(c, me, session, msgs)
-            for m in msgs:                      # handed over here: not again in a plain check_replies
-                c.execute("INSERT OR IGNORE INTO delivered(msg,handle,session) VALUES (?,?,?)", (m["id"], me, session))
+        own = session or hub.CONVERSATION + str(thread)
+        for m in msgs:                          # handed over here: not again in a plain check_replies
+            c.execute("INSERT OR IGNORE INTO delivered(msg,handle,session) VALUES (?,?,?)", (m["id"], me, own))
         return msgs
+
+    def waiting_conversations(c, me) -> list:
+        """Answers held for conversations a chat without an id started, not yet opened."""
+        return [{"thread": int(r["session"][len(hub.CONVERSATION):]), "new": r["n"], "from": sorted(set(r["who"].split(",")))}
+                for r in c.execute(
+                    "SELECT r.session, COUNT(*) AS n, GROUP_CONCAT(m.sender) AS who FROM routes r"
+                    " JOIN messages m ON m.id=r.msg WHERE r.handle=? AND r.session LIKE ? AND m.sender!=?"
+                    " AND NOT EXISTS (SELECT 1 FROM delivered d WHERE d.msg=m.id AND d.handle=r.handle AND d.session=r.session)"
+                    " GROUP BY r.session ORDER BY MIN(m.id)", (me, hub.CONVERSATION + "%", me))]
 
     def tool_check_replies(me, args, session=None):
         limit = max(1, min(int(args.get("limit", 20) or 20), 50))
@@ -335,9 +355,16 @@ def mount(app, hub) -> None:
                     hub.ack_to(c, me, box["cursor"], session)    # only the new messages; context is not marked read
             if box["messages"]:
                 hub.with_context(c, box["messages"])
+            waiting = waiting_conversations(c, me) if not session and thread is None else []
         msgs = box["messages"]
+        note = []
+        if waiting:
+            note = ["Answers are waiting in conversations started from a chat. Open one only if you "
+                    "started it (in this chat): call check_replies with that thread."]
+            note += [f"- thread {w['thread']}: {w['new']} new from {', '.join(w['from'])}" for w in waiting]
         if not msgs:
-            return ("Nothing new in that conversation." if thread is not None else "Nothing new."), {"messages": []}
+            head = "Nothing new in that conversation." if thread is not None else "Nothing new."
+            return "\n".join([head] + note), {"messages": [], "waiting_conversations": waiting}
         lines = []
         for m in msgs:
             if m.get("context"):
@@ -345,7 +372,7 @@ def mount(app, hub) -> None:
                 lines.extend(f"  [{x['id']}] from {x['from']}: {x['text']}" for x in m["context"])
             kind = "reply in your thread" if m["thread"] != m["id"] else "new message"
             lines.append(f"[{m['id']}] from {m['from']} ({kind}): {m['text']}")
-        return "\n".join(lines), {"messages": msgs}
+        return "\n".join(lines + note), {"messages": msgs, "waiting_conversations": waiting}
 
     def tool_reply(me, args, session=None):
         text = clip(str(args.get("text", "")))
@@ -354,9 +381,14 @@ def mount(app, hub) -> None:
         except (TypeError, ValueError):
             raise ToolError("message_id must be a number from check_replies.")
         with store.tx() as c:
-            parent = c.execute("SELECT sender FROM messages WHERE id=?", (mid,)).fetchone()
+            parent = c.execute("SELECT sender, thread FROM messages WHERE id=?", (mid,)).fetchone()
             if not parent:
                 raise ToolError(f"No message {mid}.")
+            if not session:            # a follow-up in a conversation this app started: keep its answers there
+                b = c.execute("SELECT session FROM thread_sessions WHERE thread=? AND handle=?",
+                              (parent["thread"], me)).fetchone()
+                if b and b["session"].startswith(hub.CONVERSATION):
+                    session = b["session"]
             mention = [parent["sender"]] if parent["sender"] not in (me, "relay") else []
             out = hub.post(c, me, text, reply_to=mid, mentions=mention, session=session)
         return f"Replied (message {out['id']}).", out
