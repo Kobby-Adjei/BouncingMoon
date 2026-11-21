@@ -298,6 +298,8 @@ class Media:
             for stmt in SCHEMA.split(";"):
                 if stmt.strip():
                     c.execute(stmt)
+            if "origin_artifact" not in {r["name"] for r in c.execute("PRAGMA table_info(media)")}:
+                c.execute("ALTER TABLE media ADD COLUMN origin_artifact TEXT")   # the hub file it was made from
 
     def url(self, path: str) -> str:
         return (self.public_url or "") + path
@@ -335,9 +337,37 @@ class Media:
                 raise MediaError(f"No file {artifact} on the hub.")
             # always a media item of its own (who shared it, in which conversation); the worker reuses
             # what was already worked out for the same bytes
-            mid = self._new(c, by, a["name"], artifact=artifact, size=a["size"])
+            mid = self._new(c, by, a["name"], artifact=artifact, size=a["size"], origin_artifact=artifact)
         self._ensure_thread()
         return self.get(mid)
+
+    def of_message(self, msg_id: int) -> list:
+        """Every file a message carries, as media ids. Files attached the old way (hub file ids in the
+        message) become media items here, once, so they are watched and get links like any other."""
+        with self.store.ro() as c:
+            m = c.execute("SELECT sender, artifacts FROM messages WHERE id=?", (msg_id,)).fetchone()
+            if not m:
+                return []
+            linked = {r["origin_artifact"]: r["id"] for r in c.execute(
+                "SELECT m.id, m.origin_artifact FROM message_media mm JOIN media m ON m.id=mm.media WHERE mm.msg=?",
+                (msg_id,))}
+        new = []
+        for aid in json.loads(m["artifacts"] or "[]"):
+            if aid in linked:
+                continue
+            try:
+                mid = self.from_artifact(m["sender"], aid)["id"]
+            except MediaError:
+                continue                                   # a file that's gone from the hub
+            new.append(mid)
+            with self.store.tx() as c:
+                c.execute("INSERT OR IGNORE INTO message_media(msg,media) VALUES (?,?)", (msg_id, mid))
+        with self.store.ro() as c:
+            return [r["media"] for r in c.execute("SELECT media FROM message_media WHERE msg=? ORDER BY rowid", (msg_id,))]
+
+    def download_link(self, mid: str, seconds: float = LINK_SECONDS) -> str:
+        """A direct link to the exact file (photos without their location data), for a browser or a tool."""
+        return self.link(mid, seconds) + "/original"
 
     def from_file(self, by: str, path: str, name: str) -> dict:
         aid, size = self._store(path, name, by, None, "upload", "application/octet-stream")
@@ -948,7 +978,7 @@ def mount(app, hub, media: Media) -> dict:
         elif kind == "image":
             out.append(f"<img class=full src='{base}/file' alt='{name}'>")
         if m["status"] == "ready":
-            out.append(f"<p><a class=btn href='{base}/file?download=1'>Download</a></p>")
+            out.append(f"<p><a class=btn href='{base}/original'>Download</a></p>")
         if d.get("transcript"):
             rows = "".join(f"<div class=t><button data-t='{x['t']}'>{clock(x['t'])}</button><span>{html.escape(x['text'])}</span></div>"
                            for x in d["transcript"])
@@ -980,6 +1010,20 @@ def mount(app, hub, media: Media) -> dict:
     @app.get("/m/{token}/file", include_in_schema=False)
     def view_file(token: str, download: int = 0):
         return serve(token, "file", bool(download))
+
+    @app.get("/m/{token}/original", include_in_schema=False)
+    def view_original(token: str):
+        """The exact file as it was shared (a photo: the copy without location data), always as a download.
+        Videos and other files are available at once; a photo only once its location data is gone."""
+        r = opened(token)
+        if r["status"] not in ("ready", "failed") and (r["kind"] in (None, "image")):
+            raise HTTPException(409, "Still being prepared. Try again in a minute.")
+        path = media.blob(r["artifact"])
+        if not path:
+            raise HTTPException(404, "not found")
+        return FileResponse(path, media_type="application/octet-stream", filename=r["name"] or "file",
+                            content_disposition_type="attachment",
+                            headers={**headers(), "Cache-Control": "private, max-age=3600"})
 
     @app.get("/m/{token}/{which}", include_in_schema=False)
     def view_part(token: str, which: str):

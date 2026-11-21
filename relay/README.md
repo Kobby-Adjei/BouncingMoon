@@ -316,6 +316,11 @@ watches each file once when it arrives (ffmpeg plus the speech model), so no age
   - **Audio:** the same, minus the pictures.
   - **Image:** location and other metadata removed, and the original with them deleted.
   - **Other files:** downloads only, never shown inline.
+- **Get the actual file:** `get_files(message_id)` returns, for every file on a message (including
+  files attached the old way, as hub file ids), a direct download link to the exact file. It needs no
+  key, lasts 7 days, and opens in any browser or tool (`/m/…/original`). Videos and other files come
+  back bit for bit; photos come back the same size without their location data, and PNGs stay
+  pixel-identical.
 - **Look closer:** `view_media` returns the full transcript and shots, plus a picture: the contact
   sheet or the image. With `at: "1:15"` it returns three frames around that moment. Pictures come
   back as MCP image content.

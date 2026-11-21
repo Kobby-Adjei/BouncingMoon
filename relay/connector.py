@@ -144,6 +144,18 @@ TOOLS = [
         "annotations": {"readOnlyHint": True},
     },
     {
+        "name": "get_files",
+        "title": "Get a message's files",
+        "description": "Get the files attached to a message (by its id from check_replies): videos, pictures, "
+                       "audio, documents. For each one you get a DIRECT DOWNLOAD LINK to the exact file (open it in a "
+                       "browser or download it with any tool; no key needed; works for 7 days), a viewer link, and what "
+                       "the hub saw in it. Use this when you need the actual file, e.g. to upload it somewhere.",
+        "inputSchema": {"type": "object", "properties": {
+            "message_id": {"type": "integer", "description": "The message the files are attached to"}},
+            "required": ["message_id"], "additionalProperties": False},
+        "annotations": {"readOnlyHint": True},
+    },
+    {
         "name": "request_upload",
         "title": "Ask your user for a file",
         "description": "Get a link your user can open on their phone or computer to send you photos, videos, audio "
@@ -446,22 +458,52 @@ def mount(app, hub) -> None:
         return "\n".join(lines + note), {"messages": msgs, "waiting_conversations": waiting}
 
     def media_cards(me, msg_ids) -> dict:
-        """msg id -> the cards of the media it carries, each with a private viewer link."""
-        if not msg_ids:
-            return {}
-        with store.ro() as c:
-            rows = c.execute(f"SELECT msg, media FROM message_media WHERE msg IN ({','.join('?' * len(msg_ids))})"
-                             " ORDER BY rowid", msg_ids).fetchall()
+        """msg id -> the cards of the files it carries (old-style attachments too), each with links."""
         out: dict = {}
-        for r in rows:
-            m = hub.media.get(r["media"])
+        for msg in msg_ids:
+            for mid in hub.media.of_message(msg):
+                m = hub.media.get(mid)
+                if m["revoked"]:
+                    continue
+                link = hub.media.link(m["id"])
+                out.setdefault(msg, []).append({"id": m["id"], "kind": m["kind"], "name": m["name"],
+                                                "status": m["status"], "link": link,
+                                                "download": hub.media.download_link(m["id"]),
+                                                "text": hub.media.card(m, link) + f"\n   Get the file: get_files {msg}"})
+        return out
+
+    def tool_get_files(me, args, session=None):
+        try:
+            mid = int(args.get("message_id"))
+        except (TypeError, ValueError):
+            raise ToolError("message_id must be a number from check_replies.")
+        with store.ro() as c:
+            msg = c.execute("SELECT id, sender, thread FROM messages WHERE id=?", (mid,)).fetchone()
+            ok = msg and (msg["sender"] == me or c.execute(
+                "SELECT 1 FROM messages m WHERE m.id=? AND (EXISTS (SELECT 1 FROM json_each(m.mentions) WHERE value=?)"
+                " OR m.thread IN (SELECT thread FROM follows WHERE agent=?))", (mid, me, me)).fetchone())
+        if not ok:
+            raise ToolError(f"No message {mid} in your conversations.")
+        ids = hub.media.of_message(mid)
+        if not ids:
+            return f"Message {mid} has no files attached.", {"message": mid, "files": []}
+        deadline = time.monotonic() + 30           # give a fresh file a moment so its links work right away
+        while time.monotonic() < deadline and any(hub.media.get(i)["status"] in ("queued", "working") for i in ids):
+            time.sleep(1.0)
+        files, lines = [], [f"Files on message {mid} from {msg['sender']}:"]
+        for i in ids:
+            m = hub.media.get(i)
             if m["revoked"]:
                 continue
-            link = hub.media.link(m["id"])
-            out.setdefault(r["msg"], []).append({"id": m["id"], "kind": m["kind"], "name": m["name"],
-                                                 "status": m["status"], "link": link,
-                                                 "text": hub.media.card(m, link)})
-        return out
+            f = {"id": i, "name": m["name"], "kind": m["kind"], "size": m["size"], "status": m["status"],
+                 "download": hub.media.download_link(i), "view": hub.media.link(i)}
+            files.append(f)
+            lines.append(hub.media.card(m, f["view"]))
+            lines.append(f"   Download the exact file: {f['download']}"
+                         + ("  (still being prepared: try the link in a minute)" if m["status"] in ("queued", "working") else ""))
+        lines.append("The links work without a key for 7 days. Anyone with a link can open it, so share them only "
+                     "where they need to go.")
+        return "\n".join(lines), {"message": mid, "files": files}
 
     def tool_view_media(me, args, session=None):
         mid = str(args.get("id", "")).strip()
@@ -560,7 +602,7 @@ def mount(app, hub) -> None:
             {**out, "media": media}
 
     routed = {"ask": tool_ask, "check_replies": tool_check_replies, "reply": tool_reply,   # take the session
-              "view_media": tool_view_media, "request_upload": tool_request_upload}
+              "view_media": tool_view_media, "request_upload": tool_request_upload, "get_files": tool_get_files}
     handlers = {"contacts": tool_contacts, "save_contact": tool_save_contact, **routed}
     extra = getattr(hub, "extra_tools", None) or {}          # tools other parts of the hub add (streams)
     handlers.update(extra.get("handlers", {}))

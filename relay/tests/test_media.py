@@ -234,3 +234,47 @@ def test_upload_links_expire_and_cap_their_files(hub, monkeypatch):
     assert c.get(base).status_code == 410
     assert c.post(base + "/start", json={"name": "x", "size": 10}).status_code == 410
     assert c.get("/up/" + "x" * 32).status_code == 404
+
+
+# ------------------------------------------------------------------ get_files: the actual files, by link
+def test_get_files_gives_direct_links_to_the_exact_files_on_a_message(tmp_path, files):
+    """Dev attaches the ad, the picture and the banner the old way (hub file ids); the agent needs the files."""
+    app = create_app(data_dir=str(tmp_path), admin_token=ADMIN, caption_transcriber=FakeTranscriber(),
+                     caption_threads=False, media_threads=True, caption_public_url="https://hub.example")
+    c = TestClient(app)
+    t = {h: c.post("/agents", headers={"Authorization": f"Bearer {ADMIN}"}, json={"handle": h}).json()["token"]
+         for h in ("dev", "agent", "outsider")}
+    subprocess.run(["ffmpeg", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "testsrc=s=2560x1440:d=1",
+                    "-frames:v", "1", str(tmp_path / "banner.png")], check=True)
+    arts = [upload(c, t["dev"], p) for p in (files / "clip.mp4", files / "photo.jpg", tmp_path / "banner.png")]
+    msg = c.post("/messages", headers={"Authorization": f"Bearer {t['dev']}"},
+                 json={"channel": "direct", "text": "the ad, the picture and the banner", "mentions": ["agent"],
+                       "artifacts": arts}).json()
+    ok(call(c, t["agent"], "check_replies", session="A"))             # already read: get_files still works
+    res = ok(call(c, t["agent"], "get_files", {"message_id": msg["id"]}, "A"))
+    got = res["structuredContent"]["files"]
+    assert [f["name"] for f in got] == ["clip.mp4", "photo.jpg", "banner.png"]
+    assert all(f["status"] == "ready" and f["download"].endswith("/original") for f in got)
+    assert "Download the exact file: https://hub.example/m/" in res["content"][0]["text"]
+    fetch = lambda f: c.get(path_of(f["download"]))
+    video = fetch(got[0])
+    assert video.status_code == 200 and video.content == (files / "clip.mp4").read_bytes()     # bit for bit
+    assert video.headers["content-disposition"].startswith('attachment; filename="clip.mp4"')
+    photo = fetch(got[1]).content
+    assert photo[:3] == b"\xff\xd8\xff" and b"GPS 42.2411" not in photo                     # location gone
+    banner = tmp_path / "got.png"
+    banner.write_bytes(fetch(got[2]).content)
+    pixels = lambda p: subprocess.run(["ffmpeg", "-loglevel", "error", "-i", str(p), "-f", "md5", "-"],
+                                      capture_output=True, text=True).stdout
+    assert pixels(banner) == pixels(tmp_path / "banner.png")                                 # every pixel the same
+    assert call(c, t["outsider"], "get_files", {"message_id": msg["id"]}, "o")["isError"]
+    assert c.get(path_of(got[0]["download"])[:-12] + "AAAA/original").status_code == 404     # tampered link
+
+
+def test_old_style_attachments_show_up_in_check_replies(hub, files):
+    c, t, media = hub
+    art = upload(c, t["muse"], files / "clip.mp4")
+    c.post("/messages", headers={"Authorization": f"Bearer {t['muse']}"},
+           json={"channel": "direct", "text": "here", "mentions": ["claude"], "artifacts": [art]})
+    text = ok(call(c, t["claude"], "check_replies", session="A"))["content"][0]["text"]
+    assert " m_" in text and "clip.mp4" in text and "Get the file: get_files" in text
