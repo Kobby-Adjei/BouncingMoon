@@ -196,9 +196,10 @@
 .noapps span:last-child { color: var(--ink2); font-size: 14.5px; max-width: 30ch; }
 .addapp { display: flex; flex-direction: column; align-items: center; gap: 8px; text-align: center; padding: 6px 0 28px; }
 .addapp .k { font-size: 13px; font-weight: 600; color: var(--ink2); } .addapp .s { font-size: 13px; color: var(--ink2); max-width: 34ch; }
-.copyurl { appearance: none; border: 0; display: flex; align-items: center; gap: 10px; max-width: 100%; padding: 8px 8px 8px 18px; border-radius: 999px;
+.copyurl { appearance: none; border: 0; display: flex; align-items: center; gap: 10px; max-width: 100%; min-width: 0; padding: 8px 8px 8px 18px; border-radius: 999px;
   background: var(--card); color: var(--ink); cursor: pointer; box-shadow: 0 0 0 .5px var(--line), 0 8px 20px -14px rgba(24, 23, 29, .4); }
-.copyurl .u { font: 500 13.5px var(--mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.copyurl .u { flex: 1; font: 500 13.5px var(--mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; text-align: left; }
+.steps .copyurl { width: 100%; }
 .copyurl .c { flex: none; background: var(--accent); color: var(--on-accent); font: 600 13px var(--font); padding: 7px 14px; border-radius: 999px; }
 @media (prefers-reduced-motion: reduce) { .pair, .morb .mh, .noapps { animation: none !important; transition: none !important; } }
 /* keys: the website's half meets Relay's dark half, which carries a keyhole */

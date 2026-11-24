@@ -298,7 +298,7 @@ def mount(app, hub) -> None:
                 f"<div class=orb id=orb aria-hidden=true><span class='half l'>{left}</span>"
                 f"<span class='half r' id=rhalf><i class=mk></i></span><span class=seal id=seal></span></div>"
                 f"<h1 class=title id=title>Connect {html.escape(cl['name'])} to Relay</h1>"
-                f"<p class=lede id=lede>Messages and files, as the agent you pick.</p>"
+                f"<p class=lede id=lede>Pick who {html.escape(cl['name'] or 'this app')} will be on Relay.</p>"
                 f"<section class=step id=step aria-live=polite></section>"
                 f"<p class=foot id=foot>Returns to {html.escape(host)}</p></div>"
                 f"<script nonce='{nonce}'>const BOOT={json.dumps(boot)};{PAGE_JS}</script>")
@@ -333,13 +333,17 @@ def mount(app, hub) -> None:
         me = who(request.headers.get("authorization", ""))
         r = pending(rid)
         cl = client(r["client_id"])
-        word = P.handle_for(app_word(cl["name"] if cl else ""))
+        kind = app_word(cl["name"] if cl else "")
+        word = P.handle_for(kind)
         with store.ro() as c:
             agents = choosable(c, me)
             taken = {x["handle"] for x in c.execute("SELECT handle FROM agents")}
         suggest = word if word not in taken else next(f"{word}-{i}" for i in range(2, 999) if f"{word}-{i}" not in taken)
-        mine = [a for a in agents if a["handle"] == word]
-        return {"you": me["handle"], "app": cl["name"] if cl else "An app", "agents": agents,
+        # the app's own agent: one named for it, else the one on the same app used most recently
+        mine = [a for a in agents if a["handle"] == word] or \
+            sorted([a for a in agents if kind and a["provider"] == kind], key=lambda a: -(a["last_seen"] or 0))
+        return {"you": me["handle"], "app": cl["name"] if cl else "An app", "agents": agents, "provider": kind,
+                "app_label": P.label(kind) if kind else (cl["name"] if cl else "This app"),
                 "preselect": mine[0]["handle"] if mine else None, "suggest": suggest, "role": me["role"]}
 
     @app.post("/oauth/decide", include_in_schema=False)
@@ -691,6 +695,17 @@ main{position:relative;z-index:1;min-height:100vh;display:flex;justify-content:c
 .coin:has(input:focus-visible) .disc{box-shadow:0 0 0 3px var(--bg),0 0 0 5.5px var(--ring,var(--accent))}
 .newname{display:grid;grid-template-rows:0fr;width:100%;transition:grid-template-rows .45s var(--glide),margin .45s var(--glide)}
 .newname>div{overflow:hidden;display:flex;justify-content:center;padding:6px 8px 4px}.newname.open{grid-template-rows:1fr;margin-top:2px}
+.newname:not(.open)>div{padding-block:0;visibility:hidden}
+.warn{display:none;margin:2px 0 0;padding:10px 16px;border-radius:18px;background:var(--accent-soft);color:var(--ink);font-size:13.5px;line-height:1.4;max-width:34ch}
+.warn.on{display:block;animation:rise .4s var(--ease) both}
+@media (max-width:440px){main{padding-top:max(26px,env(safe-area-inset-top))}.orb{width:132px;height:132px;gap:5px;margin-bottom:20px}
+ .title{font-size:26px}.coins{gap:12px 4px}.coin{width:64px}.coin .nm{max-width:64px;font-size:12px}
+ .half img{width:40px;height:40px}.face svg{width:42px;height:42px;margin-right:14px}
+ .half.l img,.half.l b{margin-left:4px}.half.r img,.half.r b,.half.r .mk{margin-right:4px}.half b{font-size:34px}}
+@media (max-height:700px){main{padding-top:max(16px,env(safe-area-inset-top))}.orb{width:104px;height:104px;margin-bottom:14px}
+ .title{font-size:23px}.step{gap:10px}.coin .disc{transform:scale(.88)}.coins{gap:6px 2px}
+ .half img{width:32px;height:32px}.face svg{width:34px;height:34px;margin-right:10px}
+ .half.l img,.half.l b{margin-left:2px}.half.r img,.half.r b,.half.r .mk{margin-right:2px}.half b{font-size:28px}}
 .btn{appearance:none;display:flex;align-items:center;justify-content:center;gap:10px;width:100%;height:56px;padding:0 22px;border:0;border-radius:999px;
  background:var(--accent);color:var(--on-accent);font:600 17px var(--font);letter-spacing:-.015em;cursor:pointer;margin-top:10px;
  box-shadow:0 1px 0 rgba(255,255,255,.22) inset,0 12px 26px -12px var(--accent);transition:transform .45s var(--spring),background-color .2s,opacity .2s}
@@ -761,12 +776,17 @@ async function consent(){let d;try{d=await api('GET','/oauth/request/'+BOOT.requ
  const group=$('div',{class:'coins',role:'radiogroup','aria-label':'Allow '+BOOT.app+' to use Relay as'},...coins);
  const pick=()=>{const c=coins.find(x=>x.querySelector('input').checked);coins.forEach(x=>x.classList.toggle('on',x===c));
   const v=c.querySelector('input').value,a=d.agents.find(x=>x.handle===v);box.classList.toggle('open',v==='__new__');
-  if(v==='__new__')right('new');else right('agent',a.provider,a.handle)};
+  if(v==='__new__')right('new');else right('agent',a.provider,a.handle);
+  // picking another app's agent makes this app speak as it: say so, and how to reach it instead
+  const other=a&&a.provider&&d.provider&&a.provider!==d.provider;
+  warn.textContent=other?d.app_label+' will send and read messages as '+a.handle+'. To talk to '+a.handle+', pick '+((d.agents.find(x=>x.provider===d.provider)||{}).handle||'New')+', then ask '+a.handle+' from '+d.app_label+'.':'';
+  warn.classList.toggle('on',!!other)};
  group.addEventListener('change',e=>{const c=e.target.closest('.coin');c.classList.remove('tap');void c.offsetWidth;c.classList.add('tap');pick()});
  const err=$('p',{class:'err',role:'alert'});
+ const warn=$('p',{class:'warn',role:'status'});
  const me=$('div',{class:'me'},$('span',{html:'<b></b>'}),$('span',{text:'·'}),$('button',{class:'tl',on:{click:()=>{store.clear();cred=null;right('','');rhalf.replaceChildren($('i',{class:'mk'}));signIn()}}},'Switch'));
  me.querySelector('b').textContent=d.you;
- show(group,box,err,$('button',{class:'btn',id:'allow',on:{click:()=>allow(nn,err)}},'Allow'),me,$('button',{class:'tl',on:{click:deny}},'Cancel'));pick()}
+ show(group,box,warn,err,$('button',{class:'btn',id:'allow',on:{click:()=>allow(nn,err)}},'Allow'),me,$('button',{class:'tl',on:{click:deny}},'Cancel'));pick()}
 async function allow(nn,err){const v=(document.querySelector('input[name=who]:checked')||{}).value;
  const body=v==='__new__'?{request:BOOT.request,new_agent:nn.value.trim()}:{request:BOOT.request,agent:v};
  const b=document.getElementById('allow');b.disabled=true;err.textContent='';
