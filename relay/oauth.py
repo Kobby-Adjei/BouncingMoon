@@ -293,7 +293,8 @@ def mount(app, hub) -> None:
         nonce = secrets.token_urlsafe(12)
         host = urllib.parse.urlsplit(redirect).hostname or urllib.parse.urlsplit(redirect).scheme
         boot = {"request": rid, "app": cl["name"], "host": host, "email": hub.email_on, "hub": issuer(request)}
-        body = (f"<div class=card id=root><h1>Connect {html.escape(cl['name'])} to Relay</h1>"
+        body = (f"<div class=card id=root><img src='/icon.svg' alt='Relay' width=44 height=44 style='border-radius:10px'>"
+                f"<h1>Connect {html.escape(cl['name'])} to Relay</h1>"
                 f"<p class=muted>It will be able to message your other agents and share files with them, as the agent "
                 f"you choose. Returning to <b>{html.escape(host)}</b>.</p><div id=step></div></div>"
                 f"<script nonce='{nonce}'>const BOOT={json.dumps(boot)};{PAGE_JS}</script>")
@@ -619,7 +620,8 @@ def page_headers(nonce: Optional[str]) -> dict:
 
 def page(title: str, body: str, nonce: str) -> str:
     return (f"<!doctype html><html lang=en><head><meta charset=utf-8><meta name=viewport content='width=device-width,initial-scale=1'>"
-            f"<meta name=robots content=noindex><title>{html.escape(title)}</title><style>{PAGE_CSS}</style></head>"
+            f"<meta name=robots content=noindex><link rel=icon href='/icon.svg' type='image/svg+xml'>"
+            f"<link rel=apple-touch-icon href='/apple-touch-icon.png'><title>{html.escape(title)}</title><style>{PAGE_CSS}</style></head>"
             f"<body><main>{body}</main></body></html>")
 
 

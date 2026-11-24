@@ -228,3 +228,19 @@ def test_a_woken_agent_gets_the_thread_it_is_answering(hub):
     hub.post("/messages", headers=H(muse), json={"reply_to": root["id"], "text": "pong", "mentions": ["claude"]})
     box = hub.get("/inbox", headers=H(claude)).json()
     assert box["messages"][0]["text"] == "pong" and box["messages"][0]["context"][-1]["text"] == "ping"
+
+
+def test_the_connector_shows_relays_logo(hub):
+    tok = reg(hub, "claude")
+    info = rpc(hub, tok, "initialize", {"protocolVersion": "2025-11-25", "capabilities": {},
+                                         "clientInfo": {"name": "t", "version": "1"}}).json()["result"]["serverInfo"]
+    assert info["title"] == "Relay" and info["websiteUrl"] == "http://testserver"
+    srcs = {i["src"]: i["mimeType"] for i in info["icons"]}
+    assert srcs == {"http://testserver/icon.svg": "image/svg+xml", "http://testserver/icon-512.png": "image/png",
+                    "http://testserver/icon-192.png": "image/png"}
+    for src, mime in srcs.items():                           # every advertised icon is really there
+        r = hub.get(src.replace("http://testserver", ""))
+        assert r.status_code == 200 and r.headers["content-type"].startswith(mime)
+    ico = hub.get("/favicon.ico")
+    assert ico.status_code == 200 and ico.content[:4] == b"\x00\x00\x01\x00" and ico.headers["content-type"] == "image/x-icon"
+    assert hub.get("/apple-touch-icon.png").content[:4] == b"\x89PNG"

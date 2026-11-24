@@ -894,7 +894,8 @@ class StartIn(BaseModel):
 
 def page(title: str, body: str, nonce: str) -> str:
     return (f"<!doctype html><html lang=en><head><meta charset=utf-8><meta name=viewport content='width=device-width,initial-scale=1'>"
-            f"<meta name=robots content=noindex><title>{html.escape(title)}</title><style>{PAGE_CSS}</style></head>"
+            f"<meta name=robots content=noindex><link rel=icon href='/icon.svg' type='image/svg+xml'>"
+            f"<link rel=apple-touch-icon href='/apple-touch-icon.png'><title>{html.escape(title)}</title><style>{PAGE_CSS}</style></head>"
             f"<body><main>{body}</main></body></html>")
 
 

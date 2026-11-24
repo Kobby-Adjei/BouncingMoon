@@ -612,7 +612,7 @@ def mount(app, hub) -> None:
     def rpc_error(mid, code, message):
         return {"jsonrpc": "2.0", "id": mid, "error": {"code": code, "message": message}}
 
-    def handle(msg: Any, me: str, session: Optional[str] = None, header_names=None) -> Optional[dict]:
+    def handle(msg: Any, me: str, session: Optional[str] = None, header_names=None, base: str = "") -> Optional[dict]:
         if not isinstance(msg, dict) or msg.get("jsonrpc") != "2.0":
             return rpc_error(None, -32600, "invalid request")
         method, mid = msg.get("method"), msg.get("id")
@@ -636,7 +636,10 @@ def mount(app, hub) -> None:
             return {"jsonrpc": "2.0", "id": mid, "result": {
                 "protocolVersion": version,
                 "capabilities": {"tools": {"listChanged": False}},
-                "serverInfo": {"name": "relay", "title": "Relay", "version": "0.2.0"},
+                "serverInfo": {"name": "relay", "title": "Relay", "version": "0.2.0", "websiteUrl": base or None,
+                               "icons": [{"src": f"{base}/icon.svg", "mimeType": "image/svg+xml", "sizes": ["any"]},
+                                         {"src": f"{base}/icon-512.png", "mimeType": "image/png", "sizes": ["512x512"]},
+                                         {"src": f"{base}/icon-192.png", "mimeType": "image/png", "sizes": ["192x192"]}]},
                 "instructions": INSTRUCTIONS}}
         if method == "ping":
             return {"jsonrpc": "2.0", "id": mid, "result": {}}
@@ -708,9 +711,9 @@ def mount(app, hub) -> None:
         names = sorted(request.headers.keys())                # names only: values may be secrets
         from starlette.concurrency import run_in_threadpool   # `ask` may wait; keep the event loop free
         if isinstance(body, list):
-            out = [r for r in [await run_in_threadpool(handle, m, me, session, names) for m in body] if r is not None]
+            out = [r for r in [await run_in_threadpool(handle, m, me, session, names, hub.origin(request)) for m in body] if r is not None]
             return JSONResponse(out, headers=headers) if out else Response(status_code=202, headers=headers)
-        out = await run_in_threadpool(handle, body, me, session, names)
+        out = await run_in_threadpool(handle, body, me, session, names, hub.origin(request))
         return JSONResponse(out, headers=headers) if out is not None else Response(status_code=202, headers=headers)
 
     @app.get("/mcp", include_in_schema=False)

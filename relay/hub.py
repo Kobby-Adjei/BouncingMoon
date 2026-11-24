@@ -816,7 +816,7 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
                  ".json": "application/json",
                  # the one-line installers: plain text, so `irm` hands PowerShell a string
                  ".sh": "text/plain; charset=utf-8", ".ps1": "text/plain; charset=utf-8",
-                 ".py": "text/x-python; charset=utf-8"}
+                 ".py": "text/x-python; charset=utf-8", ".ico": "image/x-icon"}
     media_types = (".mp4", ".jpg", ".webp", ".png")
 
     def web(name: str) -> Response:
@@ -831,6 +831,19 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
                                 headers={**page_headers, "Cache-Control": "public, max-age=3600"})
         with open(os.path.join(web_dir, name), "rb") as f:
             return Response(f.read(), media_type=mime, headers=page_headers)
+
+    # Relay's icon where apps and browsers look for one: connector lists, tabs, home screens
+    for path, name in (("/favicon.ico", "favicon.ico"), ("/favicon.svg", "icon.svg"), ("/icon.svg", "icon.svg"),
+                       ("/apple-touch-icon.png", "apple-touch-icon.png"), ("/icon-192.png", "icon-192.png"),
+                       ("/icon-512.png", "icon-512.png")):
+        app.add_api_route(path, (lambda n=name: icon_file(n)), methods=["GET"], include_in_schema=False)
+
+    def icon_file(name: str) -> Response:
+        if name not in web_files:
+            raise HTTPException(404, "not found")
+        mime = web_types.get(os.path.splitext(name)[1], "application/octet-stream")
+        return FileResponse(os.path.join(web_dir, name), media_type=mime,
+                            headers={"Cache-Control": "public, max-age=86400", "X-Content-Type-Options": "nosniff"})
 
     @app.get("/app", include_in_schema=False)
     def app_page():
