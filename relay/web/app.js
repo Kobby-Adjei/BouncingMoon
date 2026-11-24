@@ -453,6 +453,39 @@ function userSignOut() {
   signOut();
 }
 
+// ------------------------------------------------------------------ passkeys (Face ID, a fingerprint, the device PIN)
+const CAN_PASSKEY = !!(window.PublicKeyCredential && navigator.credentials);
+const b64u = (b) => btoa(String.fromCharCode(...new Uint8Array(b))).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+const unb64u = (s) => Uint8Array.from(atob(s.replace(/-/g, "+").replace(/_/g, "/")), (c) => c.charCodeAt(0));
+async function passkeySignIn() {
+  const o = await api("POST", "/auth/passkey/options", {}, null);
+  const c = await navigator.credentials.get({ publicKey: { challenge: unb64u(o.challenge), rpId: o.rpId,
+    userVerification: o.userVerification, timeout: o.timeout, allowCredentials: [] } });
+  const r = c.response;
+  return api("POST", "/auth/passkey/signin", { id: c.id, type: c.type, response: { clientDataJSON: b64u(r.clientDataJSON),
+    authenticatorData: b64u(r.authenticatorData), signature: b64u(r.signature), userHandle: r.userHandle ? b64u(r.userHandle) : null } }, null);
+}
+async function passkeyAdd(key) {
+  const o = await api("POST", "/auth/passkey/register/options", {}, key);
+  const c = await navigator.credentials.create({ publicKey: { ...o, challenge: unb64u(o.challenge), user: { ...o.user, id: unb64u(o.user.id) },
+    excludeCredentials: o.excludeCredentials.map((x) => ({ ...x, id: unb64u(x.id) })) } });
+  return api("POST", "/auth/passkey/register", { id: c.id, type: c.type, label: navigator.platform || "passkey",
+    response: { clientDataJSON: b64u(c.response.clientDataJSON), attestationObject: b64u(c.response.attestationObject) } }, key);
+}
+const passkeyErr = (x) => x && x.name === "NotAllowedError" ? "Cancelled, or no passkey for Relay on this device." : (x && x.message) || "That didn't work.";
+// one screen: "sign in with your face next time"; `done` runs whatever happens
+function offerPasskey(title, lede, done, extra) {
+  const err = h("p", { class: "err", role: "alert" });
+  const add = h("button", { class: "btn press", type: "button" }, "Add a passkey");
+  add.addEventListener("click", async () => {
+    add.disabled = true; err.textContent = "";
+    try { await passkeyAdd(KEY); done(); } catch (x) { err.textContent = passkeyErr(x); add.disabled = false; }
+  });
+  welcomeView(h("div", { class: "brandline" }, bigTick(), h("h1", { class: "title", text: title }), h("p", { class: "lede", text: lede })),
+    h("div", { class: "stack tight" }, add, ...(extra || []), h("button", { class: "btn ghost press", type: "button", onclick: done }, "Not now"), err));
+  add.focus();
+}
+
 // ------------------------------------------------------------------ sign in
 function welcomeView(...kids) {
   bar.classList.add("hidden");
@@ -484,11 +517,22 @@ function signin(message, mode) {
     } catch (x) { err.textContent = x.status === 401 ? "That key isn't recognised." : x.message; btn.disabled = false; }
   } },
     input, btn, h("label", { class: "check" }, remember, "Keep me signed in"), err);
-  welcomeView(brand(), form,
+  welcomeView(brand(), passkeyButton(remember, err), form,
     h("div", { class: "stack tight center" },
-      h("p", { class: "hint", style: "margin:0", text: "First time? Use your admin token." }),
+      h("p", { class: "hint", style: "margin:0", text: "First time? Use your admin token, once, to make the hub yours." }),
       AUTH.email ? h("div", { class: "alt" }, h("button", { class: "link sm", type: "button", onclick: () => signin(null, "email") }, "Use email instead")) : null));
   input.focus();
+}
+
+function passkeyButton(remember, err) {
+  if (!CAN_PASSKEY) return null;
+  const b = h("button", { class: "btn press", type: "button" }, "Sign in with a passkey");
+  b.addEventListener("click", async () => {
+    b.disabled = true; err.textContent = "";
+    try { store.remember(remember.checked); await signedIn(await passkeySignIn(), true); }
+    catch (x) { err.textContent = passkeyErr(x); b.disabled = false; }
+  });
+  return h("div", { class: "stack tight" }, b, h("p", { class: "hint center", style: "margin:0", text: "Face ID, a fingerprint or your device PIN" }));
 }
 
 function emailSignin(message, prefill) {
@@ -505,7 +549,7 @@ function emailSignin(message, prefill) {
     try { await api("POST", "/auth/email", { email }, null); checkEmail(email); }
     catch (x) { err.textContent = x.message; btn.disabled = false; }
   } }, input, btn, h("label", { class: "check" }, remember, "Keep me signed in"), err);
-  welcomeView(brand(), message ? h("div", { class: "notice", role: "alert", text: message }) : null, form,
+  welcomeView(brand(), message ? h("div", { class: "notice", role: "alert", text: message }) : null, passkeyButton(remember, err), form,
     h("div", { class: "alt" }, h("button", { class: "link sm muted", type: "button", onclick: () => signin(null, "key") }, "Use a key instead")));
   input.focus();
 }
@@ -551,10 +595,16 @@ function checkEmail(email) {
   count();
 }
 
-async function signedIn(r) {      // a hub session from /auth/session or /auth/verify
+async function signedIn(r, byPasskey) {      // a hub session from /auth/session, /auth/verify or a passkey
   clearInterval(timer); timer = null;
   ME = await api("GET", "/agents/me", undefined, r.token); KEY = r.token;
   store.set(r.token, store.remember());
+  if (!byPasskey && CAN_PASSKEY && ME.role === "human") {
+    let have = [];
+    try { have = await api("GET", "/auth/passkeys"); } catch {}
+    if (!have.length) return offerPasskey("Signed in", "Next time, skip the email: sign in with Face ID, a fingerprint or your device PIN.",
+                                          () => goTab(agents));
+  }
   goTab(agents);
 }
 // Mail scanners open links (and run this page) before people do, so a link only signs in on a press.
@@ -588,10 +638,14 @@ function claim(remember) {
     btn.disabled = true; err.textContent = "";
     try {
       const r = await api("POST", "/owner", { handle });
-      KEY = r.token; ME = await api("GET", "/agents/me", undefined, r.token);
-      store.set(r.token, remember);
-      const c = h("button", { class: "btn quiet press", type: "button" }, "Copy my key");
-      c.addEventListener("click", () => copy(r.token, c, "Copy my key"));
+      // the admin token is done now: from here on this hub knows you, and a passkey is how you come back
+      const s = await api("POST", "/auth/session/owner", {}, r.token);
+      KEY = s.token; ME = await api("GET", "/agents/me", undefined, s.token);
+      store.set(s.token, remember);
+      const c = h("button", { class: "btn quiet press", type: "button" }, "Copy a backup key");
+      c.addEventListener("click", () => copy(r.token, c, "Copy a backup key"));
+      if (CAN_PASSKEY) return offerPasskey(`Welcome, ${r.handle}`, "This hub is yours. Add a passkey and you'll never need a key again: "
+        + "sign in and connect apps with Face ID, a fingerprint or your device PIN.", () => goTab(agents), [c]);
       welcomeView(h("div", { class: "brandline" }, bigTick(), h("h1", { class: "title", text: `Welcome, ${r.handle}` }),
           h("p", { class: "lede", text: "This hub is yours. Save your key somewhere safe." })),
         h("div", { class: "stack tight" }, c, h("button", { class: "btn press", type: "button", onclick: () => goTab(agents) }, "Open Relay")));

@@ -297,3 +297,17 @@ def test_the_official_mcp_client_connects_through_oauth(tmp_path):
     tools, text = asyncio.run(run())
     server.should_exit = True
     assert {"ask", "reply", "get_files"} <= tools and "You are claude on this Relay hub." in text
+
+
+def test_claiming_the_hub_then_a_passkey_means_no_key_ever_again(hub):
+    """The web app's first run: the admin key once makes the owner account; then a session and a passkey."""
+    c, _ = hub
+    r = c.post("/owner", headers={"Authorization": f"Bearer {ADMIN}"}, json={"handle": "kobby"}).json()
+    s = c.post("/auth/session/owner", headers={"Authorization": f"Bearer {r['token']}"}).json()
+    assert s["token"].startswith("rly_sess_") and s["owner"]
+    phone = Authenticator()
+    H = {"Authorization": f"Bearer {s['token']}"}
+    c.post("/auth/passkey/register", headers=H, json=phone.create(c.post("/auth/passkey/register/options", headers=H).json(), "http://testserver"))
+    back = c.post("/auth/passkey/signin", json=phone.get(c.post("/auth/passkey/options").json(), "http://testserver", "kobby")).json()
+    assert back["handle"] == "kobby" and back["owner"]
+    assert c.post("/auth/session/owner", headers={"Authorization": f"Bearer {ADMIN}"}).status_code == 403   # people only

@@ -585,6 +585,12 @@ def mount(app, hub) -> None:
             c.execute("UPDATE passkeys SET count=?, last_used=? WHERE cred_id=?", (count, now(), k["cred_id"]))
         return hub.new_session(k["handle"])
 
+    @app.post("/auth/session/owner", include_in_schema=False)
+    def session_from_key(me: dict = Depends(auth)):
+        """A person who just made the hub theirs (or used their backup key) gets a normal sign-in session,
+        so the browser keeps a session that expires, not the key itself."""
+        return hub.new_session(person_of(me))
+
     @app.get("/auth/passkeys")
     def list_passkeys(me: dict = Depends(auth)):
         handle = person_of(me)
