@@ -1399,6 +1399,41 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
 
     import threading
     threading.Thread(target=sweeper, name="relay-session-sweep", daemon=True).start()
+
+    # ---------------------------------------------------------------- backups (no paid plan needed; see backup.py)
+    from . import backup as backup_mod
+
+    def nightly_backups():
+        time.sleep(300)                            # let a fresh deploy settle first
+        while True:
+            try:
+                made = backup_mod.nightly(store.dir, room=lambda n: media_mod.room(store.dir, n))
+                if made:
+                    log.info("backup written: %s", os.path.basename(made))
+            except Exception as e:                 # a backup that fails must never take the hub down
+                log.warning("backup failed: %s", e)
+            time.sleep(3600)
+
+    if os.environ.get("RELAY_BACKUPS", "1") != "0":
+        threading.Thread(target=nightly_backups, name="relay-backups", daemon=True).start()
+
+    @app.get("/backup", include_in_schema=False)
+    def download_backup(me: dict = Depends(auth)):
+        """The owner's copy, to keep off the server: everything except the media files themselves."""
+        need_admin(me)
+        if not media_mod.room(store.dir, os.path.getsize(store.db_path), keep=0.02):
+            raise HTTPException(507, "the hub is nearly full")
+        fd, path = tempfile.mkstemp(dir=store.tmp, suffix=".zip")
+        os.close(fd)
+        try:
+            backup_mod.make_zip(store.dir, path)
+        except BaseException:
+            os.remove(path)
+            raise
+        from starlette.background import BackgroundTask
+        return FileResponse(path, media_type="application/zip",
+                            filename=time.strftime("relay-backup-%Y-%m-%d.zip", time.gmtime()),
+                            headers={"Cache-Control": "no-store"}, background=BackgroundTask(os.remove, path))
     app.state.sweep = sweep
 
     @app.post("/subscriptions")

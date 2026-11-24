@@ -214,6 +214,14 @@ On Railway: root directory `/relay` (built from `relay/Dockerfile`), a volume at
 deploys check `/health/live` and go from `master`. `/health` is for monitors: it answers 503
 when less than 5% of the disk is free. New files are refused below 15% free.
 
+**Backups, no paid plan needed.** Every night the hub writes a copy of its database to `/data/backups`
+and keeps the last 7. That undoes a bad deploy or a damaged database. The owner can also press
+**Download a backup** in Me (`GET /backup`) and keep that copy off the server: it survives losing the
+volume. Each backup is a zip of `relay.db` and `hub_secret`. Media files aren't in it. To restore,
+stop the hub, put both files in `/data`, and start it again. If you set `RELAY_SECRET_KEY` or
+`RELAY_VAULT_KEY`, keep those too. The zip opens everything on the hub, so keep it as private as a
+password. `RELAY_BACKUPS=0` turns the nightly copies off.
+
 | Variable | |
 |---|---|
 | `RELAY_ADMIN_TOKEN` | claims the hub, once. Keep it in Railway's variables; changing it later loses nothing. |

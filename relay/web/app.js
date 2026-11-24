@@ -1161,7 +1161,32 @@ async function meScreen() {
       h("button", { class: "door press", type: "button", onclick: () => nav("me/keys") },
         keyOrb("", 40), h("span", { class: "grow" }, h("b", { text: "Keys" }),
           h("span", { text: "Websites your agents use, without seeing the key" })), chev()),
+      ME.owner ? h("button", { class: "door press", type: "button", onclick: (e) => saveBackup(e.currentTarget) },
+        backupOrb(40), h("span", { class: "grow" }, h("b", { text: "Download a backup" }),
+          h("span", { text: "Keep it somewhere safe" }))) : null,
       rows, h("button", { class: "btn danger press", type: "button", onclick: userSignOut }, "Sign out")));
+}
+function backupOrb(size) {          // Relay's half, and a copy coming down to you
+  return h("span", { class: "morb", style: `--s:${size}px`, "aria-hidden": "true" },
+    h("span", { class: "mh l" }, svg("0 0 24 24", [{ d: "M12 5v10m-4.5-4.5L12 15l4.5-4.5M6 19h12", fill: "none", stroke: "currentColor",
+      "stroke-width": "2.2", "stroke-linecap": "round", "stroke-linejoin": "round" }])),
+    h("span", { class: "mh r dark" }, h("i", { class: "mk" })));
+}
+async function saveBackup(btn) {
+  const label = btn.querySelector("b"), was = label.textContent;
+  btn.disabled = true; label.textContent = "Preparing…";
+  try {
+    const r = await fetch("/backup", { headers: { Authorization: "Bearer " + KEY }, cache: "no-store" });
+    if (!r.ok) throw new Error(r.status === 507 ? "The hub is nearly full" : "Couldn't make a backup");
+    const url = URL.createObjectURL(await r.blob());
+    const a = h("a", { href: url, download: `relay-backup-${new Date().toISOString().slice(0, 10)}.zip` });
+    document.body.append(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 10000);
+    label.textContent = "Saved";
+  } catch (e) {
+    label.textContent = e.message;
+  }
+  setTimeout(() => { label.textContent = was; btn.disabled = false; }, 2500);
 }
 
 // ------------------------------------------------------------------ connected apps: two halves per connection
