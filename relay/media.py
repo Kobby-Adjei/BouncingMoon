@@ -9,7 +9,8 @@ The hub does the watching once, when the media arrives, so no agent has to:
          a copy every browser plays (H.264/AAC MP4) and a poster frame
   audio  specs, a timed transcript, speech/silence, loudness, a copy every browser plays
   image  location and other metadata stripped (the original with it is not kept), a preview an agent
-         can look at
+         can look at. JPEG and PNG lose only the metadata blocks: the pixels stay bit-for-bit the same,
+         so the exact photo can be posted. Other formats are re-saved without metadata.
   other  kept as a download (never shown inline: a file could be a web page)
 
 Agents get a short card in the conversation and can look closer with view_media: the contact sheet or
@@ -26,6 +27,7 @@ import hashlib
 import hmac
 import html
 import json
+import mimetypes
 import os
 import re
 import secrets
@@ -34,6 +36,7 @@ import subprocess
 import threading
 import time
 import uuid
+import urllib.parse
 from typing import Any, Callable, Optional
 
 from fastapi import Depends, HTTPException, Query, Request
@@ -121,6 +124,101 @@ def label_font() -> Optional[str]:
 
 def _run(cmd: list, timeout: float) -> subprocess.CompletedProcess:
     return captions._run(cmd, timeout)
+
+
+# ---------------------------------------------------------------- lossless metadata removal
+# A photo's location, camera and time live in labelled blocks beside the pixels. Cutting those blocks
+# out (instead of re-saving the picture) keeps every pixel exactly as it was, so the clean copy is the
+# one to post. Only what a picture needs to look right is kept: in a JPEG the JFIF header, the colour
+# profile, Adobe's colour flag, and the orientation (rewritten as a one-entry EXIF block, so a phone
+# photo isn't shown sideways); in a PNG everything but its text, time and EXIF chunks.
+def _orientation(exif: bytes) -> int:
+    """The EXIF orientation (1-8) from an APP1 'Exif' payload, or 0."""
+    try:
+        t = exif[6:]
+        le = t[:2] == b"II"
+        if not le and t[:2] != b"MM":
+            return 0
+        u16 = lambda b: int.from_bytes(b, "little" if le else "big")
+        ifd = int.from_bytes(t[4:8], "little" if le else "big")
+        for i in range(u16(t[ifd:ifd + 2])):
+            e = t[ifd + 2 + 12 * i: ifd + 14 + 12 * i]
+            if u16(e[0:2]) == 0x0112:
+                v = u16(e[8:10])
+                return v if 1 <= v <= 8 else 0
+    except (IndexError, ValueError):
+        return 0
+    return 0
+
+
+def _exif_orientation_block(v: int) -> bytes:
+    body = (b"Exif\0\0" + b"MM\0\x2a" + (8).to_bytes(4, "big") + (1).to_bytes(2, "big")
+            + (0x0112).to_bytes(2, "big") + (3).to_bytes(2, "big") + (1).to_bytes(4, "big")
+            + v.to_bytes(2, "big") + b"\0\0" + (0).to_bytes(4, "big"))
+    return b"\xff\xe1" + (len(body) + 2).to_bytes(2, "big") + body
+
+
+def strip_jpeg(data: bytes) -> Optional[bytes]:
+    """The same JPEG without its metadata blocks, or None if it isn't a JPEG this can walk."""
+    if data[:2] != b"\xff\xd8":
+        return None
+    out, i, turn = [b"\xff\xd8"], 2, 0
+    while i + 4 <= len(data):
+        if data[i] != 0xFF:
+            return None
+        marker = data[i + 1]
+        if marker == 0xFF:                      # fill byte
+            i += 1
+            continue
+        if marker == 0xDA:                      # start of scan: the picture itself, copied untouched
+            if turn > 1:                        # after the JFIF header, which must come first
+                out.insert(2 if len(out) > 1 and out[1][:2] == b"\xff\xe0" else 1, _exif_orientation_block(turn))
+            out.append(data[i:])
+            return b"".join(out)
+        if 0xD0 <= marker <= 0xD7 or marker == 0x01:
+            out.append(data[i:i + 2]); i += 2
+            continue
+        n = int.from_bytes(data[i + 2:i + 4], "big")
+        if n < 2 or i + 2 + n > len(data):
+            return None
+        seg, payload = data[i:i + 2 + n], data[i + 4:i + 2 + n]
+        if marker == 0xE1 and payload.startswith(b"Exif\0\0"):
+            turn = turn or _orientation(payload)
+        keep = (marker < 0xE0 and marker != 0xFE) \
+            or (marker == 0xE0 and payload.startswith(b"JFIF\0")) \
+            or (marker == 0xE2 and payload.startswith(b"ICC_PROFILE\0")) \
+            or (marker == 0xEE and payload.startswith(b"Adobe"))
+        if keep:
+            out.append(seg)
+        i += 2 + n
+    return None
+
+
+# types the exact-file link may say out loud; anything else (HTML, SVG, ...) is served as a plain download
+EXACT_TYPES = {"video/mp4", "video/quicktime", "video/webm", "video/x-matroska", "audio/mpeg", "audio/mp4",
+               "audio/aac", "audio/wav", "audio/x-wav", "audio/ogg", "audio/flac", "image/jpeg", "image/png",
+               "image/webp", "image/gif", "image/heic", "image/heif"}
+
+PNG_DROP = {b"tEXt", b"iTXt", b"zTXt", b"tIME", b"eXIf"}
+
+
+def strip_png(data: bytes) -> Optional[bytes]:
+    """The same PNG without its text, time and EXIF chunks, or None if it isn't a PNG this can walk."""
+    if data[:8] != b"\x89PNG\r\n\x1a\n":
+        return None
+    out, i = [data[:8]], 8
+    while i + 12 <= len(data):
+        n = int.from_bytes(data[i:i + 4], "big")
+        kind = data[i + 4:i + 8]
+        end = i + 12 + n
+        if end > len(data):
+            return None
+        if kind not in PNG_DROP:
+            out.append(data[i:end])
+        i = end
+        if kind == b"IEND":
+            return b"".join(out)
+    return None
 
 
 def _ff(timeout: float, *args) -> subprocess.CompletedProcess:
@@ -366,8 +464,10 @@ class Media:
             return [r["media"] for r in c.execute("SELECT media FROM message_media WHERE msg=? ORDER BY rowid", (msg_id,))]
 
     def download_link(self, mid: str, seconds: float = LINK_SECONDS) -> str:
-        """A direct link to the exact file (photos without their location data), for a browser or a tool."""
-        return self.link(mid, seconds) + "/original"
+        """A direct link to the exact file (photos without their location data), for a browser or a tool.
+        It ends in the file's name, since some posting services want a URL that ends in .mp4."""
+        name = safe_name(self.row(mid)["name"] or "file")
+        return self.link(mid, seconds) + "/original/" + urllib.parse.quote(name, safe="")
 
     def from_file(self, by: str, path: str, name: str) -> dict:
         aid, size = self._store(path, name, by, None, "upload", "application/octet-stream")
@@ -798,12 +898,18 @@ class Media:
         """Re-encode without metadata: location, camera and time never leave the hub. Only the clean copy is kept."""
         self._set(mid, stage="removing location data")
         with open(src, "rb") as f:
-            png = f.read(8).startswith(b"\x89PNG")
+            raw = f.read() if os.path.getsize(src) <= 200 * 2 ** 20 else f.read(8)
+        png = raw.startswith(b"\x89PNG")
         clean = os.path.join(work, "clean.png" if png else "clean.jpg")
-        try:
-            _ff(120, "-i", src, "-map_metadata", "-1", "-frames:v", "1", *([] if png else ["-q:v", "2"]), clean)
-        except RuntimeError:
-            raise MediaError("The hub can't read this image format. Send it as JPEG or PNG.") from None
+        exact = (strip_png(raw) if png else strip_jpeg(raw)) if len(raw) > 8 else None
+        if exact is not None:                   # pixels untouched: only the metadata blocks are gone
+            with open(clean, "wb") as f:
+                f.write(exact)
+        else:
+            try:
+                _ff(120, "-i", src, "-map_metadata", "-1", "-frames:v", "1", *([] if png else ["-q:v", "2"]), clean)
+            except RuntimeError:
+                raise MediaError("The hub can't read this image format. Send it as JPEG or PNG.") from None
         dims = _run(["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=width,height",
                      "-of", "json", clean], 60)
         st = (json.loads(dims.stdout).get("streams") or [{}])[0]
@@ -814,7 +920,7 @@ class Media:
         name = (self.row(mid)["name"] or "image")
         clean_id = self._keep(clean, os.path.splitext(name)[0] + (".png" if png else ".jpg"), by, None, "image",
                               "image/png" if png else "image/jpeg")
-        d = {"width": w, "height": h, "stripped": True}
+        d = {"width": w, "height": h, "stripped": True, "exact_pixels": exact is not None}
         self._set(mid, status="ready", stage=None, digest=json.dumps(d), artifact=clean_id, playable=clean_id,
                   mime="image/png" if png else "image/jpeg", size=os.path.getsize(self.store.blob_path(clean_id)),
                   preview=self._keep(prev, "preview.jpg", by, clean_id, "preview", "image/jpeg"))
@@ -1013,18 +1119,28 @@ def mount(app, hub, media: Media) -> dict:
         return serve(token, "file", bool(download))
 
     @app.get("/m/{token}/original", include_in_schema=False)
-    def view_original(token: str):
+    @app.get("/m/{token}/original/{filename}", include_in_schema=False)
+    def view_original(token: str, filename: Optional[str] = None):
         """The exact file as it was shared (a photo: the copy without location data), always as a download.
-        Videos and other files are available at once; a photo only once its location data is gone."""
+        Videos and other files are available at once; a photo only once its location data is gone.
+        Pictures, video and audio carry their real type, so a posting service that fetches the link
+        (Instagram, TikTok and others take a public URL) accepts it; the name on the end is cosmetic,
+        for services that want a URL ending in .mp4. Anything else stays a plain download."""
         r = opened(token)
         if r["status"] not in ("ready", "failed") and (r["kind"] in (None, "image")):
             raise HTTPException(409, "Still being prepared. Try again in a minute.")
         path = media.blob(r["artifact"])
         if not path:
             raise HTTPException(404, "not found")
-        return FileResponse(path, media_type="application/octet-stream", filename=r["name"] or "file",
-                            content_disposition_type="attachment",
-                            headers={**headers(), "Cache-Control": "private, max-age=3600"})
+        with media.store.ro() as c:
+            a = c.execute("SELECT mime FROM artifacts WHERE id=?", (r["artifact"],)).fetchone()
+        mime = (a and a["mime"]) or r["mime"] or ""
+        if mime not in EXACT_TYPES and r["kind"] in ("video", "audio", "image"):
+            mime = mimetypes.guess_type(r["name"] or "")[0] or mime      # e.g. a phone's .mov: video/quicktime
+        return FileResponse(path, media_type=mime if mime in EXACT_TYPES else "application/octet-stream",
+                            filename=r["name"] or "file", content_disposition_type="attachment",
+                            headers={**headers(), "Cache-Control": "private, max-age=3600",
+                                     "Digest": "sha-256=" + base64.b64encode(bytes.fromhex(r["artifact"])).decode()})
 
     @app.get("/m/{token}/{which}", include_in_schema=False)
     def view_part(token: str, which: str):

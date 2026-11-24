@@ -148,8 +148,10 @@ TOOLS = [
         "title": "Get a message's files",
         "description": "Get the files attached to a message (by its id from check_replies): videos, pictures, "
                        "audio, documents. For each one you get a DIRECT DOWNLOAD LINK to the exact file (open it in a "
-                       "browser or download it with any tool; no key needed; works for 7 days), a viewer link, and what "
-                       "the hub saw in it. Use this when you need the actual file, e.g. to upload it somewhere.",
+                       "browser or download it with any tool; no key needed; works for 7 days), its sha256 fingerprint, a "
+                       "viewer link, and what the hub saw in it. Use this when you need the actual file, e.g. to upload "
+                       "it somewhere or pass its URL to a posting tool. Photos arrive with location data removed and "
+                       "every pixel unchanged.",
         "inputSchema": {"type": "object", "properties": {
             "message_id": {"type": "integer", "description": "The message the files are attached to"}},
             "required": ["message_id"], "additionalProperties": False},
@@ -495,14 +497,17 @@ def mount(app, hub) -> None:
             m = hub.media.get(i)
             if m["revoked"]:
                 continue
+            sha = hub.media.row(i)["artifact"]
             f = {"id": i, "name": m["name"], "kind": m["kind"], "size": m["size"], "status": m["status"],
-                 "download": hub.media.download_link(i), "view": hub.media.link(i)}
+                 "sha256": sha, "download": hub.media.download_link(i), "view": hub.media.link(i)}
             files.append(f)
             lines.append(hub.media.card(m, f["view"]))
             lines.append(f"   Download the exact file: {f['download']}"
                          + ("  (still being prepared: try the link in a minute)" if m["status"] in ("queued", "working") else ""))
+            lines.append(f"   sha256 {sha}: check it after downloading; the same number means the same bytes")
         lines.append("The links work without a key for 7 days. Anyone with a link can open it, so share them only "
-                     "where they need to go.")
+                     "where they need to go. To post somewhere that takes a public video or image URL (Instagram, "
+                     "TikTok and others fetch it themselves), pass the download link as it is.")
         return "\n".join(lines), {"message": mid, "files": files}
 
     def tool_view_media(me, args, session=None):

@@ -254,21 +254,29 @@ def test_get_files_gives_direct_links_to_the_exact_files_on_a_message(tmp_path, 
     res = ok(call(c, t["agent"], "get_files", {"message_id": msg["id"]}, "A"))
     got = res["structuredContent"]["files"]
     assert [f["name"] for f in got] == ["clip.mp4", "photo.jpg", "banner.png"]
-    assert all(f["status"] == "ready" and f["download"].endswith("/original") for f in got)
+    # the link ends in the file's name (some posting services want a URL ending in .mp4)
+    assert all(f["status"] == "ready" and f["download"].endswith("/original/" + f["name"]) for f in got)
     assert "Download the exact file: https://hub.example/m/" in res["content"][0]["text"]
     fetch = lambda f: c.get(path_of(f["download"]))
     video = fetch(got[0])
     assert video.status_code == 200 and video.content == (files / "clip.mp4").read_bytes()     # bit for bit
     assert video.headers["content-disposition"].startswith('attachment; filename="clip.mp4"')
+    assert video.headers["content-type"] == "video/mp4"                  # its real type, for posting services
+    assert got[0]["sha256"] == hashlib.sha256(video.content).hexdigest() and "sha256 " in res["content"][0]["text"]
     photo = fetch(got[1]).content
     assert photo[:3] == b"\xff\xd8\xff" and b"GPS 42.2411" not in photo                     # location gone
+    assert fetch(got[1]).headers["content-type"] == "image/jpeg"
+    plain = (files / "plain.jpg").read_bytes()               # only metadata blocks were cut: the picture is the same bytes
+    assert photo[photo.index(b"\xff\xda"):] == plain[plain.index(b"\xff\xda"):]
     banner = tmp_path / "got.png"
     banner.write_bytes(fetch(got[2]).content)
     pixels = lambda p: subprocess.run(["ffmpeg", "-loglevel", "error", "-i", str(p), "-f", "md5", "-"],
                                       capture_output=True, text=True).stdout
     assert pixels(banner) == pixels(tmp_path / "banner.png")                                 # every pixel the same
     assert call(c, t["outsider"], "get_files", {"message_id": msg["id"]}, "o")["isError"]
-    assert c.get(path_of(got[0]["download"])[:-12] + "AAAA/original").status_code == 404     # tampered link
+    token = path_of(got[0]["download"]).split("/")[2]
+    assert c.get(f"/m/{token[:-4]}AAAA/original/clip.mp4").status_code == 404                # tampered link
+    assert c.get(f"/m/{token}/original").content == video.content                            # the short form too
 
 
 def test_old_style_attachments_show_up_in_check_replies(hub, files):
@@ -278,3 +286,29 @@ def test_old_style_attachments_show_up_in_check_replies(hub, files):
            json={"channel": "direct", "text": "here", "mentions": ["claude"], "artifacts": [art]})
     text = ok(call(c, t["claude"], "check_replies", session="A"))["content"][0]["text"]
     assert " m_" in text and "clip.mp4" in text and "Get the file: get_files" in text
+
+
+def test_metadata_is_cut_from_photos_without_touching_a_pixel(files):
+    jpg = (files / "plain.jpg").read_bytes()
+    seg = lambda marker, body: marker + (len(body) + 2).to_bytes(2, "big") + body
+    # a phone photo held sideways: orientation 6 and a location, little-endian EXIF, plus an XMP block
+    exif = (b"Exif\x00\x00II*\x00\x08\x00\x00\x00" + (2).to_bytes(2, "little")
+            + (0x0112).to_bytes(2, "little") + (3).to_bytes(2, "little") + (1).to_bytes(4, "little") + (6).to_bytes(4, "little")
+            + (0x8825).to_bytes(2, "little") + (4).to_bytes(2, "little") + (1).to_bytes(4, "little") + (99).to_bytes(4, "little")
+            + b"\x00\x00\x00\x00GPS 42.2411")
+    xmp = b"http://ns.adobe.com/xap/1.0/\x00<x:xmpmeta>GPS 42.2411</x:xmpmeta>"
+    icc = b"ICC_PROFILE\x00\x01\x01fake-profile"
+    phone = jpg[:2] + seg(b"\xff\xe1", exif) + seg(b"\xff\xe1", xmp) + seg(b"\xff\xe2", icc) + jpg[2:]
+    out = M.strip_jpeg(phone)
+    assert b"GPS" not in out and b"xmpmeta" not in out and b"fake-profile" in out      # colour profile kept
+    assert M._orientation(out[out.index(b"Exif"):]) == 6                               # still the right way up
+    start = lambda b: b.index(b"\xff\xda")
+    assert out[start(out):] == jpg[start(jpg):]                                         # the picture itself: same bytes
+    assert M.strip_jpeg(b"not a jpeg") is None and M.strip_jpeg(jpg[:40]) is None
+    # PNG: text, time and EXIF chunks go; everything else is copied as it was
+    import struct, zlib
+    chunk = lambda k, d: struct.pack(">I", len(d)) + k + d + struct.pack(">I", zlib.crc32(k + d))
+    head = chunk(b"IHDR", struct.pack(">IIBBBBB", 1, 1, 8, 0, 0, 0, 0))
+    body = chunk(b"IDAT", zlib.compress(b"\x00\x7f")) + chunk(b"IEND", b"")
+    png = b"\x89PNG\r\n\x1a\n" + head + chunk(b"tEXt", b"Comment\x00GPS 42.2411") + chunk(b"eXIf", b"MM\x00*") + body
+    assert M.strip_png(png) == b"\x89PNG\r\n\x1a\n" + head + body
