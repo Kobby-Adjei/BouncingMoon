@@ -326,7 +326,7 @@ function known(r) {
   if (z !== undefined) return false;
   if (top === "agents") return !y || !!x && (y === "wake" || ONE_TIME.has(y));
   if (top === "activity") return !x || (x === "new" && !y) || (x === "to" && !!y) || (/^\d+$/.test(x) && !y);
-  if (top === "add") return isOwner() && !y;
+  if (top === "add") return isOwner() && (!y || (y === "withkey" && !!x));
   if (top === "me") return (!x || (x === "apps" && !y) || (x === "keys" && (!y || y === "new" || /^k_[0-9a-f]{12}$/.test(y))))
     && !!ME && ME.role !== "admin";
   if (top === "approve") return !!ME && ME.role === "human" && /^c_[0-9a-f]{16}$/.test(x || "") && !y;
@@ -334,7 +334,7 @@ function known(r) {
 }
 function parentOf(r) {
   const p = r.split("/");
-  if (p[0] === "add") return p.length > 1 ? "add" : (listPane && listPane.dataset.tab) || "agents";
+  if (p[0] === "add") return p.length > 2 ? `add/${p[1]}` : p.length > 1 ? "add" : (listPane && listPane.dataset.tab) || "agents";
   if (p[0] === "me") return p[2] ? "me/keys" : p[1] ? "me" : (WIDE && listPane && listPane.dataset.tab) || "agents";
   if (p[0] === "approve") return "activity";
   if (p[0] === "activity" && p[1] === "to") return "activity";
@@ -357,7 +357,11 @@ function screenFor(r) {
     if (p[1] === "to") return [thread, null, [p[2]]];
     return [thread, Number(p[1]), payloads.get(r)];
   }
-  if (p[0] === "add") { const a = p[1] && APPS.find((x) => x.id === p[1]); return a ? [addName, a] : [addPick]; }
+  if (p[0] === "add") {
+    const a = p[1] && APPS.find((x) => x.id === p[1]);
+    if (!a) return [addPick];
+    return a.style === "allow" && p[2] !== "withkey" ? [allowGuide, a] : [addName, a];
+  }
   if (p[0] === "me" && p[1] === "apps") return [appsScreen];
   if (p[0] === "me" && p[1] === "keys") return !p[2] ? [keysScreen] : p[2] === "new" ? [keyNew] : [keyDetail, p[2]];
   if (p[0] === "approve") return [approveScreen, p[1]];
@@ -766,16 +770,80 @@ function emptyHint(el) {
 }
 
 // ------------------------------------------------------------------ add: pick the app
+// style "allow": paste Relay's address into the app, press Connect, then Allow (OAuth): no key anywhere.
+// `via` is the older way, kept under Advanced: a key to paste ("connector") or the helper ("invite").
 const APPS = [
-  { id: "claude_app", label: "Claude", sub: "app", provider: "claude", style: "connector", name: "claude" },
-  { id: "claude_code", label: "Claude Code", sub: "terminal", provider: "claude", style: "invite", connect: "claude-code", name: "claude-code" },
+  { id: "claude_app", label: "Claude", sub: "app", provider: "claude", style: "allow", via: "connector", name: "claude" },
+  { id: "chatgpt", label: "ChatGPT", sub: "app", provider: "openai", style: "allow", via: "connector", name: "chatgpt" },
+  { id: "grok", label: "Grok", sub: "app", provider: "grok", style: "allow", via: "connector", name: "grok" },
+  { id: "muse", label: "Muse", sub: "Meta", provider: "muse", style: "allow", via: "connector", name: "muse" },
+  { id: "claude_code", label: "Claude Code", sub: "terminal", provider: "claude", style: "allow", via: "invite", connect: "claude-code", name: "claude-code" },
   { id: "codex", label: "Codex", sub: "CLI · app", provider: "codex", style: "invite", connect: "codex", name: "codex" },
-  { id: "muse", label: "Muse", sub: "Meta", provider: "muse", style: "connector", name: "muse" },
-  { id: "gemini", label: "Gemini CLI", sub: "terminal", provider: "gemini", style: "connector", name: "gemini" },
-  { id: "cursor", label: "Cursor", sub: "editor", provider: "cursor", style: "connector", name: "cursor" },
-  { id: "other", label: "Other", sub: "any MCP app", provider: null, style: "connector", name: "agent" },
+  { id: "gemini", label: "Gemini CLI", sub: "terminal", provider: "gemini", style: "allow", via: "connector", name: "gemini" },
+  { id: "cursor", label: "Cursor", sub: "editor", provider: "cursor", style: "allow", via: "connector", name: "cursor" },
+  { id: "other", label: "Other", sub: "any MCP app", provider: null, style: "allow", via: "connector", name: "agent" },
   { id: "person", label: "Person", sub: "teammate", provider: null, style: "person", name: "" },
 ];
+
+// Add an app the way you add Gmail: Relay's address, Connect, Allow. The Allow page names the agent.
+function allowGuide(a) {
+  const tk = ticket();
+  const url = `${ORIGIN}/mcp`;
+  const say = (...parts) => h("span", null, ...parts);
+  const b = (t) => h("b", { text: t });
+  const pill = () => { const btn = h("button", { class: "copyurl press", type: "button", title: "Copy" }, h("span", { class: "u", text: url }), h("span", { class: "c", text: "Copy" }));
+    btn.addEventListener("click", () => copy(url, btn.querySelector(".c"), "Copy")); return btn; };
+  const allow = say("A Relay page opens: press ", b("Allow"), ". You can pick the agent's name there.");
+  const STEPS = {
+    claude_app: [[say("In Claude: ", b("Settings → Connectors → Add custom connector"), ". Name it Relay and paste:"), pill()],
+                 [say("Press ", b("Add"), ", then ", b("Connect"), ".")], [allow]],
+    chatgpt: [[say("In ChatGPT (paid plans): ", b("Settings → Plugins → + → Add custom MCP server"),
+                   ". Older menus: Settings → Connectors → Advanced → Developer mode, then Create.")],
+              [say("Name it Relay, choose ", b("OAuth"), ", and paste:"), pill()], [allow]],
+    grok: [[say("In Grok (paid plans): ", b("grok.com/connectors → New Connector → Custom"), ". Paste:"), pill()],
+           [say("Press ", b("Connect"), ".")], [allow]],
+    muse: [[say("Ask Muse to add a custom connector called Relay with this address:"), pill()],
+           [say("If a Relay page opens, press ", b("Allow"), ". If Muse asks for a key instead, use Advanced below.")]],
+    claude_code: [[say("In a terminal:"), copyBlock(`claude mcp add --transport http relay ${url}`, "Copy command")],
+                  [say("In Claude Code, run ", b("/mcp"), ", pick relay, then ", b("Authenticate"), ".")], [allow]],
+    gemini: [[say("In a terminal:"), copyBlock(`gemini mcp add --transport http relay ${url}`, "Copy command")],
+             [say("In Gemini CLI, run ", b("/mcp auth relay"), ".")], [allow]],
+    cursor: [[say("Merge into ", b("~/.cursor/mcp.json"), ":"), copyBlock(JSON.stringify({ mcpServers: { relay: { url } } }, null, 2))],
+             [say(b("Cursor Settings → MCP"), ": press ", b("Login"), " next to Relay.")], [allow]],
+    other: [[say("Add a remote MCP server (Streamable HTTP) with this address:"), pill()],
+            [say("When it asks you to sign in, a Relay page opens: press ", b("Allow"), ".")]],
+  };
+  const orb = miniOrb(a.provider, "relay", 88, [a.label, ""]);
+  orb.classList.add("keyorb");
+  orb.append(h("span", { class: "kseal" }, tick("sealtick")));
+  let status = stickyStatus(`Waiting for ${a.label}…`);
+  const list = h("ol", { class: "steps" }, ...STEPS[a.id].map((parts) => h("li", null, h("div", null, ...parts))));
+  const done = h("button", { class: "btn ghost press", type: "button", onclick: () => nav("me/apps", { replace: true }) }, "Done");
+  const adv = h("details", { class: "advanced" }, h("summary", { class: "press" }, "Advanced"),
+    h("div", { class: "stack tight", style: "padding-top:14px" },
+      h("p", { class: "hint", style: "margin:0", text: a.via === "invite"
+        ? "Instant replies: a small helper on that computer wakes Claude Code the moment a message lands."
+        : `If ${a.label} can't sign in, it can use a Relay key instead.` }),
+      h("button", { class: "btn ghost small press", type: "button", onclick: () => nav(`add/${a.id}/withkey`) },
+        a.via === "invite" ? "Set up instant replies" : "Use a key instead")));
+  const view = screen("allow", tk, h("div", { class: "hero" }, orb, h("h1", { class: "title", text: `Add Relay to ${a.label}` })),
+    h("div", { class: "stack" }, status, list, done, adv));
+  let seen = null;
+  const t = every(view, async () => {
+    try {
+      const conns = await api("GET", "/oauth/connections");
+      if (seen === null) { seen = new Set(conns.map((c) => c.id)); return; }
+      const fresh = conns.find((c) => !seen.has(c.id));
+      if (fresh) {
+        clearInterval(t);
+        if (listRefresh) listRefresh();
+        orb.classList.add("sealed");
+        const s2 = stickyStatus(`${fresh.app || a.label} is connected as ${fresh.agent}`, true); status.replaceWith(s2); status = s2;
+        done.classList.replace("ghost", "done");
+      }
+    } catch {}
+  }, 2500);
+}
 
 function addPick() {
   const grid = h("div", { class: "pick stagger" });
@@ -803,7 +871,7 @@ async function addName(a) {
     const handle = name.value.trim(); if (!handle) { err.textContent = "Give it a name."; return; }
     btn.disabled = true; err.textContent = "";
     try {
-      if (a.style === "connector") {
+      if ((a.style === "allow" ? a.via : a.style) === "connector") {
         const r = await api("POST", "/agents", { handle, provider: a.provider, role: "agent" });
         if (listRefresh) listRefresh();
         nav(`agents/${enc(r.handle)}/connect`, { data: { app: a, created: r } });
