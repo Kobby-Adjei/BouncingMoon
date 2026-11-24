@@ -758,6 +758,8 @@ class Media:
                     waiting = False
                 if not waiting and time.monotonic() - idle_since >= self.idle:
                     self.thread = None
+                    if self.transcriber:          # nothing left to listen to: give the speech model's memory back
+                        self.transcriber.release()
                     return
             if not waiting:
                 self.wake.wait(min(5.0, max(self.idle, 0.05)))
@@ -947,21 +949,99 @@ class Media:
 
 # --------------------------------------------------------------------------- pages and routes
 PAGE_CSS = """
-:root{--bg:#0f1115;--fg:#eef0f4;--muted:#9aa3b2;--card:#181b22;--line:#262b36;--accent:#7cc4ff;--on-accent:#0b1220}
-@media (prefers-color-scheme: light){:root{--bg:#f6f7f9;--fg:#14171d;--muted:#5b6472;--card:#fff;--line:#e2e5ea;--accent:#0a66c2;--on-accent:#fff}}
-*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);font:16px/1.5 system-ui,-apple-system,Segoe UI,Roboto,sans-serif}
-main{max-width:860px;margin:0 auto;padding:20px 16px 48px}h1{font-size:1.25rem;margin:0 0 4px;word-break:break-word}
-.meta{color:var(--muted);font-size:.9rem;margin-bottom:16px}.card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:14px;margin:14px 0}
-video,img.full{width:100%;max-height:75vh;border-radius:10px;background:#000;display:block}audio{width:100%}
-.sheet{width:100%;border-radius:8px}.t{display:flex;gap:10px;padding:4px 0;border-bottom:1px solid var(--line)}
-.t button{background:none;border:0;color:var(--accent);font:inherit;cursor:pointer;padding:0;min-width:3.6em;text-align:left}
-.btn{display:inline-block;background:var(--accent);color:var(--on-accent);border:0;border-radius:10px;padding:12px 18px;font-weight:600;text-decoration:none;font-size:1rem;cursor:pointer}
-.drop{border:2px dashed var(--line);border-radius:14px;padding:28px 16px;text-align:center}.bar{height:8px;background:var(--line);border-radius:4px;overflow:hidden;margin-top:8px}
-.bar>i{display:block;height:100%;width:0;background:var(--accent);transition:width .2s}.file{margin:10px 0}.small{color:var(--muted);font-size:.85rem}
+:root{--bg:#f6f4ef;--card:#fff;--ink:#18171d;--ink2:#6b6972;--ink3:#c4c1c9;--ghost:#a19ea8;--fill:rgba(24,23,29,.05);--accent:#4f44e0;
+ --accent-hover:#4338d0;--on-accent:#fff;--accent-soft:#e6e4fb;--glow:rgba(79,68,224,.16);--red:#c42838;--green:#22a45d;--seal:#22a45d;--grain:.07;--white-half:#fff;--edge:rgba(24,23,29,.08);
+ --ease:cubic-bezier(.22,.8,.24,1);--spring:cubic-bezier(.34,1.5,.55,1);--glide:cubic-bezier(.32,.72,0,1);
+ --font:-apple-system,BlinkMacSystemFont,"SF Pro Text","Inter","Segoe UI",system-ui,sans-serif;
+ --display:-apple-system,BlinkMacSystemFont,"SF Pro Display","Inter","Segoe UI",system-ui,sans-serif;color-scheme:light dark}
+@media (prefers-color-scheme:dark){:root{--bg:#111014;--card:#201f26;--ink:#f4f3f6;--ink2:#a3a1ab;--ink3:#45434c;--ghost:#6c6975;--fill:rgba(255,255,255,.07);
+ --accent:#9a93ff;--accent-hover:#aba5ff;--on-accent:#0e0d12;--accent-soft:#2b2944;--glow:rgba(154,147,255,.14);--red:#ff7076;--green:#46d58b;--grain:.05;--white-half:#f4f3f6;--edge:rgba(255,255,255,.16)}}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+html,body{margin:0;background:var(--bg);color:var(--ink);min-height:100%}
+body{font:16px/1.45 var(--font);-webkit-font-smoothing:antialiased;letter-spacing:-.012em;overflow-x:hidden}
+.grain{position:fixed;inset:0;width:100%;height:100%;pointer-events:none;opacity:var(--grain);z-index:0}
+.glow{position:fixed;left:50%;top:-140px;width:720px;height:560px;margin-left:-360px;pointer-events:none;
+ background:radial-gradient(closest-side,var(--glow),transparent);z-index:0}
+main{position:relative;z-index:1;min-height:100vh;display:flex;justify-content:center;
+ padding:max(40px,env(safe-area-inset-top)) max(20px,env(safe-area-inset-right)) 44px max(20px,env(safe-area-inset-left))}
+@keyframes rise{from{opacity:0;transform:translateY(12px)}to{opacity:1;transform:none}}
+@keyframes seal{0%{opacity:0;transform:scale(.2)}65%{opacity:1;transform:scale(1.12)}100%{opacity:1;transform:none}}
+.shell{width:100%;max-width:400px;min-width:0;display:flex;flex-direction:column;align-items:center;text-align:center;animation:rise .65s var(--ease) .1s both}
+.shell.wide{max-width:760px;align-items:stretch;text-align:left}
+.title{font:700 30px/1.08 var(--display);letter-spacing:-.04em;margin:0;text-wrap:balance;overflow-wrap:anywhere}
+.wide .title{font-size:26px;letter-spacing:-.035em}
+.lede{color:var(--ink2);margin:10px 0 0;text-wrap:pretty}
+.meta{color:var(--ink2);font-size:14px;margin:8px 0 0;overflow-wrap:anywhere}
+.foot{color:var(--ink2);font-size:12.5px;line-height:1.5;margin:34px 0 0;opacity:.8;text-wrap:pretty}
+/* Relay's mark: two halves that make a whole */
+.brand{display:flex;align-items:center;gap:9px;margin:0 0 22px;color:var(--ink2);font:600 13.5px var(--font);letter-spacing:-.01em}
+.mini{display:flex;width:22px;height:22px;gap:1.5px}.mini i{flex:1}
+.mini i:first-child{border-radius:99px 0 0 99px;background:var(--white-half);box-shadow:0 0 0 .5px rgba(24,23,29,.14),0 3px 6px -3px rgba(24,23,29,.35)}
+.mini i:last-child{border-radius:0 99px 99px 0;background:#18171d;display:grid;place-items:center;box-shadow:0 0 0 .5px var(--edge)}
+.mini i:last-child:after{content:"";width:4px;height:8px;border-radius:0 8px 8px 0;background:#f4f3f6;margin-right:4px}
+.orb{position:relative;width:92px;height:92px;display:flex;gap:6px;margin:0 0 26px;transition:gap .3s var(--glide)}
+.half{flex:1;display:grid;place-items:center;overflow:hidden;position:relative}
+.half.l{border-radius:999px 0 0 999px;border:1.5px dashed var(--ghost);border-right-style:solid;border-right-color:transparent;
+ transition:background-color .3s var(--ease),border-color .3s var(--ease),box-shadow .3s var(--ease)}
+.half.r{border-radius:0 999px 999px 0;background:#18171d;box-shadow:0 1px 0 rgba(255,255,255,.08) inset,0 14px 30px -14px rgba(24,23,29,.5),0 0 0 .5px var(--edge)}
+.half.r .mk{display:block;width:18px;height:36px;border-radius:0 36px 36px 0;background:#f4f3f6;margin-right:18px;transition:opacity .2s var(--ease)}
+.seal{position:absolute;left:50%;top:50%;width:46px;height:46px;margin:-23px 0 0 -23px;border-radius:50%;background:var(--seal);color:#fff;
+ display:grid;place-items:center;opacity:0;box-shadow:0 0 0 5px var(--bg),0 12px 26px -10px rgba(34,164,93,.6)}
+.seal svg{width:24px;height:24px}
+.orb.sealed{gap:0}.orb.sealed .half.l{background:var(--white-half);border-color:transparent;
+ box-shadow:0 1px 0 rgba(255,255,255,.6) inset,0 14px 30px -14px rgba(24,23,29,.35),0 0 0 .5px var(--edge)}
+.orb.sealed .mk{opacity:0}.orb.sealed .seal{animation:seal .45s var(--spring) .15s both}
+.note{font:500 17px/1.4 var(--display);letter-spacing:-.02em;color:var(--ink);margin:22px 0 0;overflow-wrap:anywhere;text-wrap:pretty}
+/* buttons: pills */
+.btn{appearance:none;display:flex;align-items:center;justify-content:center;gap:10px;width:100%;height:56px;padding:0 26px;border:0;border-radius:999px;
+ background:var(--accent);color:var(--on-accent);font:600 17px var(--font);letter-spacing:-.015em;cursor:pointer;text-decoration:none;
+ box-shadow:0 1px 0 rgba(255,255,255,.22) inset,0 12px 26px -12px var(--accent);transition:transform .45s var(--spring),background-color .2s,opacity .2s}
+.btn:hover{background:var(--accent-hover)}.btn:active{transform:scale(.96);transition:transform .12s var(--ease)}
+.btn svg{width:20px;height:20px;flex:none}
+.vh{position:absolute;width:1px;height:1px;opacity:0;overflow:hidden;clip-path:inset(50%)}
+.drop{width:100%;margin-top:30px;display:flex;flex-direction:column;align-items:center}
+.drop .btn:has(input:disabled){opacity:.5;pointer-events:none}.drop .btn:has(input:focus-visible){outline:2px solid var(--accent);outline-offset:3px}
+.hint{color:var(--ink2);font-size:13.5px;margin:12px 0 0}
+/* each file: name, a thin pill of progress, then its status */
+.files{width:100%;text-align:left}
+.file{margin-top:22px;animation:rise .45s var(--ease) both}
+.file>div:first-child{font-weight:600;font-size:15px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.bar{height:6px;border-radius:999px;background:var(--fill);overflow:hidden;margin-top:9px}
+.bar>i{display:block;height:100%;width:0;border-radius:999px;background:var(--accent);transition:width .2s,background-color .3s}
+.file.ok .bar>i{background:var(--green)}
+.small{color:var(--ink2);font-size:13px;margin-top:6px;overflow-wrap:anywhere}.file.bad .small{color:var(--red)}
+/* the viewer */
+.stage{margin-top:22px}
+video,img.full{display:block;width:100%;max-height:72vh;border-radius:20px;box-shadow:0 26px 50px -30px rgba(24,23,29,.55)}
+video{background:#000}img.full{object-fit:contain;background:var(--fill)}
+audio{display:block;width:100%}
+.wait{color:var(--ink2);margin:22px 0 0}
+.actions{margin-top:18px}.actions .btn{width:auto;display:inline-flex;height:52px;font-size:16.5px}
+.sect{margin-top:40px}
+.sect h2{font:700 20px/1.2 var(--display);letter-spacing:-.03em;margin:0 0 12px}
+.t{display:flex;gap:12px;align-items:baseline;padding:5px 0}
+.t span{min-width:0;overflow-wrap:anywhere}
+.t button{flex:none;appearance:none;border:0;border-radius:999px;background:var(--accent-soft);color:var(--accent);cursor:pointer;
+ font:600 13px/1 var(--font);font-variant-numeric:tabular-nums;padding:6px 10px;min-width:4.4em;text-align:center;transition:transform .3s var(--spring)}
+.t button:active{transform:scale(.94)}
+.sheet{display:block;width:100%;border-radius:14px}
+@media (max-width:520px){.actions .btn{display:flex;width:100%}.wide .title{font-size:24px}}
+@media (prefers-reduced-motion:reduce){*,*:before,*:after{animation-duration:.01ms!important;animation-delay:0s!important;transition-duration:.01ms!important}}
+:focus-visible{outline:2px solid var(--accent);outline-offset:3px}
 """
 
+# the paper texture, drawn inline: the pages' policy allows images only from the hub itself
+GRAIN_SVG = ("<svg class=grain aria-hidden=true xmlns='http://www.w3.org/2000/svg'><filter id=grain>"
+             "<feTurbulence type=fractalNoise baseFrequency='.85' numOctaves=3 stitchTiles=stitch /><feColorMatrix "
+             "values='0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 .55 0'/></filter><rect width='100%' height='100%' filter='url(#grain)'/></svg>")
+BRAND = "<div class=brand aria-hidden=true><span class=mini><i></i><i></i></span>Relay</div>"
+TICK = ("<svg viewBox='0 0 30 30' fill=none><path d='M8 15.5l4.6 4.6L22.5 10' stroke=currentColor stroke-width=3 "
+        "stroke-linecap=round stroke-linejoin=round /></svg>")
+DOWN = ("<svg viewBox='0 0 24 24' fill=none stroke=currentColor stroke-width=2 stroke-linecap=round stroke-linejoin=round aria-hidden=true>"
+        "<path d='M12 4v11M7 10.5l5 5 5-5M5 19.5h14'/></svg>")
+
 UPLOAD_JS = r"""
-const box=document.getElementById('files'),pick=document.getElementById('pick'),drop=document.getElementById('drop');
+const box=document.getElementById('files'),pick=document.getElementById('pick'),drop=document.getElementById('drop'),orb=document.getElementById('orb');
 const base=location.pathname;
 function row(f){const d=document.createElement('div');d.className='file';d.innerHTML='<div></div><div class="bar"><i></i></div><div class="small"></div>';
  d.children[0].textContent=f.name+' ('+(f.size/1048576).toFixed(1)+' MB)';box.appendChild(d);return d}
@@ -976,8 +1056,9 @@ async function send(f){const d=row(f),bar=d.querySelector('i'),msg=d.querySelect
   let off=s.received;while(off<f.size){msg.textContent='Uploading… '+Math.floor(100*off/f.size)+'%';bar.style.width=(100*off/f.size)+'%';
    const r=await j(base+'/'+s.file+'?offset='+off,{method:'PUT',body:f.slice(off,off+s.chunk)});off=r.received}
   bar.style.width='100%';msg.textContent='Finishing…';const m=await j(base+'/'+s.file+'/done',{method:'POST'});
-  msg.textContent='Sent ✓ Your agent has it now.'}catch(e){msg.textContent='Not sent: '+e.message}}
-async function all(list){pick.disabled=true;for(const f of list)await send(f);pick.disabled=false}
+  msg.textContent='Sent ✓ Your agent has it now.';d.classList.add('ok');return true}catch(e){msg.textContent='Not sent: '+e.message;d.classList.add('bad');return false}}
+async function all(list){if(!list.length)return;pick.disabled=true;orb.classList.remove('sealed');let good=true;
+ for(const f of list)good=(await send(f))&&good;pick.disabled=false;if(good)orb.classList.add('sealed')}   // both halves: the files are with the agent
 pick.addEventListener('change',()=>all([...pick.files]));
 drop.addEventListener('dragover',e=>{e.preventDefault()});drop.addEventListener('drop',e=>{e.preventDefault();all([...e.dataTransfer.files])});
 """
@@ -1002,7 +1083,7 @@ def page(title: str, body: str, nonce: str) -> str:
     return (f"<!doctype html><html lang=en><head><meta charset=utf-8><meta name=viewport content='width=device-width,initial-scale=1'>"
             f"<meta name=robots content=noindex><link rel=icon href='/icon.svg' type='image/svg+xml'>"
             f"<link rel=apple-touch-icon href='/apple-touch-icon.png'><title>{html.escape(title)}</title><style>{PAGE_CSS}</style></head>"
-            f"<body><main>{body}</main></body></html>")
+            f"<body>{GRAIN_SVG}<div class=glow aria-hidden=true></div><main>{body}</main></body></html>")
 
 
 def mount(app, hub, media: Media) -> dict:
@@ -1028,7 +1109,8 @@ def mount(app, hub, media: Media) -> dict:
             raise HTTPException(400, str(e)) from None
 
     def gone(msg="This link has expired. Ask for a new one.") -> HTMLResponse:
-        return HTMLResponse(page("Link expired", f"<h1>{html.escape(msg)}</h1>", ""), status_code=410, headers=headers())
+        return HTMLResponse(page("Link expired", f"<div class=shell>{BRAND}<h1 class=title>{html.escape(msg)}</h1></div>", ""),
+                            status_code=410, headers=headers())
 
     # ------------------------------------------------------------ agents (REST)
     @app.post("/media")
@@ -1073,25 +1155,26 @@ def mount(app, hub, media: Media) -> dict:
         bits = [x for x in (hms(d["duration"]) if d.get("duration") else None,
                             f"{d['width']}×{d['height']}" if d.get("width") else None,
                             size_text(m["size"]) if m.get("size") else None, f"shared by {m['from']}") if x]
-        out = [f"<h1>{name}</h1><div class=meta>{html.escape(' · '.join(bits))}</div>"]
+        out = [f"<div class='shell wide'>{BRAND}<h1 class=title>{name}</h1><p class=meta>{html.escape(' · '.join(bits))}</p>"]
         if m["status"] != "ready":
-            out.append("<div class=card>" + ("Still being processed. Refresh in a moment." if m["status"] in ("queued", "working")
-                                             else html.escape("Couldn't be processed: " + (m["error"] or ""))) + "</div>")
+            out.append("<p class=wait>" + ("Still being processed. Refresh in a moment." if m["status"] in ("queued", "working")
+                                           else html.escape("Couldn't be processed: " + (m["error"] or ""))) + "</p>")
         elif kind == "video" and m["has"]["playable"]:
             poster = f" poster='{base}/poster'" if m["has"]["poster"] else ""
-            out.append(f"<video controls playsinline preload=metadata src='{base}/file'{poster}></video>")
+            out.append(f"<div class=stage><video controls playsinline preload=metadata src='{base}/file'{poster}></video></div>")
         elif kind == "audio":
-            out.append(f"<audio controls preload=metadata src='{base}/file'></audio>")
+            out.append(f"<div class=stage><audio controls preload=metadata src='{base}/file'></audio></div>")
         elif kind == "image":
-            out.append(f"<img class=full src='{base}/file' alt='{name}'>")
+            out.append(f"<div class=stage><img class=full src='{base}/file' alt='{name}'></div>")
         if m["status"] == "ready":
-            out.append(f"<p><a class=btn href='{base}/original'>Download</a></p>")
+            out.append(f"<p class=actions><a class=btn href='{base}/original'>{DOWN}Download</a></p>")
         if d.get("transcript"):
             rows = "".join(f"<div class=t><button data-t='{x['t']}'>{clock(x['t'])}</button><span>{html.escape(x['text'])}</span></div>"
                            for x in d["transcript"])
-            out.append(f"<div class=card><b>Transcript</b>{rows}</div>")
+            out.append(f"<section class=sect><h2>Transcript</h2>{rows}</section>")
         if m["has"]["sheet"]:
-            out.append(f"<div class=card><b>Shots</b><img class=sheet src='{base}/sheet' alt='contact sheet'></div>")
+            out.append(f"<section class=sect><h2>Shots</h2><img class=sheet src='{base}/sheet' alt='contact sheet'></section>")
+        out.append("</div>")
         out.append(f"<script nonce='{nonce}'>{VIEW_JS}</script>")
         return HTMLResponse(page(m["name"] or "Media", "".join(out), nonce), headers=headers(nonce))
 
@@ -1158,14 +1241,16 @@ def mount(app, hub, media: Media) -> dict:
         except TimeoutError:
             return gone("This upload link has expired. Ask your agent for a new one.")
         nonce = secrets.token_urlsafe(12)
-        note = f"<div class=card>{html.escape(link['note'])}</div>" if link["note"] else ""
-        body = (f"<h1>Send files to {html.escape(link['handle'])}</h1>"
-                f"<div class=meta>Photos, videos, audio or any file, up to {media.max_upload // 2 ** 20} MB each. "
-                f"Big files keep going if your connection drops. This link works until "
-                f"{time.strftime('%b %d, %H:%M UTC', time.gmtime(link['expires']))}.</div>{note}"
-                f"<div id=drop class=drop><label class=btn>Choose files<input id=pick type=file multiple hidden></label>"
-                f"<p class=small>or drop them here</p></div><div id=files></div>"
-                f"<p class=small>Location data is removed from photos before anyone sees them.</p>"
+        note = f"<p class=note>“{html.escape(link['note'])}”</p>" if link["note"] else ""
+        body = (f"<div class=shell><div class=orb id=orb aria-hidden=true><span class='half l'></span>"
+                f"<span class='half r'><i class=mk></i></span><span class=seal>{TICK}</span></div>"
+                f"<h1 class=title>Send files to {html.escape(link['handle'])}</h1>"
+                f"<p class=lede>Photos, videos, audio or any file, up to {media.max_upload // 2 ** 20}&nbsp;MB each.</p>{note}"
+                f"<section id=drop class=drop><label class=btn>Choose files<input id=pick class=vh type=file multiple></label>"
+                f"<p class=hint>or drop them here</p></section><div id=files class=files aria-live=polite></div>"
+                f"<p class=foot>Big files keep going if your connection drops. Location data is removed from photos "
+                f"before anyone sees them. This link works until "
+                f"{time.strftime('%b %d, %H:%M UTC', time.gmtime(link['expires']))}.</p></div>"
                 f"<script nonce='{nonce}'>{UPLOAD_JS}</script>")
         return HTMLResponse(page(f"Send files to {link['handle']}", body, nonce), headers=headers(nonce))
 
