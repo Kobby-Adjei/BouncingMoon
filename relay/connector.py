@@ -270,6 +270,18 @@ def mount(app, hub) -> None:
             raise ToolError("That's you.")
         return handle
 
+    def hears(c, handle: str) -> bool:
+        """Whether Relay can wake this agent the moment a message lands: an Instant replies wake-up
+        (a routine or webhook), or a helper that is listening right now. Chat apps without one only
+        read Relay when their own user asks them to."""
+        try:
+            if c.execute("SELECT 1 FROM wakes WHERE handle=?", (handle,)).fetchone():
+                return True
+        except Exception:
+            pass
+        r = c.execute("SELECT listener_seen FROM agents WHERE handle=?", (handle,)).fetchone()
+        return bool(r and r["listener_seen"] and hub.now() - r["listener_seen"] < 150)
+
     def list_contacts(c, me: str) -> dict:
         saved = {r["address"]: r["name"] for r in
                  c.execute("SELECT name, address FROM contacts WHERE owner=? ORDER BY name", (me,))}
@@ -280,7 +292,9 @@ def mount(app, hub) -> None:
             people.append({"address": r["handle"], "name": saved.get(r["handle"]),
                            "kind": "person" if r["role"] == "human" else "agent",
                            "runs_on": r["provider"], "can_do": hub.loads(r["caps"], []),
-                           "status": status(r["last_seen"])})
+                           "status": status(r["last_seen"]),
+                           "answers": "when they open Relay" if r["role"] == "human"
+                           else "instantly" if hears(c, r["handle"]) else "only when its user asks it"})
         return {"you": me, "contacts": people}
 
     def save(c, me: str, name: str, address: str) -> dict:
@@ -311,7 +325,7 @@ def mount(app, hub) -> None:
         for p in out["contacts"]:
             label = f"{p['name']} ({p['address']})" if p["name"] else p["address"]
             bits = [p["kind"]] + ([f"runs on {p['runs_on']}"] if p["runs_on"] else []) \
-                + ([f"can do: {', '.join(p['can_do'])}"] if p["can_do"] else []) + [p["status"]]
+                + ([f"can do: {', '.join(p['can_do'])}"] if p["can_do"] else []) + [p["status"], f"answers {p['answers']}"]
             lines.append(f"- {label}: {', '.join(bits)}")
         if not out["contacts"]:
             lines.append("Nobody else is on this hub yet.")
@@ -376,10 +390,20 @@ def mount(app, hub) -> None:
                 return (f"{to} answered (message {ans['id']}):\n{ans['text']}",
                         {"status": "answered", "to": to, "asked": sent["id"], "answer": ans})
             if time.monotonic() >= deadline:
+                with store.ro() as c:
+                    instant = hears(c, to)
+                    row = c.execute("SELECT role, provider FROM agents WHERE handle=?", (to,)).fetchone()
+                from .providers import label
+                app = label(row["provider"]) if row and row["provider"] else "its app"
+                why = (f"{to} has been woken and should answer shortly." if instant else
+                       f"{to} is a person: they'll see it when they open Relay." if row and row["role"] == "human" else
+                       f"{to} can't be woken automatically: it only reads Relay when its user asks it to. Tell your "
+                       f"user: to get an answer, open {app} and say \"check my Relay messages\" (or set up Instant "
+                       f"replies for {to} in Relay, so it answers by itself).")
                 return (f"Sent to {to} as message {sent['id']}. No answer yet"
-                        f"{f' after {wait} s' if wait else ''}. To get the answer later, call check_replies "
-                        f"with thread {sent['thread']}.",
-                        {"status": "pending", "to": to, "asked": sent["id"]})
+                        f"{f' after {wait} s' if wait else ''}. {why} The answer will come back to this chat: call "
+                        f"check_replies with thread {sent['thread']} to get it.",
+                        {"status": "pending", "to": to, "asked": sent["id"], "wakes": instant})
             time.sleep(1.0)
 
     def start_conversation(c, me, text, channel, mentions, session, media=()) -> dict:

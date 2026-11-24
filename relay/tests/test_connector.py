@@ -244,3 +244,26 @@ def test_the_connector_shows_relays_logo(hub):
     ico = hub.get("/favicon.ico")
     assert ico.status_code == 200 and ico.content[:4] == b"\x00\x00\x01\x00" and ico.headers["content-type"] == "image/x-icon"
     assert hub.get("/apple-touch-icon.png").content[:4] == b"\x89PNG"
+
+
+def test_an_ask_nobody_can_wake_says_what_to_do(tmp_path):
+    """A chat app (claude.ai, Grok, ChatGPT) can't be woken from outside: it reads Relay only when its own
+    user asks it. Asking it must say so, and contacts must show who answers by itself."""
+    from fastapi.testclient import TestClient
+    from relay.hub import create_app
+    c = TestClient(create_app(data_dir=str(tmp_path), admin_token="adm", caption_threads=False, media_threads=False))
+    H = lambda t: {"Authorization": f"Bearer {t}", "X-Relay-Session": "grok-chat"}
+    claude = c.post("/agents", headers={"Authorization": "Bearer adm"}, json={"handle": "claude", "provider": "claude"}).json()["token"]
+    grok = c.post("/agents", headers={"Authorization": "Bearer adm"}, json={"handle": "grokguy", "provider": "grok"}).json()["token"]
+    call = lambda tok, name, args: c.post("/mcp", headers=H(tok), json={"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                                                                       "params": {"name": name, "arguments": args}}).json()["result"]
+    res = call(grok, "ask", {"to": "claude", "message": "hi claude", "wait_seconds": 0})
+    text = res["content"][0]["text"]
+    assert res["structuredContent"]["wakes"] is False
+    assert "can't be woken automatically" in text and "open Claude and say" in text and "Instant replies" in text
+    people = {p["address"]: p for p in call(grok, "contacts", {})["structuredContent"]["contacts"]}
+    assert people["claude"]["answers"] == "only when its user asks it"
+    # once Claude's helper is listening, it answers by itself
+    c.put("/agents/me/listener", headers={"Authorization": f"Bearer {claude}"}, json={"app": "claude-code"})
+    people = {p["address"]: p for p in call(grok, "contacts", {})["structuredContent"]["contacts"]}
+    assert people["claude"]["answers"] == "instantly"
