@@ -160,14 +160,25 @@ const LOGOS = {
   gemini: { src: "/logos/gemini.svg" }, copilot: { src: "/logos/copilot.svg" }, muse: { src: "/logos/muse.svg" },
   cursor: { d: "M22.106 5.68L12.5.135a.998.998 0 00-.998 0L1.893 5.68a.84.84 0 00-.419.726v11.186c0 .3.16.577.42.727l9.607 5.547a.999.999 0 00.998 0l9.608-5.547a.84.84 0 00.42-.727V6.407a.84.84 0 00-.42-.726zm-.603 1.176L12.228 22.92c-.063.108-.228.064-.228-.061V12.34a.59.59 0 00-.295-.51l-9.11-5.26c-.107-.062-.063-.228.062-.228h18.55c.264 0 .428.286.296.514z" }, openai: { d: "M9.205 8.658v-2.26c0-.19.072-.333.238-.428l4.543-2.616c.619-.357 1.356-.523 2.117-.523 2.854 0 4.662 2.212 4.662 4.566 0 .167 0 .357-.024.547l-4.71-2.759a.797.797 0 00-.856 0l-5.97 3.473zm10.609 8.8V12.06c0-.333-.143-.57-.429-.737l-5.97-3.473 1.95-1.118a.433.433 0 01.476 0l4.543 2.617c1.309.76 2.189 2.378 2.189 3.948 0 1.808-1.07 3.473-2.76 4.163zM7.802 12.703l-1.95-1.142c-.167-.095-.239-.238-.239-.428V5.899c0-2.545 1.95-4.472 4.591-4.472 1 0 1.927.333 2.712.928L8.23 5.067c-.285.166-.428.404-.428.737v6.898zM12 15.128l-2.795-1.57v-3.33L12 8.658l2.795 1.57v3.33L12 15.128zm1.796 7.23c-1 0-1.927-.332-2.712-.927l4.686-2.712c.285-.166.428-.404.428-.737v-6.898l1.974 1.142c.167.095.238.238.238.428v5.233c0 2.545-1.974 4.472-4.614 4.472zm-5.637-5.303l-4.544-2.617c-1.308-.761-2.188-2.378-2.188-3.948A4.482 4.482 0 014.21 6.327v5.423c0 .333.143.571.428.738l5.947 3.449-1.95 1.118a.432.432 0 01-.476 0zm-.262 3.9c-2.688 0-4.662-2.021-4.662-4.519 0-.19.024-.38.047-.57l4.686 2.71c.286.167.571.167.856 0l5.97-3.448v2.26c0 .19-.07.333-.237.428l-4.543 2.616c-.619.357-1.356.523-2.117.523zm5.899 2.83a5.947 5.947 0 005.827-4.756C22.287 18.339 24 15.84 24 13.296c0-1.665-.713-3.282-1.998-4.448.119-.5.19-.999.19-1.498 0-3.401-2.759-5.947-5.946-5.947-.642 0-1.26.095-1.88.31A5.962 5.962 0 0010.205 0a5.947 5.947 0 00-5.827 4.757C1.713 5.447 0 7.945 0 10.49c0 1.666.713 3.283 1.998 4.448-.119.5-.19 1-.19 1.499 0 3.401 2.759 5.946 5.946 5.946.642 0 1.26-.095 1.88-.309a5.96 5.96 0 004.162 1.713z" },
 };
-const PROVIDER_NAMES = { claude: "Claude", codex: "Codex", gemini: "Gemini", muse: "Muse", cursor: "Cursor",
-                         copilot: "Copilot", openai: "OpenAI", other: "Other", person: "Person" };
+LOGOS.grok = { d: "M9.27 15.29l7.978-5.897c.391-.29.95-.177 1.137.272.98 2.369.542 5.215-1.41 7.169-1.951 1.954-4.667 2.382-7.149 1.406l-2.711 1.257c3.889 2.661 8.611 2.003 11.562-.953 2.341-2.344 3.066-5.539 2.388-8.42l.006.007c-.983-4.232.242-5.924 2.75-9.383.06-.082.12-.164.179-.248l-3.301 3.305v-.01L9.267 15.292M7.623 16.723c-2.792-2.67-2.31-6.801.071-9.184 1.761-1.763 4.647-2.483 7.166-1.425l2.705-1.25a7.808 7.808 0 00-1.829-1A8.975 8.975 0 005.984 5.83c-2.533 2.536-3.33 6.436-1.962 9.764 1.022 2.487-.653 4.246-2.34 6.022-.599.63-1.199 1.259-1.682 1.925l7.62-6.815" };
+// Names and how apps are recognised come from the hub (/providers, relay/providers.py), so the web
+// app, the Allow page and the connector always agree. These defaults only cover a failed fetch.
+const PROVIDER_NAMES = { claude: "Claude", codex: "Codex", openai: "ChatGPT", grok: "Grok", gemini: "Gemini", cursor: "Cursor",
+                         copilot: "Copilot", muse: "Muse", other: "Other", person: "Person" };
+let APP_RX = [];
+async function loadProviders() {
+  try {
+    const table = await api("GET", "/providers", undefined, null);
+    APP_RX = table.map((p) => [p.id, new RegExp("(?<![a-z0-9])(" + p.words.map((w) => w.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|") + ")(?![a-z0-9])")]);
+    for (const p of table) PROVIDER_NAMES[p.id] = p.label;
+  } catch {}
+}
 function providerOf(a) {
   if (a.role === "human") return "person";
   if (a.provider) return a.provider;
-  const n = (a.handle || "").toLowerCase();
-  for (const p of ["claude", "codex", "gemini", "muse", "cursor", "copilot"]) if (n.startsWith(p)) return p;
-  if (n.startsWith("openai") || n.startsWith("chatgpt")) return "openai";
+  const n = (a.handle || "").toLowerCase();       // only a name that is the app's own: "claude", "claude-2"
+  for (const p of Object.keys(PROVIDER_NAMES)) if (n === p || n.startsWith(p + "-")) return p;
+  if (n === "chatgpt" || n.startsWith("chatgpt-")) return "openai";
   return "other";
 }
 function avatar(a, size = 40, withPresence = false) {
@@ -256,7 +267,6 @@ function screen(name, opts, ...kids) {
 const RAIL_ICONS = {
   agents: "M9 11a3.25 3.25 0 1 0 0-6.5A3.25 3.25 0 0 0 9 11zM3 19.5c.5-3.3 2.9-5.3 6-5.3s5.5 2 6 5.3M15.5 4.8a3.1 3.1 0 0 1 0 6M17.5 14.5c1.9.6 3.1 2.3 3.5 5",
   activity: ICONS.chat,
-  shorts: "M8 3h8a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2zM10.5 9.2v5.6l4.4-2.8z",
 };
 function railItem(tab, label) {
   return h("button", { class: "railitem press", type: "button", "data-tab": tab, title: label, onclick: () => nav(tab) },
@@ -267,8 +277,7 @@ function ensureShell() {
   rail = h("nav", { class: "rail", "aria-label": "Relay" },
     isOwner() ? h("button", { class: "railadd press", type: "button", title: "Add an agent or person", onclick: () => nav("add") },
       icon("plus", "2.4"), h("span", { class: "lbl", text: "Add" })) : null,
-    railItem("agents", "Agents"), railItem("activity", "Activity"),
-    ME && ME.role !== "admin" ? railItem("shorts", "Shorts") : null);
+    railItem("agents", "Agents"), railItem("activity", "Activity"));
   listPane = h("section", { class: "listpane", "aria-label": "List" });
   detailPane = h("section", { class: "detail", "aria-label": "Details" });
   shell = h("div", { class: "shell" }, rail, listPane, detailPane);
@@ -288,7 +297,7 @@ function paneScreen(name, tab, kids) {
     for (const b of rail.querySelectorAll(".railitem")) b.toggleAttribute("aria-current", b.dataset.tab === tab);
   } else {
     const up = parentOf(route);
-    if (up && up !== "agents" && up !== "activity" && up !== "shorts") view.prepend(backLabel());
+    if (up && up !== "agents" && up !== "activity") view.prepend(backLabel());
     detailPane.dataset.page = name;
     detailPane.replaceChildren(view);
   }
@@ -310,25 +319,25 @@ function scrollEnd(view, smooth = true) {
 // ------------------------------------------------------------------ routes
 //   agents · agents/<name> · agents/<name>/wake|connect|invite|key · add · add/<app>
 //   activity · activity/<id> · activity/new · activity/to/<name> · me · me/apps · me/keys[/new|/<id>]
-//   approve/<request> · shorts · shorts/<id>
+//   approve/<request>
 const ONE_TIME = new Set(["connect", "invite", "key"]);
 function known(r) {
   const [top, x, y, z] = r.split("/");
   if (z !== undefined) return false;
   if (top === "agents") return !y || !!x && (y === "wake" || ONE_TIME.has(y));
   if (top === "activity") return !x || (x === "new" && !y) || (x === "to" && !!y) || (/^\d+$/.test(x) && !y);
-  if (top === "add") return isOwner() && !y;
+  if (top === "add") return isOwner() && (!y || (y === "withkey" && !!x));
   if (top === "me") return (!x || (x === "apps" && !y) || (x === "keys" && (!y || y === "new" || /^k_[0-9a-f]{12}$/.test(y))))
     && !!ME && ME.role !== "admin";
   if (top === "approve") return !!ME && ME.role === "human" && /^c_[0-9a-f]{16}$/.test(x || "") && !y;
-  if (top === "shorts") return !!ME && ME.role !== "admin" && (!x || (/^c_[0-9a-f]{12}$/.test(x) && !y));
+  if (top === "ask") return isOwner() && /^ir_[0-9a-f]{12}$/.test(x || "") && !y;
   return false;
 }
 function parentOf(r) {
   const p = r.split("/");
-  if (p[0] === "add") return p.length > 1 ? "add" : (listPane && listPane.dataset.tab) || "agents";
+  if (p[0] === "add") return p.length > 2 ? `add/${p[1]}` : p.length > 1 ? "add" : (listPane && listPane.dataset.tab) || "agents";
   if (p[0] === "me") return p[2] ? "me/keys" : p[1] ? "me" : (WIDE && listPane && listPane.dataset.tab) || "agents";
-  if (p[0] === "approve") return "activity";
+  if (p[0] === "approve" || p[0] === "ask") return "activity";
   if (p[0] === "activity" && p[1] === "to") return "activity";
   return p.length > 1 ? p.slice(0, -1).join("/") : null;
 }
@@ -349,11 +358,15 @@ function screenFor(r) {
     if (p[1] === "to") return [thread, null, [p[2]]];
     return [thread, Number(p[1]), payloads.get(r)];
   }
-  if (p[0] === "shorts") return p[1] ? [shortView, p[1], payloads.get(r)] : [shortMaker];
-  if (p[0] === "add") { const a = p[1] && APPS.find((x) => x.id === p[1]); return a ? [addName, a] : [addPick]; }
+  if (p[0] === "add") {
+    const a = p[1] && APPS.find((x) => x.id === p[1]);
+    if (!a) return [addPick];
+    return a.style === "allow" && p[2] !== "withkey" ? [allowGuide, a] : [addName, a];
+  }
   if (p[0] === "me" && p[1] === "apps") return [appsScreen];
   if (p[0] === "me" && p[1] === "keys") return !p[2] ? [keysScreen] : p[2] === "new" ? [keyNew] : [keyDetail, p[2]];
   if (p[0] === "approve") return [approveScreen, p[1]];
+  if (p[0] === "ask") return [askScreen, p[1]];
   return [meScreen];
 }
 function call(slot, fn, ...args) {
@@ -370,10 +383,10 @@ function render(r) {
   drawMe();
   if (WIDE) {
     ensureShell();
-    const tab = p[0] === "activity" || p[0] === "agents" || p[0] === "shorts" ? p[0] : p[0] === "approve" ? "activity" : (listPane.dataset.tab || "agents");
+    const tab = p[0] === "activity" || p[0] === "agents" ? p[0] : p[0] === "approve" || p[0] === "ask" ? "activity" : (listPane.dataset.tab || "agents");
     if (listPane.dataset.tab !== tab || !listPane.firstChild) {
       listPane.dataset.tab = tab; listRefresh = null;
-      call("list", tab === "activity" ? activity : tab === "shorts" ? shortsList : agents);
+      call("list", tab === "activity" ? activity : agents);
     }
     call("detail", ...screenFor(r));
     markSelected();
@@ -422,7 +435,7 @@ wideQ.addEventListener("change", () => {
   render(route);
 });
 function goTab(fn) {
-  const tab = fn === activity ? "activity" : fn === shortsList ? "shorts" : "agents";
+  const tab = fn === activity ? "activity" : "agents";
   if (!booted) {
     booted = true;
     const st = history.state, r = location.hash.slice(1);
@@ -436,11 +449,9 @@ function goTab(fn) {
   nav(tab);
 }
 back.addEventListener("click", goBack);
-for (const b of topseg.children) b.addEventListener("click", () => goTab(b.dataset.go === "activity" ? activity : b.dataset.go === "shorts" ? shortsList : agents));
+for (const b of topseg.children) b.addEventListener("click", () => goTab(b.dataset.go === "activity" ? activity : agents));
 window.addEventListener("scroll", () => bar.classList.toggle("scrolled", window.scrollY > 8), { passive: true });
 function drawMe() {
-  const sh = topseg.querySelector("[data-go=shorts]");
-  if (sh) sh.classList.toggle("hidden", !ME || ME.role === "admin");
   barRight.replaceChildren(ME && ME.role !== "admin" ? h("button", { class: "mebtn press", type: "button", "aria-label": "You", title: ME.handle, onclick: () => nav("me") },
     avatar({ handle: ME.handle, role: "human" }, WIDE ? 36 : 32)) : "");
 }
@@ -535,9 +546,35 @@ function signin(message, mode) {
     firstTime());
 }
 // below the sign-in: a new hub asks its owner for the admin key once; a claimed one is invite-only
-const firstTime = () => h("p", { class: "first", text: AUTH.claimed
-  ? "New here? Relay is invite-only for now. Open the invite link you were sent."
-  : "First time here? Use your admin key, once." });
+const firstTime = () => AUTH.claimed
+  ? h("p", { class: "first" }, "New here? Relay is invite-only for now. ",
+      h("button", { class: "inline press", type: "button", onclick: askInvite }, "Ask for an invite"))
+  : h("p", { class: "first", text: "First time here? Use your admin key, once." });
+
+// a stranger asks the hub's owner for an invite: a name, a way back to them, a line about why
+function askInvite() {
+  const name = h("input", { class: "field", type: "text", placeholder: "Your name", autocomplete: "name", maxlength: "60", "aria-label": "Your name" });
+  const contact = h("input", { class: "field", type: "text", placeholder: "Email, phone or @handle", autocomplete: "email", maxlength: "120",
+                                spellcheck: "false", "aria-label": "How to reach you" });
+  const note = h("input", { class: "field", type: "text", placeholder: "What would you use it for? (optional)", maxlength: "300", "aria-label": "Note" });
+  const trap = h("input", { type: "text", name: "website", tabindex: "-1", autocomplete: "off", class: "trap", "aria-hidden": "true" });
+  const err = h("p", { class: "err", role: "alert" });
+  const btn = h("button", { class: "btn press", type: "submit" }, "Ask for an invite");
+  const form = h("form", { class: "stack tight", onsubmit: async (e) => {
+    e.preventDefault();
+    if (!name.value.trim() || contact.value.trim().length < 3) { err.textContent = "Add your name and how to reach you."; return; }
+    btn.disabled = true; err.textContent = "";
+    try {
+      await api("POST", "/invite-requests", { name: name.value.trim(), contact: contact.value.trim(), note: note.value.trim() || null,
+        website: trap.value || null }, null);
+      fuse(() => welcomeView(brand("Asked", "When you're in, you'll get a link. It opens a page like this one.", name.value.trim()),
+        ways(way("Back", () => signin(null, "start")))));
+    } catch (x) { err.textContent = x.message; btn.disabled = false; }
+  } }, name, contact, note, trap, btn, err);
+  welcomeView(brand("Ask for an invite", "Whoever runs this Relay gets your note."), form,
+    ways(way("I have an invite link", () => signin(null))));
+  name.focus();
+}
 
 function keySignin(message) {
   const input = h("input", { class: "field", type: "password", placeholder: "Relay key", autocomplete: "current-password",
@@ -634,6 +671,33 @@ function finishLink(link) {
   });
   welcomeView(brand("Relay", "One tap to finish signing in."), h("div", { class: "stack tight" }, go, err));
   go.focus();
+}
+
+// the owner answers someone who asked for an invite: one press makes their join link
+async function askScreen(id) {
+  const tk = ticket();
+  let r = null;
+  try { r = (await api("GET", "/invite-requests")).find((x) => x.id === id); } catch {}
+  if (!fresh(tk)) return;
+  if (!r) return nav("activity", { replace: true });
+  const handle = h("input", { class: "field", type: "text", value: r.name.toLowerCase().replace(/[^a-z0-9._-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 32),
+                               spellcheck: "false", maxlength: "32", "aria-label": "Their name on Relay" });
+  slug(handle);
+  const err = h("p", { class: "err", role: "alert" });
+  const yes = h("button", { class: "btn press", type: "submit" }, "Send an invite");
+  const form = h("form", { class: "stack tight", onsubmit: async (e) => {
+    e.preventDefault();
+    yes.disabled = true; err.textContent = "";
+    try {
+      const inv = await api("POST", "/invites", { handle: handle.value.trim(), hours: 72, role: "human" });
+      await api("POST", `/invite-requests/${enc(id)}/invited`);
+      nav(`agents/${enc(inv.handle)}/invite`, { replace: true, data: { app: APPS.find((a) => a.id === "person"), inv } });
+    } catch (x) { err.textContent = x.message; yes.disabled = false; }
+  } }, h("div", { class: "fieldnote" }, h("span", { class: "k", text: "Their name on Relay" }), handle), yes, err,
+    h("div", { class: "ways" }, way("Not now", async () => { try { await api("DELETE", `/invite-requests/${enc(id)}`); } catch {} if (listRefresh) listRefresh(); nav("activity", { replace: true }); })));
+  screen("ask", tk, heroHead(avatar("person", 72), `${r.name} would like an invite`, `Reach them at ${r.contact}`),
+    h("div", { class: "stack" }, r.note ? h("p", { class: "why", text: r.note }) : null, form));
+  handle.select();
 }
 
 // ------------------------------------------------------------------ join (/join#inv_…)
@@ -761,16 +825,80 @@ function emptyHint(el) {
 }
 
 // ------------------------------------------------------------------ add: pick the app
+// style "allow": paste Relay's address into the app, press Connect, then Allow (OAuth): no key anywhere.
+// `via` is the older way, kept under Advanced: a key to paste ("connector") or the helper ("invite").
 const APPS = [
-  { id: "claude_app", label: "Claude", sub: "app", provider: "claude", style: "connector", name: "claude" },
-  { id: "claude_code", label: "Claude Code", sub: "terminal", provider: "claude", style: "invite", connect: "claude-code", name: "claude-code" },
+  { id: "claude_app", label: "Claude", sub: "app", provider: "claude", style: "allow", via: "connector", name: "claude" },
+  { id: "chatgpt", label: "ChatGPT", sub: "app", provider: "openai", style: "allow", via: "connector", name: "chatgpt" },
+  { id: "grok", label: "Grok", sub: "app", provider: "grok", style: "allow", via: "connector", name: "grok" },
+  { id: "muse", label: "Muse", sub: "Meta", provider: "muse", style: "allow", via: "connector", name: "muse" },
+  { id: "claude_code", label: "Claude Code", sub: "terminal", provider: "claude", style: "allow", via: "invite", connect: "claude-code", name: "claude-code" },
   { id: "codex", label: "Codex", sub: "CLI · app", provider: "codex", style: "invite", connect: "codex", name: "codex" },
-  { id: "muse", label: "Muse", sub: "Meta", provider: "muse", style: "connector", name: "muse" },
-  { id: "gemini", label: "Gemini CLI", sub: "terminal", provider: "gemini", style: "connector", name: "gemini" },
-  { id: "cursor", label: "Cursor", sub: "editor", provider: "cursor", style: "connector", name: "cursor" },
-  { id: "other", label: "Other", sub: "any MCP app", provider: null, style: "connector", name: "agent" },
+  { id: "gemini", label: "Gemini CLI", sub: "terminal", provider: "gemini", style: "allow", via: "connector", name: "gemini" },
+  { id: "cursor", label: "Cursor", sub: "editor", provider: "cursor", style: "allow", via: "connector", name: "cursor" },
+  { id: "other", label: "Other", sub: "any MCP app", provider: null, style: "allow", via: "connector", name: "agent" },
   { id: "person", label: "Person", sub: "teammate", provider: null, style: "person", name: "" },
 ];
+
+// Add an app the way you add Gmail: Relay's address, Connect, Allow. The Allow page names the agent.
+function allowGuide(a) {
+  const tk = ticket();
+  const url = `${ORIGIN}/mcp`;
+  const say = (...parts) => h("span", null, ...parts);
+  const b = (t) => h("b", { text: t });
+  const pill = () => { const btn = h("button", { class: "copyurl press", type: "button", title: "Copy" }, h("span", { class: "u", text: url }), h("span", { class: "c", text: "Copy" }));
+    btn.addEventListener("click", () => copy(url, btn.querySelector(".c"), "Copy")); return btn; };
+  const allow = say("A Relay page opens: press ", b("Allow"), ". You can pick the agent's name there.");
+  const STEPS = {
+    claude_app: [[say("In Claude: ", b("Settings → Connectors → Add custom connector"), ". Name it Relay and paste:"), pill()],
+                 [say("Press ", b("Add"), ", then ", b("Connect"), ".")], [allow]],
+    chatgpt: [[say("In ChatGPT (paid plans): ", b("Settings → Plugins → + → Add custom MCP server"),
+                   ". Older menus: Settings → Connectors → Advanced → Developer mode, then Create.")],
+              [say("Name it Relay, choose ", b("OAuth"), ", and paste:"), pill()], [allow]],
+    grok: [[say("In Grok (paid plans): ", b("grok.com/connectors → New Connector → Custom"), ". Paste:"), pill()],
+           [say("Press ", b("Connect"), ".")], [allow]],
+    muse: [[say("Ask Muse to add a custom connector called Relay with this address:"), pill()],
+           [say("If a Relay page opens, press ", b("Allow"), ". If Muse asks for a key instead, use Advanced below.")]],
+    claude_code: [[say("In a terminal:"), copyBlock(`claude mcp add --transport http relay ${url}`, "Copy command")],
+                  [say("In Claude Code, run ", b("/mcp"), ", pick relay, then ", b("Authenticate"), ".")], [allow]],
+    gemini: [[say("In a terminal:"), copyBlock(`gemini mcp add --transport http relay ${url}`, "Copy command")],
+             [say("In Gemini CLI, run ", b("/mcp auth relay"), ".")], [allow]],
+    cursor: [[say("Merge into ", b("~/.cursor/mcp.json"), ":"), copyBlock(JSON.stringify({ mcpServers: { relay: { url } } }, null, 2))],
+             [say(b("Cursor Settings → MCP"), ": press ", b("Login"), " next to Relay.")], [allow]],
+    other: [[say("Add a remote MCP server (Streamable HTTP) with this address:"), pill()],
+            [say("When it asks you to sign in, a Relay page opens: press ", b("Allow"), ".")]],
+  };
+  const orb = miniOrb(a.provider, "relay", 88, [a.label, ""]);
+  orb.classList.add("keyorb");
+  orb.append(h("span", { class: "kseal" }, tick("sealtick")));
+  let status = stickyStatus(`Waiting for ${a.label}…`);
+  const list = h("ol", { class: "steps" }, ...STEPS[a.id].map((parts) => h("li", null, h("div", null, ...parts))));
+  const done = h("button", { class: "btn ghost press", type: "button", onclick: () => nav("me/apps", { replace: true }) }, "Done");
+  const adv = h("details", { class: "advanced" }, h("summary", { class: "press" }, "Advanced"),
+    h("div", { class: "stack tight", style: "padding-top:14px" },
+      h("p", { class: "hint", style: "margin:0", text: a.via === "invite"
+        ? "Instant replies: a small helper on that computer wakes Claude Code the moment a message lands."
+        : `If ${a.label} can't sign in, it can use a Relay key instead.` }),
+      h("button", { class: "btn ghost small press", type: "button", onclick: () => nav(`add/${a.id}/withkey`) },
+        a.via === "invite" ? "Set up instant replies" : "Use a key instead")));
+  const view = screen("allow", tk, h("div", { class: "hero" }, orb, h("h1", { class: "title", text: `Add Relay to ${a.label}` })),
+    h("div", { class: "stack" }, status, list, done, adv));
+  let seen = null;
+  const t = every(view, async () => {
+    try {
+      const conns = await api("GET", "/oauth/connections");
+      if (seen === null) { seen = new Set(conns.map((c) => c.id)); return; }
+      const fresh = conns.find((c) => !seen.has(c.id));
+      if (fresh) {
+        clearInterval(t);
+        if (listRefresh) listRefresh();
+        orb.classList.add("sealed");
+        const s2 = stickyStatus(`${fresh.app || a.label} is connected as ${fresh.agent}`, true); status.replaceWith(s2); status = s2;
+        done.classList.replace("ghost", "done");
+      }
+    } catch {}
+  }, 2500);
+}
 
 function addPick() {
   const grid = h("div", { class: "pick stagger" });
@@ -793,29 +921,23 @@ async function addName(a) {
   slug(name);
   const err = h("p", { class: "err", role: "alert" });
   const btn = h("button", { class: "btn press", type: "submit" }, "Continue");
-  const works = h("button", { type: "button", class: "switch", role: "switch", "aria-checked": "false", "aria-label": "Does work for others",
-    onclick: () => works.setAttribute("aria-checked", String(works.getAttribute("aria-checked") !== "true")) });
-  const extra = a.style === "invite" ? h("div", { class: "group info" }, h("div", { class: "cell" },
-    h("div", { class: "grow" }, h("div", { class: "t plain", text: "Does work for others" }),
-      h("div", { class: "s", text: "Fetches and cuts videos. Needs yt-dlp + ffmpeg." })), works)) : null;
   const form = h("form", { class: "stack tight", onsubmit: async (e) => {
     e.preventDefault();
     const handle = name.value.trim(); if (!handle) { err.textContent = "Give it a name."; return; }
     btn.disabled = true; err.textContent = "";
     try {
-      if (a.style === "connector") {
+      if ((a.style === "allow" ? a.via : a.style) === "connector") {
         const r = await api("POST", "/agents", { handle, provider: a.provider, role: "agent" });
         if (listRefresh) listRefresh();
         nav(`agents/${enc(r.handle)}/connect`, { data: { app: a, created: r } });
       } else {
-        const caps = works.getAttribute("aria-checked") === "true" ? ["fetch", "digest"] : [];
         // a person gets three days to open their link; an agent's code is for a terminal, right now
         const inv = await api("POST", "/invites", { handle, hours: person ? 72 : 24, provider: a.provider,
-          role: person ? "human" : "agent", caps });
+          role: person ? "human" : "agent" });
         nav(`agents/${enc(inv.handle)}/invite`, { data: { app: a, inv } });
       }
     } catch (x) { err.textContent = x.message; btn.disabled = false; }
-  } }, name, extra, h("div", { style: "margin-top:8px" }, btn), err);
+  } }, name, h("div", { style: "margin-top:8px" }, btn), err);
   screen("addname", tk, heroHead(appAvatar(a, 72), person ? "Who is it?" : `Name your ${a.label}`,
     person ? "Their name on Relay. They get a link to join." : "Its address on Relay."), form);
   name.focus(); name.select();
@@ -902,7 +1024,6 @@ function agentPrompt(inv, code, connect) {
     `   python3 cli.py join ${ORIGIN} ${code}`,
   ];
   if (connect) lines.push(`3. Add Relay to your own tools, so "ask <name>" just works:`, `   ${me} connect ${connect}`);
-  if ((inv.caps || []).length) lines.push(`4. Do work for others (needs yt-dlp and ffmpeg). Keep this running:`, `   ${me} node --cap ${inv.caps.join(" --cap ")}`);
   lines.push(``, `On Windows use "python" instead of "python3". Tell me when you're connected.`);
   return lines.join("\n");
 }
@@ -936,13 +1057,11 @@ function inviteGuide(a, inv) {
   const diagram = linkup(appAvatar(a, 64));
   const done = h("button", { class: "btn ghost press", type: "button", onclick: finish(handle) }, "Done");
   let status = stickyStatus(`Waiting for ${handle}…`);
-  const me = `python3 ~/.relay/bin/cli.py --as ${handle}`;
   const body = person
     ? h("div", { class: "stack tight" }, h("p", { class: "hint", style: "margin:0", text: "Send it privately: a message, not a group. It works once, for 3 days. They join with Face ID or a fingerprint, no password." }), copyField("Invite link", link))
     : h("div", { class: "stack tight" },
         h("p", { class: "hint", style: "margin:0", text: `Paste into a terminal on the computer where ${a.label} is signed in. It answers by itself after that, on your own plan. Works once, for 24 h.` }),
         installBlock(code, a.connect),
-        (inv.caps || []).length ? h("p", { class: "hint", text: `To also fetch and cut videos for others, keep this running there: ${me} node --cap ${inv.caps.join(" --cap ")}` }) : null,
         h("details", { class: "advanced" }, h("summary", { class: "press" }, "Advanced"),
           h("div", { class: "stack tight", style: "padding-top:14px" },
             h("p", { class: "hint", style: "margin:0", text: `Or paste this into ${a.label} and let it set itself up, without answering by itself:` }),
@@ -1046,9 +1165,7 @@ async function meScreen() {
 // ------------------------------------------------------------------ connected apps: two halves per connection
 // Each connection is the circle from the Allow page: the app on the left, the agent it speaks as on the right.
 // Disconnecting pulls the halves apart.
-const APP_WORDS = [["claude", "claude"], ["anthropic", "claude"], ["chatgpt", "openai"], ["openai", "openai"], ["muse", "muse"],
-                   ["meta", "muse"], ["codex", "codex"], ["cursor", "cursor"], ["gemini", "gemini"], ["copilot", "copilot"]];
-const appProvider = (name) => { const n = (name || "").toLowerCase(); const w = APP_WORDS.find(([k]) => n.includes(k)); return w ? w[1] : null; };
+const appProvider = (name) => { const n = (name || "").toLowerCase(); const w = APP_RX.find(([, rx]) => rx.test(n)); return w ? w[0] : null; };
 function halfMark(p, name) {
   if (p === "relay") return h("i", { class: "mk" });
   const logo = LOGOS[p];
@@ -1125,11 +1242,16 @@ function connectHint() {
 // ------------------------------------------------------------------ keys: your agents use them, never see them
 // A key is drawn as the website's half (its initial) meeting a dark half with a keyhole: Relay's half.
 const ASK_TEXT = { changes: "Asks before it changes anything", always: "Asks every time", never: "Never asks" };
+// `what`: which kind of key the website wants for posting; a plain API key often can only read.
 const KEY_PRESETS = [
-  { name: "instagram", label: "Instagram", hosts: ["graph.facebook.com", "graph.instagram.com"], place: "query", field: "access_token" },
-  { name: "youtube", label: "YouTube", hosts: ["www.googleapis.com"], place: "query", field: "key" },
-  { name: "tiktok", label: "TikTok", hosts: ["open.tiktokapis.com"], place: "bearer" },
-  { name: "x", label: "X", hosts: ["api.x.com"], place: "bearer" },
+  { name: "instagram", label: "Instagram", hosts: ["graph.facebook.com", "graph.instagram.com"], place: "query", field: "access_token",
+    what: "An access token from your Meta app (Business or Creator account). It can post; long-lived ones last about 60 days." },
+  { name: "youtube", label: "YouTube", hosts: ["www.googleapis.com"], place: "bearer",
+    what: "A sign-in (OAuth) access token can upload. A plain API key can only read: switch to In the URL, parameter key." },
+  { name: "tiktok", label: "TikTok", hosts: ["open.tiktokapis.com"], place: "bearer",
+    what: "A user access token with the video.publish scope. It expires after a day unless refreshed." },
+  { name: "x", label: "X", hosts: ["api.x.com"], place: "bearer",
+    what: "A user access token (OAuth 2.0 with tweet.write) can post. An app-only bearer token can only read." },
 ];
 function keyOrb(name, size = 56, left) {
   return h("span", { class: "morb keyorb", style: `--s:${size}px`, "aria-hidden": "true" },
@@ -1179,8 +1301,9 @@ function keyNew() {
   }
   const orbBox = h("span", { class: "keyhero" }, keyOrb("", 96));
   name.addEventListener("input", () => { orbBox.querySelector(".mh.l b").textContent = (name.value.trim()[0] || "").toUpperCase(); });
+  const what = h("p", { class: "quiet center" });
   const presets = h("div", { class: "presets" }, ...KEY_PRESETS.map((p) => h("button", { class: "preset press", type: "button", onclick: () => {
-    name.value = p.name; site.value = p.hosts.join(", "); field.value = p.field || ""; setPlace(p.place);
+    name.value = p.name; site.value = p.hosts.join(", "); field.value = p.field || ""; setPlace(p.place); what.textContent = p.what;
     name.dispatchEvent(new Event("input")); secret.focus();
   } }, p.label)));
   const err = h("p", { class: "err", role: "alert" });
@@ -1195,7 +1318,7 @@ function keyNew() {
       secret.value = "";
       nav(`me/keys/${k.id}`, { replace: true });
     } catch (x) { err.textContent = x.message; btn.disabled = false; }
-  } }, presets, name, site, secret,
+  } }, presets, what, name, site, secret,
     h("div", { class: "fieldnote" }, h("span", { class: "k", text: "How the website takes it" }), placeSeg), field,
     h("div", { class: "fieldnote" }, h("span", { class: "k", text: "Ask me first" }),
       seg([["changes", "Changes"], ["always", "Every time"], ["never", "Never"]], ask, (v) => { ask = v; })),
@@ -1326,7 +1449,7 @@ function runsOn(a) {
   const val = h("span", { class: "v" + (isOwner() ? " blue" : ""), text: PROVIDER_NAMES[providerOf(a)] || "Other" });
   if (!isOwner()) return h("div", { class: "cell" }, h("div", { class: "grow t plain" }, "Runs on"), val);
   const tiles = h("div", { class: "pick hidden", style: "padding:2px 0 14px" });
-  for (const k of ["claude", "codex", "muse", "gemini", "cursor", "copilot", "other"]) {
+  for (const k of ["claude", "openai", "codex", "grok", "gemini", "muse", "cursor", "copilot", "other"]) {
     tiles.append(h("button", { class: "opt press", type: "button", "aria-checked": String(providerOf(a) === k), onclick: async (e) => {
       const picked = e.currentTarget;
       try {
@@ -1376,13 +1499,6 @@ function routinePrompt(handle) {
 }
 // Instant replies: how an agent hears a message the moment it lands. One plain path per app; the
 // developer options sit under Advanced and store exactly the same thing, so everyone ends up equal.
-function since(t) {
-  const s = Date.now() / 1000 - t;
-  if (s < 90) return "just now";
-  if (s < 3600) return `${Math.round(s / 60)} min ago`;
-  if (s < 86400) return `${Math.round(s / 3600)} h ago`;
-  return new Date(t * 1000).toLocaleDateString(undefined, { month: "short", day: "numeric" });
-}
 function museMessage() {
   return [
     `Please set up a recurring task for Relay that runs as often as you allow.`,
@@ -1762,8 +1878,8 @@ async function activity() {
   let first = true;
   async function refresh() {
     try {
-      const [msgs, ags, waiting, asks] = await Promise.all([api("GET", "/messages?latest=true&limit=200"), api("GET", "/agents"),
-        api("GET", "/jobs?status=needs_approval&limit=20"), ME.role === "human" ? api("GET", "/approvals").catch(() => []) : []]);
+      const [msgs, ags, asks, wants] = await Promise.all([api("GET", "/messages?latest=true&limit=200"), api("GET", "/agents"),
+        ME.role === "human" ? api("GET", "/approvals").catch(() => []) : [], isOwner() ? api("GET", "/invite-requests").catch(() => []) : []]);
       const by = Object.fromEntries(ags.map((a) => [a.handle, a]));
       const threads = new Map();
       for (const m of msgs) {
@@ -1778,15 +1894,10 @@ async function activity() {
         h("div", { class: "grow" }, h("div", { class: "t", text: `${r.agent} wants to ${VERB[r.method] || r.method}` }),
           h("div", { class: "s", text: `Needs your OK · ${r.key} · ${hostOf(r.url)}` })),
         h("span", { class: "btn small", text: "Review" })));
-      const rows = oks.concat(waiting.map((j) => {
-        const b = h("button", { class: "btn small press", type: "button", onclick: async (e) => {
-          e.stopPropagation(); b.disabled = true;
-          try { await api("POST", `/jobs/${encodeURIComponent(j.id)}/approve`); refresh(); } catch { b.disabled = false; }
-        } }, "Approve");
-        return h("div", { class: "cell jobcell" }, h("span", { class: "stackav" }, avatar(by[j.requested_by] || { handle: j.requested_by }, 44)),
-          h("div", { class: "grow" }, h("div", { class: "t", text: `${j.kind} for ${j.requested_by}` }),
-            h("div", { class: "s", text: `Needs your OK · ${(j.params && j.params.url) || j.id}` })), b);
-      }));
+      const rows = oks.concat(wants.map((w) => h("button", { class: "cell jobcell press", type: "button", "data-key": `ask/${w.id}`, onclick: () => nav(`ask/${w.id}`) },
+        h("span", { class: "stackav" }, avatar("person", 44)),
+        h("div", { class: "grow" }, h("div", { class: "t", text: `${w.name} would like an invite` }), h("div", { class: "s", text: w.contact })),
+        h("span", { class: "btn small", text: "Review" }))));
       const sorted = [...threads.values()].sort((x, y) => y.msgs[y.msgs.length - 1].id - x.msgs[x.msgs.length - 1].id);
       for (const t of sorted) {
         const last = t.msgs[t.msgs.length - 1];
@@ -1898,210 +2009,6 @@ async function thread(id, people) {
   if (composer) input.focus();
 }
 
-// ------------------------------------------------------------------ shorts: a clip in, a vertical short with captions out
-const STAGE_TEXT = { queued: "Waiting…", downloading: "Downloading…", checking: "Getting ready…", transcribing: "Transcribing…",
-                     cutting: "Cutting…", saving: "Saving…" };
-const STAGE_SPAN = { queued: [0, 0], downloading: [0, .15], checking: [.15, .2], transcribing: [.2, .45], cutting: [.45, .95], saving: [.95, 1] };
-function shortProgress(c) {
-  const [a, b] = STAGE_SPAN[c.stage] || [0, 0];
-  return c.stage === "cutting" ? a + (b - a) * (c.progress || 0) : a;
-}
-function mmss(sec) { sec = Math.max(0, Math.round(sec || 0)); return `${Math.floor(sec / 60)}:${String(sec % 60).padStart(2, "0")}`; }
-function shortTitle(c) {
-  const src = (c.name || c.source || "Short").split("/").pop();
-  return src.length > 40 ? src.slice(0, 12) + "…" : src.replace(/-short\.mp4$/, "");
-}
-function shortSub(c) {
-  if (c.status === "done") return `${mmss(c.duration)} · ${clock(c.created)}`;
-  if (c.status === "failed") return `Didn't work · ${clock(c.created)}`;
-  return STAGE_TEXT[c.stage] || "Working…";
-}
-function shortRow(c) {
-  const glyph = h("span", { class: "shortthumb" + (c.status === "failed" ? " failed" : "") },
-    c.status === "done" ? svg("0 0 24 24", [{ d: "M9.5 7.8v8.4l6.6-4.2z", fill: "currentColor" }])
-      : c.status === "failed" ? svg("0 0 24 24", [{ d: "M8.5 8.5l7 7M15.5 8.5l-7 7", ...stroke }]) : h("span", { class: "dot wait" }));
-  return h("button", { class: "cell press", type: "button", "data-key": `shorts/${c.id}`, onclick: () => nav(`shorts/${c.id}`) },
-    glyph, h("div", { class: "grow" }, h("div", { class: "t", text: shortTitle(c) }), h("div", { class: "s", text: shortSub(c) })), chev());
-}
-// the desktop list: every short so far, newest first
-async function shortsList() {
-  const tk = ticket();
-  const list = h("div", { class: "group shorts" }, h("div", { class: "empty", text: "Loading…" }));
-  const neu = h("button", { class: "btn small press", type: "button", onclick: () => nav("shorts") }, icon("plus", "2.4"), "New");
-  const view = screen("shorts", { ...tk, tab: "shorts" }, head("Shorts", null, neu), list);
-  async function refresh() {
-    try {
-      const rows = (await api("GET", "/captions?limit=50")).map(shortRow);
-      list.replaceChildren(...(rows.length ? rows : [h("div", { class: "empty", text: "No shorts yet." })]));
-      markSelected();
-    } catch (x) { if (x.status !== 401) list.replaceChildren(h("div", { class: "empty", text: x.message })); }
-  }
-  await refresh();
-  if (!view.isConnected) return;
-  if (WIDE) listRefresh = refresh;
-  every(view, refresh, 4000);
-}
-// raw-body upload with progress: the hub stores the bytes as they arrive and answers with the file's id
-function uploadClip(file, onProgress) {
-  return new Promise((resolve, reject) => {
-    const x = new XMLHttpRequest();
-    x.open("POST", `/artifacts?name=${enc(file.name.slice(-120) || "clip.mp4")}&mime=${enc(file.type || "video/mp4")}&kind=upload`);
-    x.setRequestHeader("Authorization", "Bearer " + KEY);
-    x.upload.addEventListener("progress", (e) => { if (e.lengthComputable) onProgress(e.loaded / e.total); });
-    x.addEventListener("load", () => {
-      let d = null;
-      try { d = JSON.parse(x.responseText); } catch {}
-      if (x.status >= 200 && x.status < 300 && d && d.id) resolve(d);
-      else reject(new Error(d && typeof d.detail === "string" ? d.detail : `Upload didn't finish (${x.status})`));
-    });
-    x.addEventListener("error", () => reject(new Error("Upload didn't finish. Check your connection.")));
-    x.send(file);
-  });
-}
-function shortMaker() {
-  const tk = ticket();
-  let file = null, useLink = false, crop = "center";
-  const input = h("input", { type: "file", accept: "video/*", class: "hidden", "aria-label": "Choose a clip" });
-  const link = h("input", { class: "field", type: "url", placeholder: "Link to the video file", spellcheck: "false", autocomplete: "off", "aria-label": "Link" });
-  const err = h("p", { class: "err", role: "alert" });
-  const go = h("button", { class: "btn press", type: "submit", disabled: true }, "Make short");
-  const zone = h("div", { class: "drop", role: "button", tabindex: "0" });
-  const swap = h("button", { class: "link sm muted", type: "button" });
-  function ready() { go.disabled = useLink ? !link.value.trim() : !file; }
-  function drawZone() {
-    zone.classList.toggle("has", !!file);
-    zone.replaceChildren(...(file
-      ? [svg("0 0 24 24", [{ d: RAIL_ICONS.shorts, ...stroke }], "dropic"), h("div", { class: "t", text: file.name }),
-         h("div", { class: "s", text: `${(file.size / 1048576).toFixed(file.size < 10485760 ? 1 : 0)} MB · Choose another` })]
-      : [svg("0 0 24 24", [{ d: "M12 16V5M7.5 9.5L12 5l4.5 4.5M5 19h14", ...stroke }], "dropic"), h("div", { class: "t", text: "Drop a clip" }),
-         h("div", { class: "s", text: "or choose a file" })]));
-    ready();
-  }
-  function setMode(v) {
-    useLink = v;
-    zone.classList.toggle("hidden", v); link.classList.toggle("hidden", !v);
-    swap.textContent = v ? "Choose a file instead" : "Use a link instead";
-    err.textContent = ""; ready();
-    if (v) link.focus();
-  }
-  swap.addEventListener("click", () => setMode(!useLink));
-  link.addEventListener("input", ready);
-  input.addEventListener("change", () => { if (input.files[0]) { file = input.files[0]; err.textContent = ""; drawZone(); } });
-  zone.addEventListener("click", () => input.click());
-  zone.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); input.click(); } });
-  zone.addEventListener("dragover", (e) => { e.preventDefault(); zone.classList.add("over"); });
-  zone.addEventListener("dragleave", () => zone.classList.remove("over"));
-  zone.addEventListener("drop", (e) => {
-    e.preventDefault(); zone.classList.remove("over");
-    const f = e.dataTransfer && e.dataTransfer.files[0];
-    if (f && (!f.type || f.type.startsWith("video/"))) { file = f; err.textContent = ""; drawZone(); }
-    else if (f) err.textContent = "That isn't a video.";
-  });
-  const start = h("input", { class: "field", type: "text", placeholder: "0:00", spellcheck: "false", "aria-label": "Start" });
-  const end = h("input", { class: "field", type: "text", placeholder: "End", spellcheck: "false", "aria-label": "End" });
-  const opts = h("div", { class: "shortopts" },
-    h("label", { class: "tfield" }, h("span", { class: "fieldlabel", text: "Start" }), start),
-    h("label", { class: "tfield" }, h("span", { class: "fieldlabel", text: "End" }), end),
-    h("div", { class: "cropfield" }, h("span", { class: "fieldlabel", text: "Crop" }),
-      seg([["center", "Center"], ["left", "Left"], ["right", "Right"]], crop, (v) => { crop = v; })));
-  const form = h("form", { class: "stack", onsubmit: async (e) => {
-    e.preventDefault();
-    if (go.disabled) return;
-    go.disabled = true; err.textContent = "";
-    const body = { crop };
-    if (start.value.trim()) body.start = start.value.trim();
-    if (end.value.trim()) body.end = end.value.trim();
-    try {
-      if (useLink) body.url = link.value.trim();
-      else {
-        go.textContent = "Uploading…";
-        const a = await uploadClip(file, (f) => { go.textContent = `Uploading ${Math.round(f * 100)}%`; });
-        body.file_id = a.id;
-      }
-      go.textContent = "Starting…";
-      const c = await api("POST", "/captions", body);
-      if (listRefresh && WIDE && listPane.dataset.tab === "shorts") listRefresh();
-      nav(`shorts/${c.id}`, { data: c });
-    } catch (x) { err.textContent = x.message; go.disabled = false; go.textContent = "Make short"; }
-  } }, h("div", { class: "stack tight" }, zone, link, h("div", { class: "swaprow" }, swap)), opts, h("div", { class: "stack tight" }, go, err));
-  link.classList.add("hidden");
-  setMode(false); drawZone();
-  const recent = WIDE ? null : h("div", { class: "group shorts" });
-  const view = screen("short", { ...tk, tab: WIDE ? null : "shorts" }, head("Make a short", "Vertical, captioned, ready to post."), input, form,
-    recent ? h("div", { class: "shortrecent" }, h("p", { class: "label", text: "Recent" }), recent) : null);
-  if (recent) {
-    const wrap = recent.parentNode;
-    wrap.classList.add("hidden");
-    api("GET", "/captions?limit=5").then((cs) => {
-      if (!view.isConnected || !cs.length) return;
-      recent.replaceChildren(...cs.map(shortRow)); wrap.classList.remove("hidden");
-    }).catch(() => {});
-  }
-}
-async function shortView(id, first) {
-  const tk = ticket();
-  const body = h("div", { class: "stack shortbody" });
-  const top = head("Your short", null);
-  top.classList.add("centerhead");
-  const view = screen("shortview", tk, top, body);
-  let shown = null;
-  const frame = h("div", { class: "shortframe" });
-  const note = h("div", { class: "frametext" });
-  const meter = h("div", { class: "meter", role: "progressbar", "aria-label": "Progress" }, h("span"));
-  function working(c) {
-    top.querySelector(".title").textContent = "Making your short";
-    if (shown !== "working") {
-      shown = "working";
-      frame.replaceChildren(note);
-      body.replaceChildren(frame, meter, h("p", { class: "hint center", text: "You can leave this page. It keeps going." }));
-    }
-    note.textContent = STAGE_TEXT[c.stage] || "Working…";
-    const pct = Math.round(shortProgress(c) * 100);
-    meter.firstChild.style.width = pct + "%";
-    meter.setAttribute("aria-valuenow", String(pct));
-  }
-  function done(c) {
-    shown = "done";
-    top.querySelector(".title").textContent = "Your short";
-    const url = c.share_url || (c.share_path ? ORIGIN + c.share_path : null);
-    const kids = [];
-    if (c.share_path) {
-      kids.push(h("div", { class: "shortframe" }, h("video", { class: "shortvid", src: c.share_path, controls: true, playsinline: true, preload: "metadata" })));
-      const copyBtn = h("button", { class: "btn ghost press", type: "button" }, "Copy link");
-      copyBtn.addEventListener("click", () => copy(url, copyBtn, "Copy link"));
-      kids.push(h("div", { class: "btnrow" },
-        h("a", { class: "btn press", href: c.share_path, download: c.name || "short.mp4" }, "Download"), copyBtn));
-      const until = new Date(c.share_expires * 1000).toLocaleDateString(undefined, { month: "short", day: "numeric" });
-      kids.push(h("p", { class: "hint center", text: `${mmss(c.duration)} · link works until ${until}${c.captions ? "" : " · no speech found"}` }));
-    } else {
-      kids.push(h("div", { class: "shortframe" }, h("div", { class: "frametext", text: "This short's link has expired." })));
-    }
-    if (c.transcript) {
-      kids.push(h("details", { class: "advanced" }, h("summary", { text: "Transcript" }), h("p", { class: "small", text: c.transcript })));
-    }
-    body.replaceChildren(...kids);
-  }
-  function failed(c) {
-    shown = "failed";
-    top.querySelector(".title").textContent = "That didn't work";
-    body.replaceChildren(h("div", { class: "shortframe" }, h("div", { class: "frametext" }, cross(), h("span", { text: c.error || "Something went wrong." }))),
-      h("button", { class: "btn press", type: "button", onclick: () => nav("shorts") }, "Try another"));
-  }
-  async function refresh() {
-    let c;
-    try { c = await api("GET", `/captions/${enc(id)}`); }
-    catch (x) { if (x.status === 404 && view.isConnected) nav("shorts", { replace: true }); return; }
-    if (!view.isConnected) return;
-    if (c.status === "done") { if (shown !== "done") { done(c); if (listRefresh && WIDE) listRefresh(); } }
-    else if (c.status === "failed") { if (shown !== "failed") { failed(c); if (listRefresh && WIDE) listRefresh(); } }
-    else working(c);
-  }
-  if (first && first.status) working(first);
-  await refresh();
-  if (!view.isConnected) return;
-  const t = every(view, () => { if (shown === "done" || shown === "failed") { clearInterval(t); return; } refresh(); }, 1500);
-}
-
 // ------------------------------------------------------------------ start
 brandmini.append(mark(), h("span", { class: "word", text: "Relay" }));
 (async function start() {
@@ -2124,6 +2031,7 @@ brandmini.append(mark(), h("span", { class: "word", text: "Relay" }));
   }
   try { const c = await api("GET", "/auth/config", undefined, null); AUTH = { email: !!(c && c.email), claimed: !(c && c.claimed === false) }; } catch { AUTH = { email: false, claimed: true }; }
   if (link && (link.token || link.hash)) return finishLink(link);
+  await loadProviders();
   if (joinCode !== null) return joinView(joinCode);
   if (link && link.error) return signin(link.error, AUTH.email ? "email" : "key");
   const saved = store.get();

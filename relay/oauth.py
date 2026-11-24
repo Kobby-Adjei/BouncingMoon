@@ -36,9 +36,9 @@ from fastapi import Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, Response
 from pydantic import BaseModel
 
+from . import providers as P
 from . import webauthn as W
 
-LOGO_FILES = ("claude", "codex", "gemini", "copilot", "muse")      # app logos that ship in relay/logos
 ACCESS_SECONDS = 24 * 3600
 REFRESH_SECONDS = 90 * 86400
 CODE_SECONDS = 600
@@ -48,9 +48,6 @@ MAX_CLIENTS = 2000
 SCOPE = "relay"
 BAD_SCHEMES = {"javascript", "data", "file", "vbscript", "about", "blob", "http"}
 LOOPBACK = ("localhost", "127.0.0.1", "[::1]", "::1")
-NAMES = (("claude", "claude"), ("anthropic", "claude"), ("chatgpt", "chatgpt"), ("openai", "chatgpt"),
-         ("muse", "muse"), ("meta", "muse"), ("codex", "codex"), ("cursor", "cursor"), ("gemini", "gemini"),
-         ("copilot", "copilot"), ("vscode", "vscode"))
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS oauth_clients(
@@ -83,8 +80,8 @@ def s256(verifier: str) -> str:
 
 
 def app_word(name: str) -> Optional[str]:
-    n = (name or "").lower()
-    return next((w for k, w in NAMES if k in n), None)
+    """The provider an app's registered name points to; see providers.py."""
+    return P.detect(name)
 
 
 def redirect_ok(uri: str) -> bool:
@@ -294,7 +291,7 @@ def mount(app, hub) -> None:
         nonce = secrets.token_urlsafe(12)
         host = urllib.parse.urlsplit(redirect).hostname or urllib.parse.urlsplit(redirect).scheme
         word = app_word(cl["name"]) or ""
-        logo = {"chatgpt": None}.get(word, word if word in LOGO_FILES else None)
+        logo = word if word in P.LOGOS else None
         boot = {"request": rid, "app": cl["name"], "host": host, "email": hub.email_on, "hub": issuer(request)}
         left = (f"<img src='/logos/{logo}.svg' alt=''>" if logo else f"<b>{html.escape((cl['name'] or '?')[:1].upper())}</b>")
         body = (f"<div class=glow aria-hidden=true></div><div class=shell>"
@@ -336,7 +333,7 @@ def mount(app, hub) -> None:
         me = who(request.headers.get("authorization", ""))
         r = pending(rid)
         cl = client(r["client_id"])
-        word = app_word(cl["name"] if cl else "") or "agent"
+        word = P.handle_for(app_word(cl["name"] if cl else ""))
         with store.ro() as c:
             agents = choosable(c, me)
             taken = {x["handle"] for x in c.execute("SELECT handle FROM agents")}
@@ -357,7 +354,6 @@ def mount(app, hub) -> None:
                 if c.execute("SELECT 1 FROM agents WHERE handle=?", (handle,)).fetchone():
                     raise HTTPException(409, f"{handle} is already taken; pick another name")
                 provider = app_word(cl["name"] if cl else "")
-                provider = {"chatgpt": "openai"}.get(provider, provider)
                 c.execute("INSERT INTO agents(handle,token_hash,caps,role,created,provider,provider_source,person)"
                           " VALUES (?,?,?,?,?,?,?,?)", (handle, _h("rly_" + secrets.token_urlsafe(32)), "[]", "agent",
                                                         now(), provider, "detected" if provider else None,
@@ -734,7 +730,7 @@ const canPasskey=!!(window.PublicKeyCredential&&navigator.credentials);
 const G={print:'<svg viewBox="0 0 26 26" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M6.5 15.5a6.5 6.5 0 0 1 13 0"/><path d="M9.3 17.5v-2a3.7 3.7 0 0 1 7.4 0v3.5"/><path d="M13 15.3v6"/><path d="M4 11a9.6 9.6 0 0 1 18 0" opacity=".55"/></svg>',
  add:'<svg viewBox="0 0 58 58" fill="none"><path d="M27 8a21 21 0 0 0 0 42" stroke="currentColor" stroke-width="1.6" stroke-dasharray="3 3.4"/><path d="M31 8a21 21 0 0 1 0 42z" fill="currentColor" opacity=".14"/><path d="M36 29h-7M32.5 25.5v7" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>',
  tick:'<svg viewBox="0 0 30 30" fill="none"><path d="M8 15.5l4.6 4.6L22.5 10" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/></svg>'};
-const LOGOS=['claude','codex','gemini','copilot','muse'];
+const LOGOS=['claude','codex','gemini','copilot','muse','openai','grok','cursor'];
 const mark=(p,name)=>LOGOS.includes(p)?$('img',{src:'/logos/'+p+'.svg',alt:''}):$('b',{text:(name||'?')[0].toUpperCase()});
 function right(kind,p,name){rhalf.className='half r '+kind;rhalf.replaceChildren(kind==='new'?$('span',{class:'face',html:G.add}):$('span',{class:'face'},mark(p,name)))}
 function keep(on){return $('label',{class:'keep'},$('input',{type:'checkbox',id:'keep',...(on?{checked:''}:{})}),'Keep me signed in')}

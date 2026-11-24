@@ -234,3 +234,32 @@ def test_a_different_vault_key_cannot_open_saved_keys(tmp_path):
         row = db.execute("SELECT * FROM vault_keys").fetchone()
     with pytest.raises(V.VaultError, match="save it again"):
         v2._open(row)
+
+
+def test_saved_keys_and_wakeups_move_off_the_admin_token_and_survive_changing_it(tmp_path):
+    """Before the hub had its own secret, keys were sealed with the admin token. The first start with
+    the new code moves them; after that the admin token can change without losing anything."""
+    from relay.wake import Waker, _cipher
+    d = str(tmp_path)
+    app = create_app(data_dir=d, admin_token="old-admin", vault_send=FakeWeb(), vault_resolve=public)
+    c = TestClient(app)
+    kobby = c.post("/owner", headers=H("old-admin"), json={"handle": "kobby"}).json()["token"]
+    k = save(c, kobby)
+    store = app.state.store
+    # make the rows look like the old code wrote them: sealed with the admin token
+    old_vault = V.Vault(store, time.time, "old-admin")
+    old_wake = _cipher("old-admin", None)
+    with store.tx() as db:
+        db.execute("UPDATE vault_keys SET sealed=? WHERE id=?", (old_vault._seal(k["id"], "kobby", SECRET), k["id"]))
+        db.execute("INSERT INTO wakes(handle,kind,url,secret,created) VALUES ('claude','routine','https://api.example/x',?,?)",
+                   (old_wake.encrypt(b"routine-token").decode(), time.time()))
+    # the next start moves them; then the admin token changes and everything still opens
+    create_app(data_dir=d, admin_token="old-admin", vault_send=FakeWeb(), vault_resolve=public)
+    app3 = create_app(data_dir=d, admin_token="brand-new-admin", vault_send=FakeWeb(), vault_resolve=public)
+    with app3.state.store.ro() as db:
+        row = db.execute("SELECT * FROM vault_keys").fetchone()
+        wake = db.execute("SELECT secret FROM wakes WHERE handle='claude'").fetchone()
+    assert app3.state.vault._open(row) == SECRET
+    assert app3.state.waker.fernet.decrypt(wake["secret"].encode()) == b"routine-token"
+    import os, stat
+    assert stat.S_IMODE(os.stat(os.path.join(d, "hub_secret")).st_mode) == 0o600

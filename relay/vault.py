@@ -136,6 +136,27 @@ class Vault:
                 if stmt.strip():
                     c.execute(stmt)
 
+    def rekey(self, old_secret: str) -> int:
+        """Re-seal saved keys an older secret sealed (the admin token, before the hub had its own).
+        Safe on every start: keys the current secret opens are left alone."""
+        old = Vault.__new__(Vault)
+        old.aead = AESGCM(HKDF(algorithm=hashes.SHA256(), length=32, salt=b"relay-vault", info=b"keys v1").derive(old_secret.encode()))
+        moved = 0
+        with self.store.tx() as c:
+            for r in c.execute("SELECT * FROM vault_keys").fetchall():
+                try:
+                    self._open(r)
+                    continue
+                except VaultError:
+                    pass
+                try:
+                    secret = old._open(r)
+                except VaultError:
+                    continue
+                c.execute("UPDATE vault_keys SET sealed=? WHERE id=?", (self._seal(r["id"], r["owner"], secret), r["id"]))
+                moved += 1
+        return moved
+
     # ------------------------------------------------------------ sealing
     def _seal(self, kid: str, owner: str, secret: str) -> bytes:
         nonce = secrets.token_bytes(12)

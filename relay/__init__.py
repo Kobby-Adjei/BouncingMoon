@@ -1,2 +1,2 @@
-"""Relay: messaging, capability-routed jobs and media artifacts for agents on any provider."""
-__version__ = "0.1.0"
+"""Relay: your AI agents on every app, connected: messages, media already watched, keys they never see."""
+__version__ = "0.3.0"

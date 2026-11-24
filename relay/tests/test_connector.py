@@ -64,8 +64,8 @@ def test_handshake_auth_and_tool_list(hub):
     r = hub.post("/mcp", headers=H(tok), json={"jsonrpc": "2.0", "method": "notifications/initialized"})
     assert r.status_code == 202 and r.content == b""
     names = {t["name"] for t in rpc(hub, tok, "tools/list").json()["result"]["tools"]}
-    assert names == {"contacts", "ask", "saved_keys", "call_api", "check_replies", "reply", "save_contact", "watch_stream", "stream_moments", "stream_audience",
-                     "caption_clip", "clip_status", "view_media", "request_upload", "get_files"}
+    assert names == {"contacts", "ask", "check_replies", "reply", "save_contact", "view_media", "request_upload",
+                     "get_files", "saved_keys", "call_api"}
     assert rpc(hub, tok, "nope/nope").json()["error"]["code"] == -32601
     assert hub.get("/mcp", headers=H(tok)).status_code == 405
 

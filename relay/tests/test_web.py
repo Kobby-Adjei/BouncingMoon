@@ -22,13 +22,11 @@ def H(tok):
 
 
 def test_pages_and_static_files_are_served_with_a_strict_policy(hub):
-    assert "Feel connected." in hub.get("/").text and hub.get("/classic").status_code == 200
+    assert "Feel connected." in hub.get("/").text and hub.get("/classic").status_code == 404
     assert hub.get("/welcome", follow_redirects=False).headers["location"] == "/"
     for path, kind in [("/app", "text/html"), ("/", "text/html"), ("/static/app.js", "text/javascript"),
                        ("/static/landing.js", "text/javascript"), ("/static/relay.css", "text/css"),
-                       ("/static/mark.svg", "image/svg+xml"), ("/static/hero-run.js", "text/javascript"),
-                       ("/static/hero-run.json", "application/json"), ("/static/hero-sheet.webp", "image/webp"),
-                       ("/static/hero-clip1.mp4", "video/mp4"), ("/static/hero-clip1.jpg", "image/jpeg")]:
+                       ("/static/mark.svg", "image/svg+xml"), ("/static/icon-512.png", "image/png")]:
         r = hub.get(path)
         assert r.status_code == 200 and r.headers["content-type"].startswith(kind), path
         csp = r.headers["content-security-policy"]
@@ -38,52 +36,39 @@ def test_pages_and_static_files_are_served_with_a_strict_policy(hub):
         assert hub.get(bad).status_code == 404, bad
 
 
-def test_videos_stream_in_byte_ranges(hub):
-    """Safari and iOS will not play a video unless the server answers range requests."""
-    full = hub.get("/static/hero-clip2.mp4")
+def test_media_files_stream_in_byte_ranges(hub):
+    """Safari and iOS will not play a video unless the server answers range requests: every media file
+    the site ships is served that way (the icon stands in for them here)."""
+    full = hub.get("/static/icon-512.png")
     assert full.headers.get("accept-ranges") == "bytes" and "max-age" in full.headers["cache-control"]
-    r = hub.get("/static/hero-clip2.mp4", headers={"Range": "bytes=0-99"})
+    r = hub.get("/static/icon-512.png", headers={"Range": "bytes=0-99"})
     assert r.status_code == 206 and len(r.content) == 100 and r.content == full.content[:100]
     assert r.headers["content-range"] == f"bytes 0-99/{len(full.content)}"
     assert "media-src 'self'" in r.headers["content-security-policy"]
 
 
-def test_the_hero_replays_a_real_recorded_run():
-    run = json.load(open(os.path.join(WEB, "hero-run.json")))
-    js = open(os.path.join(WEB, "hero-run.js")).read()
-    embedded = js[js.index("Object.freeze(") + len("Object.freeze("):js.rindex(");\n})();")]
-    assert json.loads(embedded) == run                     # the page replays exactly the recorded file
-    # every file it names shipped, the clips are real vertical H.264 and the whole thing stays light
-    files = [run["digest"]["sheet"]] + [f for c in run["clips"] for f in (c["file"], c["poster"])]
-    for f in files + [f for m in run["messages"] for f in m["files"]]:
-        assert os.path.exists(os.path.join(WEB, f)), f
-    for c in run["clips"]:
-        head = open(os.path.join(WEB, c["file"]), "rb").read(64)
-        assert b"ftyp" in head and os.path.getsize(os.path.join(WEB, c["file"])) == c["bytes"] < 3_000_000
-    assert sum(os.path.getsize(os.path.join(WEB, f)) for f in set(files)) < 8_000_000
-    # the timeline holds together: jobs finish after they start, replies follow their jobs
-    assert [j["kind"] for j in run["jobs"]] == ["digest", "clip"]
-    times = [m["t"] for m in run["messages"]]
-    assert times == sorted(times) and times[0] == 0
-    for j in run["jobs"]:
-        assert 0 < j["seconds"] and j["queued"] < j["done"]
-    said = " ".join(m["text"] for m in run["messages"])
-    assert f"{run['digest']['shots']} shots" in said and "Post clip 2 at 9:00?" in said
-    assert "Blender Foundation" in run["source"]["credit"]
-    # and the landing page uses no video it did not record, and never loops
-    page = open(os.path.join(WEB, "landing.html")).read() + open(os.path.join(WEB, "landing.js")).read()
-    assert "loop" not in page.lower() and "autoplay" not in page.lower()
+def test_the_landing_demo_is_honest_and_light():
+    page = open(os.path.join(WEB, "landing.html")).read()
+    js = open(os.path.join(WEB, "landing.js")).read()
+    # it says it's a demo, plays once (no loop, no autoplay video) and ships no video at all
+    assert "A demo · nothing is sent" in page and "nothing was sent" in js
+    assert "loop" not in (page + js).lower() and "autoplay" not in (page + js).lower()
+    assert not glob.glob(os.path.join(WEB, "*.mp4")) and "hero-run" not in page
+    # no promise the product doesn't keep: strangers are told it's invite-only, and no "No keys"
+    assert "Invite-only" in page and "No keys" not in page
+    for name in ("ChatGPT", "Grok", "Muse", "Claude"):
+        assert name in page, name
 
 
 def test_no_script_writes_html():
-    for path in glob.glob(os.path.join(WEB, "*.js")) + [os.path.join(WEB, "..", "ui.js")]:
+    for path in glob.glob(os.path.join(WEB, "*.js")):
         src = open(path).read()
         for bad in ("innerHTML", "outerHTML", "insertAdjacentHTML", "document.write", "eval("):
             assert bad not in src, f"{bad} in {os.path.basename(path)}"
 
 
 def test_landing_page_never_calls_the_api():
-    src = "".join(open(os.path.join(WEB, f)).read() for f in ("landing.js", "landing.html", "hero-run.js"))
+    src = "".join(open(os.path.join(WEB, f)).read() for f in ("landing.js", "landing.html"))
     assert "fetch(" not in src and "XMLHttpRequest" not in src
 
 
