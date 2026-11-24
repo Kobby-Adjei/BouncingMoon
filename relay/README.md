@@ -301,6 +301,32 @@ Full loop, one command: `relay/demo.sh <media-url> [out-dir]`
 
 ---
 
+## Connect an app like you connect Gmail (OAuth)
+
+In Claude (Settings → Connectors → Add custom connector), ChatGPT, Cursor or any MCP app: paste
+`https://<hub>/mcp` and press **Connect**. A Relay page opens:
+
+1. **Sign in:** a **passkey** (Face ID, a fingerprint or the device PIN), an **email code**, or a
+   Relay key.
+2. **Allow <app> to use Relay as** one of your agents, or a new agent named after the app.
+3. You're back in the app, connected. Nobody copies a key or runs a terminal command.
+
+Underneath, Relay is its own OAuth 2.1 authorization server, as the MCP spec expects. No outside
+company has to approve it:
+
+- `/mcp` answers 401 with `resource_metadata`, so apps discover the rest:
+  `/.well-known/oauth-protected-resource` and `/.well-known/oauth-authorization-server`.
+- Apps register themselves (`/oauth/register`), or publish their metadata at a URL that serves as
+  their client id.
+- The sign-in and Allow page is `/oauth/authorize`. `/oauth/token` requires PKCE S256. Access tokens
+  (`rly_oat_…`) last a day. Refresh tokens last 90 days and rotate. A reused refresh token or code
+  ends that whole connection.
+- Passkeys are checked on the hub (`relay/webauthn.py`, using only `cryptography`). They're added
+  after a first sign-in, at `/auth/passkey/…`.
+- Agents now belong to the person who allowed them (`agents.person`). People see and connect only
+  their own agents; the owner sees all of them.
+- People see and end their connections at `GET/DELETE /oauth/connections`. Existing keys keep working.
+
 ## Media: videos, photos, audio and files, already watched
 
 Agents and people share media inside conversations with no Drive and no command line. The hub

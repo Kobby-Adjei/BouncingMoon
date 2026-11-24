@@ -682,8 +682,10 @@ def mount(app, hub) -> None:
             header = "Bearer " + alt
         try:
             me = auth(header)
-        except HTTPException as e:
-            raise HTTPException(e.status_code, e.detail, headers={"WWW-Authenticate": 'Bearer realm="relay"'})
+        except HTTPException as e:   # tells an app where to sign in (MCP authorization, RFC 9728)
+            meta = hub.origin(request) + "/.well-known/oauth-protected-resource"
+            raise HTTPException(e.status_code, e.detail, headers={
+                "WWW-Authenticate": f'Bearer realm="relay", resource_metadata="{meta}"'})
         if me["role"] == "admin":
             raise HTTPException(403, "use this agent's own Relay key, not the admin token")
         return me["handle"]

@@ -416,6 +416,11 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
                      else os.environ.get("RELAY_ALLOW_PRIVATE_FETCH") == "1")
 
     store = Store(data_dir)
+    public_url = (os.environ.get("RELAY_PUBLIC_URL") or "").rstrip("/") or None
+
+    def origin(request: Request) -> str:
+        """This hub's own address, as apps should use it (behind Railway: https, from the proxy headers)."""
+        return public_url or f"{request.url.scheme}://{request.url.netloc}"
     # a chat that answered and then went quiet this long is treated as gone: new messages for it in
     # a conversation someone else started go back to the identity (see release())
     session_idle = float(session_idle_seconds if session_idle_seconds is not None
@@ -450,7 +455,10 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
         if secrets.compare_digest(tok, admin_token):
             return {"handle": "admin", "role": "admin", "caps": []}
         with store.tx() as c:
-            if tok.startswith("rly_sess_"):          # a person signed in by email
+            if tok.startswith("rly_oat_"):           # an app connected through "Allow" (OAuth)
+                r = c.execute("SELECT a.* FROM oauth_tokens t JOIN agents a ON a.handle=t.handle WHERE t.token_hash=?"
+                              " AND t.kind='access' AND t.revoked IS NULL AND t.expires>?", (_hash(tok), _now())).fetchone()
+            elif tok.startswith("rly_sess_"):          # a person signed in by email
                 sess = c.execute("SELECT handle FROM sessions WHERE token_hash=? AND expires>?",
                                  (_hash(tok), _now())).fetchone()
                 r = c.execute("SELECT * FROM agents WHERE handle=?", (sess["handle"],)).fetchone() if sess else None
@@ -1532,14 +1540,30 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
     from . import connector
     connector.mount(app, SimpleNamespace(
         extra_tools=extra_tools, store=store, auth=auth, post=post, inbox_for=inbox_for, ack_to=ack_to,
-        take=take, check_session=check_session, CONVERSATION=CONVERSATION, media=media_svc, no_session=no_session, start_session=start_session,
+        take=take, check_session=check_session, CONVERSATION=CONVERSATION, media=media_svc, origin=origin, no_session=no_session, start_session=start_session,
         mark_read=mark_read, msg_out=msg_out, with_context=with_context, now=_now, loads=_loads, handle_re=HANDLE_RE))
     from . import people
     sb_url = supabase_url or os.environ.get("SUPABASE_URL")
     sb_key = supabase_key or os.environ.get("SUPABASE_PUBLISHABLE_KEY")
+    supabase = people.Supabase(sb_url, sb_key, send=supabase_send) if sb_url and sb_key else None
     people.mount(app, SimpleNamespace(store=store, auth=auth, now=_now, hash=_hash,
-                                      check_new_agent=check_new_agent),
-                 people.Supabase(sb_url, sb_key, send=supabase_send) if sb_url and sb_key else None)
+                                      check_new_agent=check_new_agent), supabase)
+
+    # ---------------------------------------------------------------- connect apps with "Allow" (OAuth)
+    def new_session(handle: str) -> dict:
+        """A signed-in person (passkey): the same kind of session an email sign-in gives."""
+        token = "rly_sess_" + secrets.token_urlsafe(32)
+        now = _now()
+        with store.tx() as c:
+            c.execute("INSERT INTO sessions(token_hash,handle,created,expires,last_used) VALUES (?,?,?,?,?)",
+                      (_hash(token), handle, now, now + 30 * 86400, now))
+            owner = c.execute("SELECT owner FROM agents WHERE handle=?", (handle,)).fetchone()
+        return {"token": token, "handle": handle, "owner": bool(owner and owner["owner"])}
+
+    from . import oauth
+    oauth.mount(app, SimpleNamespace(store=store, auth=auth, now=_now, check_new_agent=check_new_agent,
+                                     private_host=(lambda h: False) if allow_private else private_host,
+                                     origin=origin, email_on=supabase is not None, log=log, new_session=new_session))
     return app
 
 
