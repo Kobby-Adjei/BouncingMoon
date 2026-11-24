@@ -301,3 +301,10 @@ def test_a_stranger_asks_for_an_invite_and_the_owner_answers(hub):
     for i in range(2):
         hub.post("/invite-requests", json={**ask, "name": f"n{i}"})
     assert hub.post("/invite-requests", json=ask).status_code == 429
+
+
+def test_a_made_up_forwarded_address_doesnt_get_round_the_ask_limit(hub):
+    ask = {"name": "Spam", "contact": "spam@example.com"}
+    codes = [hub.post("/invite-requests", json=ask, headers={"X-Forwarded-For": f"10.0.0.{i}, 203.0.113.7"}).status_code
+             for i in range(5)]
+    assert codes == [200, 200, 200, 429, 429]       # the address the proxy added counts, not the one the caller wrote

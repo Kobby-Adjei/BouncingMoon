@@ -18,6 +18,7 @@ from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.asymmetric import ec
 from fastapi.testclient import TestClient
 
+from relay import oauth as O
 from relay import webauthn as W
 from relay.hub import create_app
 
@@ -146,7 +147,21 @@ def test_a_wrong_verifier_or_a_reused_code_gets_nothing(hub):
                   json={"request": rid, "new_agent": "x2"}).status_code == 410  # the page was used up
 
 
-def test_tokens_renew_and_a_copied_refresh_token_ends_the_connection(hub):
+def test_a_retried_refresh_keeps_the_person_signed_in(hub):
+    c, owner = hub
+    tokens, cid = connect(c, owner, new_agent="claude")
+    body = {"grant_type": "refresh_token", "refresh_token": tokens["refresh_token"], "client_id": cid}
+    first = c.post("/oauth/token", data=body).json()
+    retry = c.post("/oauth/token", data=body).json()         # the app retried, or two requests raced
+    assert "access_token" in retry and retry["access_token"] != first["access_token"]
+    assert mcp(c, first["access_token"]).status_code == 200 and mcp(c, retry["access_token"]).status_code == 200
+    conns = c.get("/oauth/connections", headers={"Authorization": f"Bearer {owner}"}).json()
+    c.delete(f"/oauth/connections/{conns[0]['id']}", headers={"Authorization": f"Bearer {owner}"})
+    assert c.post("/oauth/token", data=body).json()["error"] == "invalid_grant"   # ended by the person: no grace
+
+
+def test_tokens_renew_and_a_copied_refresh_token_ends_the_connection(hub, monkeypatch):
+    monkeypatch.setattr(O, "REFRESH_GRACE", 0)               # long after the swap: a copy, not a retry
     c, owner = hub
     tokens, cid = connect(c, owner, new_agent="claude")
     new = c.post("/oauth/token", data={"grant_type": "refresh_token", "refresh_token": tokens["refresh_token"], "client_id": cid}).json()

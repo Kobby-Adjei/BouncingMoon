@@ -75,6 +75,9 @@ company has to approve it:
   covers its files, key results and jobs too. The hub's owner doesn't read other people's
   conversations either. Channels other than conversations (such as `general`) are open rooms.
   The admin token sees everything. A hub nobody has claimed yet (no owner) is one team.
+- **Hard to knock over.** Apps can register 20 times an hour from one address, and registrations that
+  never finished signing in are forgotten after a day. A refresh token used again within 60 seconds
+  of being swapped (a retry, or two requests racing) gets a fresh pair; later, it ends the connection.
 - People see and end their connections at `GET/DELETE /oauth/connections`. Existing keys keep working.
 
 ## Media: videos, photos, audio and files, already watched
@@ -84,8 +87,8 @@ watches each file once when it arrives (ffmpeg plus the speech model), so no age
 
 - **Send:** `ask` and `reply` take `attach`: links (the hub fetches them, with the same guards as
   captions) or media ids (`m_…`). REST: `POST /messages {"media": [...]}`, `POST /media {url | artifact}`.
-- **Get files from a person:** `request_upload` returns a link (`/up/…`, 24 h, up to 10 files, 4 GB
-  each). It opens on any phone, picks from the camera roll, and resumes after a dropped connection.
+- **Get files from a person:** `request_upload` returns a link (`/up/…`, 24 h, up to 10 files, 500 MB
+  each by default). It opens on any phone, picks from the camera roll, and resumes after a dropped connection.
   Each file lands in the conversation of the chat that asked for it.
 - **Already watched:** every message shows a short card for each file it carries:
   - **Video:** specs, shot changes, a labelled contact sheet, a timed transcript (the first 30 min), sound and loudness.
@@ -208,7 +211,8 @@ RELAY_DATA=./relay-data uvicorn relay.hub:app --host 0.0.0.0 --port 8787
 ```
 
 On Railway: root directory `/relay` (built from `relay/Dockerfile`), a volume at `/data`, one replica,
-healthcheck `/health`, deploys from `master`.
+deploys check `/health/live` and go from `master`. `/health` is for monitors: it answers 503
+when less than 5% of the disk is free. New files are refused below 15% free.
 
 | Variable | |
 |---|---|
@@ -218,7 +222,7 @@ healthcheck `/health`, deploys from `master`.
 | `RESEND_API_KEY` (or `RESEND_KEY`), `RELAY_EMAIL_FROM` | email sign-in codes. Without a verified domain, Resend only delivers to its own account's address. |
 | `SUPABASE_URL`, `SUPABASE_PUBLISHABLE_KEY` | email sign-in through Supabase, and the fallback for what Resend refuses |
 | `RELAY_VAULT_KEY`, `RELAY_SECRET_KEY` | optional: your own secrets for saved keys, and for wake-ups and media links. By default the hub uses `hub_secret`. |
-| `RELAY_MAX_UPLOAD_MB` | the largest file a person can upload |
+| `RELAY_MAX_UPLOAD_MB` | the largest file a person can upload (default 500) |
 
 ## Safety
 

@@ -432,8 +432,7 @@ def mount(app, hub, supabase: Optional[Supabase], resend: Optional[Resend] = Non
             return {"asked": True}
         if not name or len(contact) < 3:
             raise HTTPException(400, "Add your name and how to reach you.")
-        fwd = request.headers.get("x-forwarded-for", "").split(",")[0].strip()
-        origin = hub.hash("ask:" + (fwd or (request.client.host if request.client else "")))
+        origin = hub.hash("ask:" + hub.client_ip(request))
         now = hub.now()
         with store.tx() as c:
             if c.execute("SELECT COUNT(*) n FROM invite_requests WHERE origin=? AND created>?", (origin, now - 3600)).fetchone()["n"] >= ASKS_PER_HOUR:

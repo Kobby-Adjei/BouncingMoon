@@ -137,6 +137,16 @@ def private_host(host: str) -> bool:
     return not ip.is_global
 
 
+DISK_LOW = 0.05             # /health says "not ok" under this share of the disk free
+
+
+def client_ip(request) -> str:
+    """Who is calling, for rate limits. Behind a proxy (Railway) the last X-Forwarded-For entry is the
+    one the proxy added; earlier entries are whatever the caller wrote, so they are never trusted."""
+    fwd = [p.strip() for p in request.headers.get("x-forwarded-for", "").split(",") if p.strip()]
+    return fwd[-1] if fwd else (request.client.host if request.client else "")
+
+
 def _now() -> float:
     return time.time()
 
@@ -419,7 +429,7 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
             f.write(hub_secret)
     lease = float(lease_seconds or os.environ.get("RELAY_LEASE_SECONDS", 300))
     max_att = int(max_attempts or os.environ.get("RELAY_MAX_ATTEMPTS", 3))
-    max_upload = int(max_upload_mb or os.environ.get("RELAY_MAX_UPLOAD_MB", 4096)) * 2**20
+    max_upload = int(max_upload_mb or os.environ.get("RELAY_MAX_UPLOAD_MB", 500)) * 2**20
     retry_base = float(retry_base_seconds if retry_base_seconds is not None
                        else os.environ.get("RELAY_RETRY_BASE_SECONDS", 30))
     allow_private = (allow_private_fetch if allow_private_fetch is not None
@@ -981,7 +991,17 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
                 "release": int(m.group(1)) if m else None, "signed": signed}
 
     @app.get("/health")
-    def health():
+    def health(response: Response):
+        """Honest: not ok when the disk is almost full (the database lives on it). For monitors."""
+        free, total = media_mod.disk(store.dir)
+        ok = free >= DISK_LOW * total
+        if not ok:
+            response.status_code = 503
+        return {"ok": ok, "version": app.version, "disk": "ok" if ok else "nearly full"}
+
+    @app.get("/health/live", include_in_schema=False)
+    def live():
+        """The process answers. Deploys check this one, so a fix can still go out when the disk is full."""
         return {"ok": True, "version": app.version}
 
     # ---------------------------------------------------------------- agents
@@ -1549,6 +1569,14 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
         """Raw body upload, streamed to disk. Big files never sit in memory and never
         travel inside a message: the message carries the id this returns."""
         need_agent(me)
+        try:
+            expected = int(request.headers.get("content-length") or 0)
+        except ValueError:
+            expected = 0
+        if expected > max_upload:
+            raise HTTPException(413, "upload too large")
+        if not media_mod.room(store.dir, expected):
+            raise HTTPException(507, "the hub is nearly full")
         h = hashlib.sha256()
         size = 0
         fd, tmp = tempfile.mkstemp(dir=store.tmp)
@@ -1558,6 +1586,8 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
                     size += len(chunk)
                     if size > max_upload:
                         raise HTTPException(413, "upload too large")
+                    if size > expected and size % (64 * 2**20) < len(chunk) and not media_mod.room(store.dir, 0):
+                        raise HTTPException(507, "the hub is nearly full")
                     h.update(chunk)
                     f.write(chunk)
             aid = h.hexdigest()
@@ -1676,7 +1706,7 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
     rs_key = resend_key or os.environ.get("RESEND_API_KEY") or os.environ.get("RESEND_KEY")
     resend = people.Resend(rs_key, email_from or os.environ.get("RELAY_EMAIL_FROM") or "Relay <onboarding@resend.dev>",
                            send=resend_send) if rs_key else None
-    people.mount(app, SimpleNamespace(store=store, auth=auth, now=_now, hash=_hash,
+    people.mount(app, SimpleNamespace(store=store, auth=auth, now=_now, hash=_hash, client_ip=client_ip,
                                       check_new_agent=check_new_agent), supabase, resend)
 
     # ---------------------------------------------------------------- connect apps with "Allow" (OAuth)
@@ -1691,7 +1721,7 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
         return {"token": token, "handle": handle, "owner": bool(owner and owner["owner"])}
 
     from . import oauth
-    oauth.mount(app, SimpleNamespace(store=store, auth=auth, now=_now, check_new_agent=check_new_agent,
+    oauth.mount(app, SimpleNamespace(store=store, auth=auth, now=_now, check_new_agent=check_new_agent, client_ip=client_ip,
                                      private_host=(lambda h: False) if allow_private else private_host,
                                      origin=origin, email_on=bool(supabase or resend), log=log, new_session=new_session))
     vault_mod.mount(app, SimpleNamespace(auth=auth, store=store, post=post, SYSTEM=SYSTEM), vault)
