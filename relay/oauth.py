@@ -38,6 +38,7 @@ from pydantic import BaseModel
 
 from . import webauthn as W
 
+LOGO_FILES = ("claude", "codex", "gemini", "copilot", "muse")      # app logos that ship in relay/logos
 ACCESS_SECONDS = 24 * 3600
 REFRESH_SECONDS = 90 * 86400
 CODE_SECONDS = 600
@@ -292,11 +293,17 @@ def mount(app, hub) -> None:
                                                      q.get("scope") or SCOPE, resource, now(), now() + REQUEST_SECONDS))
         nonce = secrets.token_urlsafe(12)
         host = urllib.parse.urlsplit(redirect).hostname or urllib.parse.urlsplit(redirect).scheme
+        word = app_word(cl["name"]) or ""
+        logo = {"chatgpt": None}.get(word, word if word in LOGO_FILES else None)
         boot = {"request": rid, "app": cl["name"], "host": host, "email": hub.email_on, "hub": issuer(request)}
-        body = (f"<div class=card id=root><img src='/icon.svg' alt='Relay' width=44 height=44 style='border-radius:10px'>"
-                f"<h1>Connect {html.escape(cl['name'])} to Relay</h1>"
-                f"<p class=muted>It will be able to message your other agents and share files with them, as the agent "
-                f"you choose. Returning to <b>{html.escape(host)}</b>.</p><div id=step></div></div>"
+        tile = (f"<span class='av app'><img src='/logos/{logo}.svg' alt=''></span>" if logo else
+                f"<span class='av app mono'>{html.escape((cl['name'] or '?')[:1].upper())}</span>")
+        body = (f"<div class=shell><div class=pair aria-hidden=true>{tile}<span class=link-dots><i></i><i></i><i></i></span>"
+                f"<span class='av relay'><img src='/icon.svg' alt=''></span></div>"
+                f"<h1 class=title>Connect {html.escape(cl['name'])} to Relay</h1>"
+                f"<p class=lede>{html.escape(cl['name'])} will be able to message your other agents and share files with them, "
+                f"as the agent you choose.</p><section class=card id=step aria-live=polite></section>"
+                f"<p class=foot>Returning to <b>{html.escape(host)}</b> · You can disconnect any time in Relay.</p></div>"
                 f"<script nonce='{nonce}'>const BOOT={json.dumps(boot)};{PAGE_JS}</script>")
         return HTMLResponse(page(f"Connect {cl['name']}", body, nonce), headers=page_headers(nonce))
 
@@ -626,26 +633,82 @@ def page(title: str, body: str, nonce: str) -> str:
 
 
 PAGE_CSS = """
-:root{--bg:#f3f5f8;--card:#fff;--fg:#141a24;--muted:#5a6577;--line:#d6dce6;--accent:#1f4f8f;--on:#fff;--bad:#b42318}
-@media (prefers-color-scheme: dark){:root{--bg:#0f141b;--card:#171e28;--fg:#e8edf4;--muted:#97a3b6;--line:#2a3443;--accent:#7ab3ff;--on:#0b1220;--bad:#ff8a80}}
-*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);font:16px/1.5 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
-main{min-height:100vh;display:flex;align-items:flex-start;justify-content:center;padding:32px 16px}
-.card{width:100%;max-width:440px;background:var(--card);border:1px solid var(--line);border-radius:16px;padding:24px;display:flex;flex-direction:column;gap:14px}
-h1{font-size:1.35rem;margin:0;line-height:1.25}h2{font-size:1rem;margin:0}.muted{color:var(--muted);margin:0;font-size:.95rem}
-#step{display:flex;flex-direction:column;gap:12px}
-button,.btn{appearance:none;border:0;border-radius:12px;padding:13px 16px;font:600 1rem system-ui,sans-serif;cursor:pointer;width:100%}
-.primary{background:var(--accent);color:var(--on)}.ghost{background:transparent;color:var(--accent);border:1px solid var(--line)}
-.link{background:none;color:var(--accent);padding:4px 0;width:auto;font-weight:500}
-input[type=email],input[type=text],input[type=password]{width:100%;padding:12px 14px;border-radius:12px;border:1px solid var(--line);background:var(--bg);color:var(--fg);font:inherit}
-label.opt{display:flex;gap:10px;align-items:center;padding:12px 14px;border:1px solid var(--line);border-radius:12px;cursor:pointer}
-label.opt input{accent-color:var(--accent)}.err{color:var(--bad);font-size:.92rem;min-height:1.2em;margin:0}
-.or{display:flex;align-items:center;gap:10px;color:var(--muted);font-size:.85rem}.or:before,.or:after{content:"";flex:1;border-top:1px solid var(--line)}
-:focus-visible{outline:3px solid var(--accent);outline-offset:2px}
+:root{--bg:#f6f4ef;--card:#fff;--ink:#18171d;--ink2:#64626b;--ink3:#bdbac2;--sep:rgba(24,23,29,.08);--line:rgba(24,23,29,.1);
+ --fill:rgba(24,23,29,.05);--fill2:rgba(24,23,29,.08);--sel:rgba(79,68,224,.08);--ring:rgba(79,68,224,.22);--accent:#4f44e0;
+ --accent-hover:#4338d0;--on-accent:#fff;--accent-soft:#edecfc;--accent-line:#c9c5f6;--sun-soft:#ffe9df;--red:#c42838;--green:#22a565;
+ --shadow:0 1px 2px rgba(24,23,29,.05),0 4px 14px rgba(24,23,29,.07);--r:12px;--r-btn:10px;--ease:cubic-bezier(.22,.8,.24,1);
+ --spring:cubic-bezier(.34,1.45,.55,1);--font:-apple-system,BlinkMacSystemFont,"SF Pro Text","Inter","Segoe UI",system-ui,sans-serif;
+ --display:-apple-system,BlinkMacSystemFont,"SF Pro Display","Inter","Segoe UI",system-ui,sans-serif;color-scheme:light dark}
+@media (prefers-color-scheme:dark){:root{--bg:#111014;--card:#1c1b21;--ink:#f4f3f6;--ink2:#a6a4ae;--ink3:#4a4851;--sep:rgba(255,255,255,.07);
+ --line:rgba(255,255,255,.09);--fill:rgba(255,255,255,.06);--fill2:rgba(255,255,255,.09);--sel:rgba(154,147,255,.11);--ring:rgba(154,147,255,.3);
+ --accent:#9a93ff;--accent-hover:#aba5ff;--on-accent:#0e0d12;--accent-soft:#29273f;--accent-line:#3d3a63;--sun-soft:#3a2a24;--red:#ff7076;
+ --green:#46d58b;--shadow:0 1px 2px rgba(0,0,0,.35),0 6px 18px rgba(0,0,0,.3)}}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+html,body{margin:0;background:var(--bg);color:var(--ink)}
+body{font:16px/1.45 var(--font);-webkit-font-smoothing:antialiased;letter-spacing:-.011em}
+main{min-height:100vh;display:flex;justify-content:center;padding:max(28px,env(safe-area-inset-top)) max(16px,env(safe-area-inset-right)) 40px max(16px,env(safe-area-inset-left))}
+.shell{width:100%;max-width:420px;display:flex;flex-direction:column;align-items:center;gap:10px;animation:rise .5s var(--ease) both}
+@keyframes rise{from{opacity:0;transform:translateY(12px)}to{opacity:1;transform:none}}
+@keyframes pop{0%{transform:scale(.7);opacity:0}60%{transform:scale(1.05);opacity:1}100%{transform:none}}
+@media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+.pair{display:flex;align-items:center;gap:10px;margin:8px 0 10px}
+.av{--s:56px;width:var(--s);height:var(--s);flex:none;border-radius:calc(var(--s)*.28);display:grid;place-items:center;
+ background:var(--card);box-shadow:0 0 0 1px var(--sep);overflow:hidden;animation:pop .55s var(--spring) both}
+.av img{width:56%;height:56%;display:block}.av.relay{background:#18171d;box-shadow:none;animation-delay:.08s}.av.relay img{width:100%;height:100%}
+.av.mono{font:700 calc(var(--s)*.4)/1 var(--display);color:var(--ink2)}
+.link-dots{display:flex;gap:5px}.link-dots i{width:5px;height:5px;border-radius:50%;background:var(--ink3)}
+.title{font:700 26px/1.15 var(--display);letter-spacing:-.03em;margin:0;text-align:center;text-wrap:balance}
+.lede{color:var(--ink2);font-size:15px;margin:0 0 8px;text-align:center;max-width:34ch}
+.card{width:100%;background:var(--card);border-radius:16px;box-shadow:var(--shadow);padding:18px;display:flex;flex-direction:column;gap:12px}
+.foot{color:var(--ink2);font-size:13px;margin:6px 0 0;text-align:center}.foot b{color:var(--ink);font-weight:600}
+h2{font:650 17px/1.25 var(--display);letter-spacing:-.02em;margin:0}
+.label{font-size:12px;font-weight:600;letter-spacing:.04em;text-transform:uppercase;color:var(--ink2);margin:4px 0 -4px}
+.hint{color:var(--ink2);font-size:13px;margin:-4px 0 0;text-align:center}
+.btn{appearance:none;display:flex;align-items:center;justify-content:center;gap:8px;width:100%;height:48px;padding:0 18px;border:0;
+ border-radius:var(--r-btn);background:var(--accent);color:var(--on-accent);font:600 16px var(--font);letter-spacing:-.01em;cursor:pointer;
+ transition:transform .45s var(--spring),background-color .2s var(--ease)}
+.btn:hover{background:var(--accent-hover)}.btn:active{transform:scale(.97);transition:transform .1s var(--ease)}.btn:disabled{opacity:.45;cursor:default}
+.btn.ghost{background:var(--fill);color:var(--ink)}.btn.ghost:hover{background:var(--fill2)}
+.btn svg{width:20px;height:20px;flex:none}
+.textlink{appearance:none;background:none;border:0;color:var(--accent);font:500 14px var(--font);cursor:pointer;padding:6px;align-self:center}
+.textlink.quiet{color:var(--ink2)}
+input.field{width:100%;height:48px;padding:0 14px;border-radius:var(--r-btn);border:1px solid var(--line);background:var(--bg);color:var(--ink);
+ font:16px var(--font);transition:border-color .2s var(--ease),box-shadow .2s var(--ease)}
+input.field:focus{outline:none;border-color:var(--accent);box-shadow:0 0 0 4px var(--ring)}
+.check{display:flex;gap:10px;align-items:center;font-size:14px;color:var(--ink2);cursor:pointer}
+.check input{width:18px;height:18px;accent-color:var(--accent);margin:0}
+.or{display:flex;align-items:center;gap:10px;color:var(--ink3);font-size:12px;text-transform:uppercase;letter-spacing:.06em}
+.or:before,.or:after{content:"";flex:1;border-top:1px solid var(--sep)}
+.err{color:var(--red);font-size:14px;margin:0;min-height:0}.err:empty{display:none}
+.who{display:flex;align-items:center;gap:10px;padding:2px 0 6px;border-bottom:1px solid var(--sep)}
+.who .me{--s:32px;border-radius:50%;background:var(--sun-soft);box-shadow:none;font:650 14px/1 var(--display);color:var(--ink);animation:none}
+.who .t{flex:1;min-width:0;font-size:14px;color:var(--ink2)}.who .t b{color:var(--ink);font-weight:600}
+.list{display:flex;flex-direction:column;border:1px solid var(--line);border-radius:var(--r);overflow:hidden}
+.row{position:relative;display:flex;align-items:center;gap:12px;padding:10px 12px;cursor:pointer;min-height:60px;transition:background-color .2s var(--ease)}
+.row+.row{border-top:1px solid var(--sep)}.row:hover{background:var(--fill)}
+.row input[type=radio]{position:absolute;opacity:0;pointer-events:none}
+.row .av{--s:38px;animation:none}.row .av.add{background:var(--accent-soft);color:var(--accent);box-shadow:none;font:500 22px/1 var(--display)}
+.row .grow{flex:1;min-width:0;display:flex;flex-direction:column;gap:6px}
+.row .n{font-weight:600;font-size:15px;overflow-wrap:anywhere}.row .s{font-size:13px;color:var(--ink2);margin-top:-5px}
+.row .tick{width:22px;height:22px;flex:none;border-radius:50%;border:1.5px solid var(--ink3);display:grid;place-items:center;transition:all .2s var(--ease)}
+.row .tick svg{width:12px;height:12px;opacity:0;transition:opacity .15s var(--ease)}
+.row:has(input:checked){background:var(--sel)}
+.row:has(input:checked) .tick{background:var(--accent);border-color:var(--accent);color:var(--on-accent)}
+.row:has(input:checked) .tick svg{opacity:1}
+.row:has(input:focus-visible){box-shadow:inset 0 0 0 2px var(--accent)}
+.row input.field{height:40px;font-size:15px;display:none}.row:has(input:checked) input.field{display:block}
+.can{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:8px;font-size:14px;color:var(--ink2)}
+.can li{display:flex;gap:10px;align-items:center}.can svg{width:18px;height:18px;flex:none;color:var(--accent)}
+.actions{display:flex;flex-direction:column;gap:8px;margin-top:4px}
+.done{display:flex;flex-direction:column;align-items:center;gap:8px;text-align:center;padding:8px 0}
+.done .ok{width:52px;height:52px;border-radius:50%;background:var(--green);color:#fff;display:grid;place-items:center;animation:pop .5s var(--spring) both}
+.done .ok svg{width:26px;height:26px}
+:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
 """
 
 PAGE_JS = r"""
-const $=(t,a={},...k)=>{const e=document.createElement(t);for(const[n,v]of Object.entries(a)){if(n==='on')for(const[ev,f]of Object.entries(v))e.addEventListener(ev,f);else if(n==='text')e.textContent=v;else e.setAttribute(n,v)}e.append(...k);return e};
-const step=document.getElementById('step');const show=(...k)=>{step.replaceChildren(...k)};
+const $=(t,a={},...k)=>{const e=document.createElement(t);for(const[n,v]of Object.entries(a)){if(n==='on')for(const[ev,f]of Object.entries(v))e.addEventListener(ev,f);else if(n==='text')e.textContent=v;else if(n==='html')e.innerHTML=v;else e.setAttribute(n,v)}e.append(...k.filter(x=>x!=null));return e};
+const step=document.getElementById('step');const show=(...k)=>{step.replaceChildren(...k.filter(x=>x!=null))};
 const store={get(){try{return localStorage.getItem('relay_key')||sessionStorage.getItem('relay_key')}catch{return null}},
  set(k,keep){try{(keep?localStorage:sessionStorage).setItem('relay_key',k)}catch{}},clear(){try{localStorage.removeItem('relay_key');sessionStorage.removeItem('relay_key')}catch{}}};
 let cred=store.get(), viaEmail=false;
@@ -655,48 +718,66 @@ async function api(m,p,b,a){const h={'Content-Type':'application/json'};if(a)h.A
 const enc=b=>btoa(String.fromCharCode(...new Uint8Array(b))).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');
 const dec=s=>Uint8Array.from(atob(s.replace(/-/g,'+').replace(/_/g,'/')),c=>c.charCodeAt(0));
 const canPasskey=!!(window.PublicKeyCredential&&navigator.credentials);
-function keep(on=true){return $('label',{class:'opt'},$('input',{type:'checkbox',id:'keep',...(on?{checked:''}:{})}),'Keep me signed in on this device')}
+const ICON={key:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="8" cy="15" r="4"/><path d="M10.8 12.2L20 3M16 7l3 3M14 9l2 2"/></svg>',
+ face:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 8V6a2 2 0 0 1 2-2h2M16 4h2a2 2 0 0 1 2 2v2M20 16v2a2 2 0 0 1-2 2h-2M8 20H6a2 2 0 0 1-2-2v-2M9 10v1M15 10v1M12 10v3h-1M9.5 15.5c1.4 1 3.6 1 5 0"/></svg>',
+ msg:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a8 8 0 0 1-11.6 7.1L4 20l1-4.6A8 8 0 1 1 21 12z"/></svg>',
+ file:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="5" width="18" height="14" rx="3"/><path d="M10 9.5v5l4-2.5z"/></svg>',
+ lock:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/></svg>',
+ tick:'<svg viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 6.2l2.3 2.3 4.7-5"/></svg>'};
+const LOGOS=['claude','codex','gemini','copilot','muse'];const NAMES={claude:'Claude',codex:'Codex',gemini:'Gemini',muse:'Muse',cursor:'Cursor',copilot:'Copilot',openai:'ChatGPT'};
+function tile(p,name){return LOGOS.includes(p)?$('span',{class:'av'},$('img',{src:'/logos/'+p+'.svg',alt:''})):$('span',{class:'av mono',text:(name||'?')[0].toUpperCase()})}
+function ago(t){if(!t)return'not connected yet';const s=Date.now()/1000-t;if(s<120)return'active now';if(s<3600)return'active '+Math.floor(s/60)+' min ago';
+ if(s<86400)return'active '+Math.floor(s/3600)+' h ago';return'active '+Math.floor(s/86400)+' days ago'}
+function keep(on=true){return $('label',{class:'check'},$('input',{type:'checkbox',id:'keep',...(on?{checked:''}:{})}),'Keep me signed in on this device')}
 function signedIn(tok){cred=tok;const k=document.getElementById('keep');store.set(tok,!k||k.checked);consent()}
-function signIn(msg){const err=$('p',{class:'err',text:msg||''});const parts=[];
- if(canPasskey)parts.push($('button',{class:'primary',on:{click:passkey}},'Sign in with a passkey'),$('p',{class:'muted',text:'Face ID, a fingerprint, or your device PIN.'}));
+function signIn(msg){const err=$('p',{class:'err',role:'alert',text:msg||''});const parts=[];
+ if(canPasskey)parts.push($('button',{class:'btn',html:ICON.face+'<span>Sign in with a passkey</span>',on:{click:passkey}}),$('p',{class:'hint',text:'Face ID, a fingerprint or your device PIN'}));
  if(BOOT.email){if(parts.length)parts.push($('div',{class:'or',text:'or'}));
-  const em=$('input',{type:'email',id:'email',placeholder:'you@example.com',autocomplete:'email','aria-label':'Email'});
-  parts.push(em,$('button',{class:canPasskey?'ghost':'primary',on:{click:()=>emailCode(em.value.trim(),err)}},'Email me a code'))}
- const kb=$('button',{class:'link',on:{click:()=>keyForm()}},'Use a Relay key instead');
- show($('h2',{text:'Sign in to Relay'}),...parts,keep(),err,kb);window.__err=err}
+  const em=$('input',{class:'field',type:'email',id:'email',placeholder:'you@example.com',autocomplete:'email','aria-label':'Email'});
+  parts.push(em,$('button',{class:canPasskey?'btn ghost':'btn',on:{click:()=>emailCode(em.value.trim(),err)}},'Email me a code'))}
+ show($('h2',{text:'Sign in to Relay'}),...parts,keep(),err,$('button',{class:'textlink quiet',on:{click:()=>keyForm()}},'Use a Relay key instead'));window.__err=err}
 async function passkey(){const err=window.__err;try{const o=await api('POST','/auth/passkey/options',{});
   const c=await navigator.credentials.get({publicKey:{challenge:dec(o.challenge),rpId:o.rpId,userVerification:o.userVerification,timeout:o.timeout,allowCredentials:[]}});
   const r=c.response;const s=await api('POST','/auth/passkey/signin',{id:c.id,rawId:enc(c.rawId),type:c.type,response:{clientDataJSON:enc(r.clientDataJSON),authenticatorData:enc(r.authenticatorData),signature:enc(r.signature),userHandle:r.userHandle?enc(r.userHandle):null}});
   signedIn(s.token)}catch(e){err.textContent=e.name==='NotAllowedError'?'Cancelled, or no passkey for Relay on this device.':e.message}}
 async function emailCode(email,err){if(!email.includes('@')){err.textContent='Type your email first.';return}
  try{await api('POST','/auth/email',{email})}catch(e){err.textContent=e.message;return}
- const code=$('input',{type:'text',id:'code',inputmode:'numeric',autocomplete:'one-time-code',placeholder:'Code from the email','aria-label':'Code from the email'});const e2=$('p',{class:'err'});
- show($('h2',{text:'Check your email'}),$('p',{class:'muted',text:'We sent a code to '+email+'. Type it here (the link in the email works too, but some school and work mail opens links by itself).'}),code,
-  $('button',{class:'primary',on:{click:async()=>{try{const s=await api('POST','/auth/verify',{email,code:code.value});viaEmail=true;signedIn(s.token)}catch(x){e2.textContent=x.message}}}},'Sign in'),keep(),e2,
-  $('button',{class:'link',on:{click:()=>signIn()}},'Back'))}
-function keyForm(){const k=$('input',{type:'password',id:'key',placeholder:'Your Relay key','aria-label':'Your Relay key',autocomplete:'current-password'});const e=$('p',{class:'err'});
- show($('h2',{text:'Sign in with a Relay key'}),$('p',{class:'muted',text:'Your own key, or the hub owner\'s admin key.'}),k,
-  $('button',{class:'primary',on:{click:()=>{if(k.value.trim())signedIn(k.value.trim())}}},'Continue'),keep(false),e,$('button',{class:'link',on:{click:()=>signIn()}},'Back'))}
+ const code=$('input',{class:'field',type:'text',id:'code',inputmode:'numeric',autocomplete:'one-time-code',placeholder:'Code from the email','aria-label':'Code from the email'});const e2=$('p',{class:'err',role:'alert'});
+ show($('h2',{text:'Check your email'}),$('p',{class:'hint',style:'text-align:left;margin:0',text:'We sent a code to '+email+'. Type it here. (School and work mail often opens links by itself, so the code is the safe way.)'}),code,
+  $('button',{class:'btn',on:{click:async()=>{try{const s=await api('POST','/auth/verify',{email,code:code.value});viaEmail=true;signedIn(s.token)}catch(x){e2.textContent=x.message}}}},'Sign in'),keep(),e2,
+  $('button',{class:'textlink quiet',on:{click:()=>signIn()}},'Back'));code.focus()}
+function keyForm(){const k=$('input',{class:'field',type:'password',id:'key',placeholder:'Your Relay key','aria-label':'Your Relay key',autocomplete:'current-password'});const e=$('p',{class:'err',role:'alert'});
+ show($('h2',{text:'Sign in with a Relay key'}),$('p',{class:'hint',style:'text-align:left;margin:0',text:'Your own key, or the hub owner\'s admin key.'}),k,
+  $('button',{class:'btn',on:{click:()=>{if(k.value.trim())signedIn(k.value.trim())}}},'Continue'),keep(false),e,$('button',{class:'textlink quiet',on:{click:()=>signIn()}},'Back'));k.focus()}
+function row(value,checked,av,name,sub,extra){const tickEl=$('span',{class:'tick',html:ICON.tick});
+ return $('label',{class:'row'},$('input',{type:'radio',name:'who',value,...(checked?{checked:''}:{})}),av,$('span',{class:'grow'},$('span',{class:'n',text:name}),sub?$('span',{class:'s',text:sub}):null,extra||null),tickEl)}
 async function consent(){let d;try{d=await api('GET','/oauth/request/'+BOOT.request,undefined,cred)}catch(e){
   if(e.status===401||e.status===403){store.clear();cred=null;signIn(e.status===403?e.message:'')}else show($('p',{class:'err',text:e.message}));return}
- const opts=d.agents.map(a=>$('label',{class:'opt'},$('input',{type:'radio',name:'who',value:a.handle,...(a.handle===d.preselect?{checked:''}:{})}),$('span',{text:a.handle+(a.provider?' ('+a.provider+')':'')})));
- const nn=$('input',{type:'text',id:'newname',value:d.suggest,'aria-label':'New agent name'});
- const newOpt=$('label',{class:'opt'},$('input',{type:'radio',name:'who',value:'__new__',...(d.preselect?{}:{checked:''})}),$('span',{text:'A new agent named'}));
- const err=$('p',{class:'err'});
- show($('h2',{text:'Allow '+BOOT.app+' to use Relay as'}),...opts,newOpt,nn,
-  $('button',{class:'primary',on:{click:()=>allow(nn,err)}},'Allow'),$('button',{class:'ghost',on:{click:deny}},'Cancel'),err,
-  $('p',{class:'muted',text:'Signed in as '+d.you+'. You can end this connection any time in Relay.'}))}
+ const me=$('div',{class:'who'},$('span',{class:'av me',text:(d.you||'?')[0].toUpperCase()}),$('span',{class:'t',html:'Signed in as <b></b>'}),
+  $('button',{class:'textlink quiet',style:'padding:0',on:{click:()=>{store.clear();cred=null;signIn()}}},'Not you?'));me.querySelector('b').textContent=d.you;
+ const rows=d.agents.map(a=>row(a.handle,a.handle===d.preselect,tile(a.provider,a.handle),a.handle,[NAMES[a.provider]||a.provider,ago(a.last_seen)].filter(Boolean).join(' · ')));
+ const nn=$('input',{class:'field',type:'text',id:'newname',value:d.suggest,'aria-label':'New agent name',autocapitalize:'off',spellcheck:'false'});
+ rows.push(row('__new__',!d.preselect,$('span',{class:'av add',text:'+'}),'A new agent named',null,nn));
+ const err=$('p',{class:'err',role:'alert'});
+ const can=$('ul',{class:'can'},...[[ICON.msg,'Message your other agents and answer them'],[ICON.file,'Send and receive videos, photos and files'],[ICON.lock,'Only as the agent you pick here']]
+  .map(([i,t])=>$('li',{html:i},$('span',{text:t}))));
+ show(me,$('h2',{text:'Allow '+BOOT.app+' to use Relay as'}),$('div',{class:'list',role:'radiogroup'},...rows),can,err,
+  $('div',{class:'actions'},$('button',{class:'btn',id:'allow',on:{click:()=>allow(nn,err)}},'Allow'),$('button',{class:'btn ghost',on:{click:deny}},'Cancel')))}
 async function allow(nn,err){const pick=(document.querySelector('input[name=who]:checked')||{}).value;
  const body=pick==='__new__'?{request:BOOT.request,new_agent:nn.value.trim()}:{request:BOOT.request,agent:pick};
- try{const r=await api('POST','/oauth/decide',body,cred);await offerPasskey();location.href=r.redirect}catch(e){err.textContent=e.message}}
+ const b=document.getElementById('allow');b.disabled=true;err.textContent='';
+ try{const r=await api('POST','/oauth/decide',body,cred);await offerPasskey();
+  show($('div',{class:'done'},$('span',{class:'ok',html:ICON.tick.replace('viewBox="0 0 12 12"','viewBox="0 0 12 12" width="26" height="26"')}),$('h2',{text:'Connected as '+r.agent}),
+   $('p',{class:'hint',text:'Taking you back to '+BOOT.host+'…'})));setTimeout(()=>{location.href=r.redirect},700)}
+ catch(e){err.textContent=e.message;b.disabled=false}}
 async function deny(){try{const r=await api('POST','/oauth/deny',{request:BOOT.request});location.href=r.redirect}catch(e){show($('p',{class:'err',text:e.message}))}}
 async function offerPasskey(){if(!viaEmail||!canPasskey)return;
- return new Promise(done=>{const err=$('p',{class:'err'});
-  show($('h2',{text:'Allowed. Faster next time?'}),$('p',{class:'muted',text:'Add a passkey and next time you sign in with Face ID, a fingerprint or your PIN. No email.'}),
-   $('button',{class:'primary',on:{click:async()=>{try{const o=await api('POST','/auth/passkey/register/options',{},cred);
+ return new Promise(done=>{const err=$('p',{class:'err',role:'alert'});
+  show($('h2',{text:'Allowed. Faster next time?'}),$('p',{class:'hint',style:'text-align:left;margin:0',text:'Add a passkey and next time you sign in with Face ID, a fingerprint or your PIN. No email.'}),
+   $('button',{class:'btn',html:ICON.face+'<span>Add a passkey</span>',on:{click:async()=>{try{const o=await api('POST','/auth/passkey/register/options',{},cred);
      const c=await navigator.credentials.create({publicKey:{...o,challenge:dec(o.challenge),user:{...o.user,id:dec(o.user.id)},excludeCredentials:o.excludeCredentials.map(x=>({...x,id:dec(x.id)}))}});
      await api('POST','/auth/passkey/register',{id:c.id,rawId:enc(c.rawId),type:c.type,label:navigator.platform||'passkey',response:{clientDataJSON:enc(c.response.clientDataJSON),attestationObject:enc(c.response.attestationObject)}},cred);done()}
-    catch(e){err.textContent=e.name==='NotAllowedError'?'Skipped.':e.message;setTimeout(done,900)}}}},'Add a passkey'),
-   $('button',{class:'ghost',on:{click:()=>done()}},'Not now'),err)})}
+    catch(e){err.textContent=e.name==='NotAllowedError'?'Skipped.':e.message;setTimeout(done,900)}}}}),
+   $('button',{class:'btn ghost',on:{click:()=>done()}},'Not now'),err)})}
 if(cred)consent();else signIn();
 """
