@@ -109,37 +109,40 @@ nav.top { display: flex; align-items: center; justify-content: space-between; he
 .file { display: flex; align-items: center; gap: 8px; margin-top: 7px; padding: 6px 10px 6px 8px; border-radius: 10px;
   background: color-mix(in srgb, var(--on-accent) 16%, transparent); font-size: 13px; font-variant-numeric: tabular-nums; }
 .file svg { width: 18px; height: 18px; flex: none; }
-.sheet { display: block; width: min(100%, 400px); height: auto; margin-top: 8px; border-radius: 6px; background: var(--raise); }
-.b.show .sheet { animation: wipe .9s .15s var(--ease) both; }
-@keyframes wipe { from { clip-path: inset(0 100% 0 0); } to { clip-path: inset(0 0 0 0); } }
-.clips { display: grid; grid-template-columns: repeat(3, minmax(0, 112px)); gap: 6px; margin-top: 8px; }
-.clip { position: relative; aspect-ratio: 9 / 16; border-radius: 9px; overflow: hidden; background: var(--raise); border: 0; padding: 0; cursor: pointer; display: block; width: 100%; }
-.clip video { width: 100%; height: 100%; object-fit: cover; display: block; }
-.b.show .clip { animation: msg .45s var(--ease) both; }
-.b.show .clip:nth-child(2) { animation-delay: .08s; } .b.show .clip:nth-child(3) { animation-delay: .16s; }
-.clip .bar { position: absolute; left: 6px; right: 6px; bottom: 6px; height: 3px; border-radius: 2px; background: rgba(255, 255, 255, .35); overflow: hidden; }
-.clip .bar i { display: block; height: 100%; width: 100%; background: #fff; transform-origin: left; transform: scaleX(0); }
-.clip .n { position: absolute; left: 7px; top: 6px; font-size: 11px; font-weight: 650; color: #fff; text-shadow: 0 1px 2px rgba(0, 0, 0, .45); }
-.clip .play { position: absolute; inset: 0; margin: auto; width: 30px; height: 30px; border-radius: 50%; background: rgba(0, 0, 0, .32);
   display: none; place-items: center; }
-.clip .play svg { width: 12px; height: 12px; margin-left: 2px; }
-.clip.idle .play { display: grid; }
-.credit { font-size: 11.5px; color: var(--ink2); margin-top: 7px; }
-.credit a { color: inherit; text-decoration: underline; text-decoration-color: var(--line); text-underline-offset: 2px; }
 .go { margin-top: 8px; display: flex; width: max-content; align-items: center; gap: 6px; height: 30px; padding: 0 14px; border: 0; border-radius: 8px;
   background: var(--ink); color: var(--bg); font-weight: 600; font-size: 13.5px; cursor: pointer; }
 .okay { margin-top: 8px; display: none; align-items: center; gap: 7px; font-size: 13px; color: var(--ink2); }
 .okay svg { width: 18px; height: 18px; }
 .okay svg path { stroke-dasharray: 20; animation: draw .45s var(--ease) both; stroke-dashoffset: 20; }
 .approved .go { display: none; } .approved .okay { display: inline-flex; }
+/* the video, already watched */
+.card { display: flex; gap: 11px; align-items: center; margin-top: 8px; }
+.card .poster { width: 46px; height: 72px; border-radius: 9px; flex: none; display: grid; place-items: center;
+  background: linear-gradient(160deg, #ff9a6b, #7a5cff 55%, #20233a); box-shadow: 0 8px 18px -10px rgba(24, 23, 29, .5); }
+.card .poster svg { width: 16px; height: 16px; opacity: .92; }
+.card .meta { display: grid; gap: 1px; font-size: 13px; color: var(--ink2); } .card .meta b { color: var(--ink); font-size: 14px; font-weight: 600; }
+.card .seen { color: var(--green-ink); font-weight: 500; }
+/* Relay asks you: Muse's half and your key's half, sealed when you tap */
+.av.relay { background: #18171d; } .av.relay .mk { width: 7px; height: 14px; border-radius: 0 999px 999px 0; background: #f4f3f6; display: block; margin-left: 4px; }
+.b.ask { display: grid; grid-template-columns: auto 1fr; gap: 4px 12px; align-items: center; padding: 12px 14px; }
+.b.ask .morb { --s: 46px; grid-row: span 2; position: relative; width: var(--s); height: var(--s); display: flex; gap: 2px; transition: gap .5s var(--ease); }
+.b.ask .mh { flex: 1; display: grid; place-items: center; overflow: hidden; background: #fff; box-shadow: 0 0 0 .5px var(--line); transition: opacity .3s var(--ease); }
+.b.ask .mh.l { border-radius: 999px 0 0 999px; } .b.ask .mh.r { border-radius: 0 999px 999px 0; background: #18171d; }
+.b.ask .mh img { width: 13px; height: 13px; margin-left: 6px; }
+.b.ask .kh { position: relative; width: 6px; height: 6px; border-radius: 50%; background: #f4f3f6; margin-right: 6px; margin-top: -3px; }
+.b.ask .kh::after { content: ""; position: absolute; left: 50%; top: 60%; width: 3px; height: 7px; transform: translateX(-50%); background: #f4f3f6; }
+.b.ask .kseal { position: absolute; left: 50%; top: 50%; width: 22px; height: 22px; margin: -11px 0 0 -11px; border-radius: 50%; background: var(--green);
+  display: grid; place-items: center; opacity: 0; transform: scale(.2); box-shadow: 0 0 0 2px var(--card); }
+.b.ask .kseal svg { width: 13px; height: 13px; }
+.b.ask .morb.sealed { gap: 0; } .b.ask .morb.sealed .mh > * { opacity: 0; }
+.b.ask .morb.sealed .kseal { animation: seal .55s var(--spring, cubic-bezier(.34, 1.56, .64, 1)) .15s both; }
+@keyframes seal { 0% { opacity: 0; transform: scale(.2); } 65% { opacity: 1; transform: scale(1.12); } 100% { opacity: 1; transform: none; } }
+.b.ask .askw { display: grid; gap: 1px; font-size: 13.5px; color: var(--ink2); } .b.ask .askw b { color: var(--ink); font-size: 15px; font-weight: 650; }
+.b.ask .go, .b.ask .okay { grid-column: 2; justify-self: start; margin-top: 6px; }
+.b.ask .go { border: 0; border-radius: 999px; background: var(--accent); color: var(--on-accent); font: 600 14px var(--font); height: 34px; padding: 0 18px; cursor: pointer; }
+.b.ask .go:hover { background: var(--accent-hover); }
 
-/* composer */
-.compose { display: flex; gap: 10px; align-items: center; margin-top: 18px; background: var(--card); border-radius: 14px; padding: 8px 8px 8px 16px; min-height: 52px; }
-.cfield { flex: 1; min-width: 0; display: flex; align-items: center; gap: 8px; font-size: 15px; white-space: nowrap; overflow: hidden; }
-.cfield .ph { color: var(--ink2); overflow: hidden; text-overflow: ellipsis; }
-.cfield .ph b { color: var(--accent); font-weight: 600; }
-.send { width: 36px; height: 36px; border-radius: 10px; background: var(--accent); display: grid; place-items: center; flex: none; }
-.send svg { width: 18px; height: 18px; }
 .chips { display: flex; justify-content: center; margin-top: 12px; }
 .chip { display: inline-flex; align-items: center; gap: 7px; border: 1px solid var(--line); background: none; border-radius: 999px; padding: 6px 13px;
   font-size: 13px; color: var(--ink); cursor: pointer; transition: background-color .2s var(--ease); }
@@ -179,8 +182,8 @@ nav.top { display: flex; align-items: center; justify-content: space-between; he
       <span class="seal"><svg viewBox="0 0 30 30" fill="none"><path d="M8 15.5l4.6 4.6L22.5 10" stroke="#fff" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
     </div>
     <h1>Feel connected.</h1>
-    <p class="sub">Claude, ChatGPT and Muse, working as one.</p>
-    <div class="cta"><a href="/app">Connect your first agent</a><span class="note">Two minutes. No keys.</span></div>
+    <p class="sub">Claude, ChatGPT, Grok and Muse, working as one.</p>
+    <div class="cta"><a href="/app">Get started</a><span class="note">Invite-only for now: ask for one in a tap.</span></div>
   </header>
 
   <section class="moments" aria-label="How it feels">
@@ -194,34 +197,28 @@ nav.top { display: flex; align-items: center; justify-content: space-between; he
     </div>
     <div class="moment">
       <div class="orb sealed" aria-hidden="true"><span class="h l"><img src="/logos/claude.svg" alt=""></span><span class="h r dark"><i class="mk"></i></span><span class="seal"><svg viewBox="0 0 30 30" fill="none"><path d="M8 15.5l4.6 4.6L22.5 10" stroke="#fff" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div>
-      <h2>Allow, and you're in</h2><p>Connect an app like Gmail. No keys.</p>
+      <h2>Allow, and you're in</h2><p>Connect it like Gmail. Paste one address, press Allow.</p>
     </div>
   </section>
 
   <section class="replay">
-    <h2>A real run, replayed.</h2>
-    <p class="lede">A video goes to Claude and comes back as clips.</p>
-  <div class="chat" id="chat" aria-label="A real Relay run, replayed: a video goes to Claude, comes back as a contact sheet and three vertical clips, and Muse offers to post one">
-    <div class="runline"><span id="runlabel">Ready</span></div>
+    <h2>Ask once. It just happens.</h2>
+    <p class="lede">Claude hands Muse the video, already watched. You tap once.</p>
+  <div class="chat" id="chat" aria-label="A demo: you ask Claude to send a 30-second cut to Muse; Muse gets it already watched and asks to post it with your Instagram key; you approve with one tap. Nothing is sent.">
+    <div class="runline"><span id="runlabel">A demo · nothing is sent</span></div>
     <ol class="log" id="log"></ol>
-    <div class="compose" aria-hidden="true">
-      <div class="cfield"><span class="ph">Message <b>@claude</b>, <b>@muse</b>…</span></div>
-      <span class="send"><svg viewBox="0 0 24 24" fill="none" stroke="var(--on-accent)" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5M5 12l7-7 7 7"/></svg></span>
-    </div>
-    <div class="chips"><button type="button" class="chip" id="chip"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><rect x="3" y="5" width="18" height="14" rx="3"/><path d="M10 9.5v5l4.5-2.5z" fill="currentColor" stroke="none"/></svg>Cut clips from a video</button></div>
-  
+    <div class="chips"><button type="button" class="chip" id="chip"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M4 12a8 8 0 1 0 2.4-5.7M4 4v4h4"/></svg>Play it again</button></div>
     </div>
   </section>
 
   <section class="again">
     <div class="orb" aria-hidden="true"><span class="h l ghost"></span><span class="h r dark"><i class="mk"></i></span></div>
     <h2>Bring yours.</h2>
-    <div class="cta"><a href="/app">Connect your first agent</a><span class="note">Claude, ChatGPT, Muse, Codex, Gemini, Cursor or any MCP app.</span></div>
+    <div class="cta"><a href="/app">Get started</a><span class="note">Claude, ChatGPT, Grok, Muse, Claude Code, Codex, Gemini CLI, Cursor or any MCP app.</span></div>
   </section>
 </main>
 
-<footer class="fine">Relay is independent and not affiliated with Anthropic, OpenAI, Meta, Google, Microsoft or Anysphere. Names and logos belong to their owners.</footer>
-<script src="/static/hero-run.js"></script>
+<footer class="fine">Relay is independent and not affiliated with Anthropic, OpenAI, xAI, Meta, Google, Microsoft or Anysphere. Names and logos belong to their owners.</footer>
 <script src="/static/landing.js"></script>
 </body>
 </html>

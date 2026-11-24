@@ -279,3 +279,25 @@ def test_a_person_joins_from_an_invite_link_without_ever_holding_a_key_in_the_br
     assert hub.post("/auth/passkey/register/options", headers=H(sess)).status_code == 200
     # a person can't hand out invites: only the owner brings people in
     assert hub.post("/invites", headers=H(sess), json={"handle": "x"}).status_code == 403
+
+
+def test_a_stranger_asks_for_an_invite_and_the_owner_answers(hub):
+    owner = hub.post("/owner", headers=H(ADMIN), json={"handle": "kobby"}).json()["token"]
+    ask = {"name": "Ama Mensah", "contact": "ama@example.com", "note": "Claude and Muse for my shop"}
+    assert hub.post("/invite-requests", json=ask).json() == {"asked": True}
+    assert hub.post("/invite-requests", json={"name": "", "contact": "x"}).status_code == 400
+    # a bot that fills every field is thanked and forgotten
+    assert hub.post("/invite-requests", json={**ask, "website": "http://spam.example"}).json() == {"asked": True}
+    # only the owner sees who asked; nobody else, not even other people
+    waiting = hub.get("/invite-requests", headers=H(owner)).json()
+    assert [w["name"] for w in waiting] == ["Ama Mensah"] and waiting[0]["contact"] == "ama@example.com"
+    assert hub.get("/invite-requests").status_code == 401
+    inv = hub.post("/invites", headers=H(owner), json={"handle": "ama", "role": "human"}).json()
+    person = hub.post("/invites/claim", json={"code": inv["code"]}).json()["token"]
+    assert hub.get("/invite-requests", headers=H(person)).status_code == 403
+    assert hub.post(f"/invite-requests/{waiting[0]['id']}/invited", headers=H(owner)).json()["status"] == "invited"
+    assert hub.get("/invite-requests", headers=H(owner)).json() == []
+    # three asks an hour from one place, then a polite no
+    for i in range(2):
+        hub.post("/invite-requests", json={**ask, "name": f"n{i}"})
+    assert hub.post("/invite-requests", json=ask).status_code == 429

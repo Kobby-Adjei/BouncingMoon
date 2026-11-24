@@ -1,16 +1,12 @@
-// Landing page: replays a real recorded Relay run (hero-run.js, generated from hero-run.json) as a
-// chat. Every line, number, file and timing comes from that run; the replay only speeds it up.
-// It never talks to the hub, so it shows nothing about anyone's agents.
+// Landing page: a short demo of how Relay feels, played once when it comes into view.
+// You ask Claude; Claude hands Muse the video, already watched; Muse asks to post; you tap Approve.
+// It's a demo: it never talks to the hub, shows nothing about anyone's agents, and posts nothing.
 (function () {
 "use strict";
-const RUN = window.RELAY_HERO_RUN;
 const log = document.getElementById("log");
-if (!RUN || !log) return;
-const SPEED = 3;                 // real seconds per replay second
-const LEAD = 0.6;                // replay seconds before the first message
+if (!log) return;
 const reduce = matchMedia("(prefers-reduced-motion: reduce)").matches;
 const NS = "http://www.w3.org/2000/svg";
-const AVATAR = { claude: "/logos/claude.svg", muse: "/logos/muse.svg" };
 const label = document.getElementById("runlabel"), chip = document.getElementById("chip");
 
 function el(tag, cls, text) {
@@ -25,158 +21,111 @@ function svg(viewBox, parts, attrs) {
   for (const [tag, a] of parts) { const p = document.createElementNS(NS, tag); for (const [k, v] of Object.entries(a)) p.setAttribute(k, v); s.append(p); }
   return s;
 }
-const videoIcon = (stroke) => svg("0 0 24 24", [["rect", { x: 3, y: 5, width: 18, height: 14, rx: 3 }], ["path", { d: "M10 9.5v5l4.5-2.5z", fill: stroke, stroke: "none" }]],
-  { fill: "none", stroke, "stroke-width": "1.8" });
 function withMentions(parent, text) {          // "@claude" in bold, the rest as plain text
   for (const part of text.split(/(@[a-z0-9._-]+)/)) {
     if (!part) continue;
     parent.append(part.startsWith("@") ? el("span", "at", part) : document.createTextNode(part));
   }
 }
-const mb = (bytes) => `${Math.round(bytes / 1e6)} MB`;
-const secs = (s) => `${s.toFixed(1)} s`;
+const tickSvg = () => svg("0 0 30 30", [["path", { d: "M8 15.5l4.6 4.6L22.5 10", stroke: "#fff", "stroke-width": "3.2", "stroke-linecap": "round", "stroke-linejoin": "round" }]], { fill: "none" });
+function avatar(who) {
+  const av = el("span", "av");
+  const img = el("img"); img.src = `/logos/${who}.svg`; img.alt = ""; av.append(img);
+  return av;
+}
 
-// ---------------------------------------------------------------- the run, as a timeline
-const chat = RUN.messages.filter((m) => m.from === "you" || (m.by === "script" && !m.job));
-const jobs = RUN.jobs;
-const jobFor = (m) => jobs.filter((j) => j.done <= m.t).pop();        // the job this reply reports on
+// ---------------------------------------------------------------- the exchange (seconds from the start)
+const SCRIPT = [
+  { t: 0.3, from: "you", text: "@claude send the 30-second cut to @muse and get it posted tonight.", file: "cut-30s.mp4 · 18 MB" },
+  { t: 1.5, from: "claude", text: "Sent to Muse.", card: true },
+  { t: 3.1, from: "muse", text: "Watched it. I'll post it with “New drop. Link in bio.”" },
+  { t: 4.4, from: "relay", ask: true },
+];
 
-// Build every row up front, in its final shape, so the page never shifts while it plays.
-const rows = chat.map((m) => {
+const rows = SCRIPT.map((m) => {
   const row = el("li", m.from === "you" ? "row me" : "row");
   const b = el("div", "b");
-  withMentions(b, m.text);
-  const step = { m, row, b, at: m.t };
+  const step = { m, row, b };
   if (m.from === "you") {
-    if (m.t === 0) {
-      const src = RUN.source, file = el("div", "file");
-      file.append(videoIcon("currentColor"), document.createTextNode(`${src.name} · ${mb(src.bytes)}`));
-      b.append(file);
-    }
+    withMentions(b, m.text);
+    const f = el("div", "file");
+    f.append(svg("0 0 24 24", [["rect", { x: 3, y: 5, width: 18, height: 14, rx: 3 }], ["path", { d: "M10 9.5v5l4.5-2.5z", fill: "currentColor", stroke: "none" }]],
+      { fill: "none", stroke: "currentColor", "stroke-width": "1.8" }), document.createTextNode(m.file));
+    b.append(f);
     row.append(b);
     return step;
   }
-  const av = el("span", "av"), img = el("img"); img.src = AVATAR[m.from] || "/static/mark.svg"; img.alt = ""; av.append(img);
   const body = el("div", "body"), who = el("div", "who"), st = el("span", "st");
+  step.st = st;
+  if (m.ask) {                                  // Relay asks you: the two halves wait for your tap
+    b.className = "b ask";
+    const orb = el("span", "morb");
+    orb.append(el("span", "mh l"), el("span", "mh r"), el("span", "kseal"));
+    orb.firstChild.append(avatarImg("muse")); orb.children[1].append(el("i", "kh")); orb.lastChild.append(tickSvg());
+    const words = el("div", "askw");
+    words.append(el("b", null, "Muse wants to post"), el("span", null, "with your Instagram key · it never sees it"));
+    const go = el("button", "go", "Approve"); go.type = "button";
+    const ok = el("span", "okay", "Posted. (A demo: nothing was sent.)");
+    go.addEventListener("click", () => approve(step));
+    b.append(orb, words, go, ok);
+    step.orb = orb;
+    who.append(el("b", null, "Relay"), st);
+    body.append(who, b);
+    const av = el("span", "av relay"); av.append(el("i", "mk"));
+    row.append(av, body);
+    return step;
+  }
+  withMentions(b, m.text);
+  if (m.card) {                                  // the video arrives already watched
+    const card = el("div", "card");
+    const poster = el("span", "poster");
+    poster.append(svg("0 0 24 24", [["path", { d: "M8 5.5v13l11-6.5z", fill: "#fff" }]]));
+    const meta = el("div", "meta");
+    meta.append(el("b", null, "cut-30s.mp4"), el("span", null, "0:30 · 1080×1920"), el("span", "seen", "Already watched: 3 shots · captions in · loud enough"));
+    card.append(poster, meta);
+    b.append(card);
+  }
   who.append(el("b", null, m.from), st);
   body.append(who, b);
-  row.append(av, body);
-  step.st = st;
-  const job = jobFor(m);
-  if (m.from === "claude" && job) {
-    step.job = job;
-    step.from = job.queued;                                             // the row opens when the work is handed off
-    if (m.files[0] === RUN.digest.sheet) {
-      const im = el("img", "sheet"); im.src = "/static/" + RUN.digest.sheet; im.alt = `Contact sheet: one frame from each of the ${RUN.digest.shots} shots`;
-      [im.width, im.height] = RUN.digest.sheet_size; im.decoding = "async";
-      b.append(im);
-    } else {
-      const grid = el("div", "clips");
-      step.videos = RUN.clips.map((c, i) => {
-        const btn = el("button", "clip idle"); btn.type = "button";
-        btn.setAttribute("aria-label", `Play clip ${i + 1}, ${c.seconds} seconds from ${Math.floor(c.start / 60)}:${String(Math.floor(c.start % 60)).padStart(2, "0")}`);
-        const v = document.createElement("video");
-        v.muted = true; v.defaultMuted = true; v.playsInline = true;
-        v.setAttribute("muted", ""); v.setAttribute("playsinline", ""); v.setAttribute("preload", "metadata");
-        v.poster = "/static/" + c.poster; v.src = "/static/" + c.file;
-        v.disablePictureInPicture = true;
-        const bar = el("span", "bar"), fill = el("i"); bar.append(fill);
-        const play = el("span", "play"); play.append(svg("0 0 24 24", [["path", { d: "M7 4.5v15l13-7.5z", fill: "#fff" }]]));
-        btn.append(v, el("span", "n", String(i + 1)), bar, play);
-        const paint = () => { fill.style.transform = `scaleX(${v.duration ? Math.min(1, v.currentTime / v.duration) : 0})`; };
-        v.addEventListener("timeupdate", paint);
-        v.addEventListener("playing", () => btn.classList.remove("idle"));
-        v.addEventListener("ended", () => { paint(); btn.classList.add("idle"); });
-        btn.addEventListener("click", () => {                       // a tap plays it again, from the top
-          if (!v.paused && !v.ended) { v.pause(); btn.classList.add("idle"); return; }
-          if (v.ended) v.currentTime = 0;
-          v.play().catch(() => btn.classList.add("idle"));
-        });
-        grid.append(btn);
-        return v;
-      });
-      const credit = el("div", "credit");
-      const a = el("a", null, "Big Buck Bunny"); a.href = RUN.source.credit_url; a.rel = "noopener"; a.target = "_blank";
-      credit.append("Video: ", a, " © Blender Foundation, CC BY 3.0");
-      b.append(grid, credit);
-    }
-  } else if (m.from === "muse") {
-    const go = el("button", "go", "Go"); go.type = "button";
-    const ok = el("span", "okay");
-    ok.append(svg("0 0 24 24", [["circle", { cx: 12, cy: 12, r: 11, fill: "var(--green)" }], ["path", { d: "M7 12.5l3.2 3.2L17 9", fill: "none", stroke: "var(--on-green)", "stroke-width": "2.4", "stroke-linecap": "round", "stroke-linejoin": "round" }]]),
-      document.createTextNode("Approved. It's a replay, so nothing was posted."));
-    go.addEventListener("click", () => { b.classList.add("approved"); step.st.textContent = "approved"; step.st.className = "st done"; });
-    b.append(go, ok);
-    step.ask = true;
-  }
+  row.append(avatar(m.from), body);
   return step;
 });
+function avatarImg(who) { const i = el("img"); i.src = `/logos/${who}.svg`; i.alt = ""; return i; }
 rows.forEach((s) => log.append(s.row));
 
 // ---------------------------------------------------------------- playing it
-let timers = [], frames = new Set(), frame = 0, playing = false;
+let timers = [], playing = false;
 const later = (ms, fn) => timers.push(setTimeout(fn, ms));
-const T = (t) => (LEAD + t / SPEED) * 1000;
 
+function approve(s) {
+  s.b.classList.add("approved"); s.orb.classList.add("sealed");
+  s.st.textContent = "approved"; s.st.className = "st done";
+}
 function finalState(s) {
-  s.row.classList.remove("later"); s.b.classList.remove("hold");
-  if (s.job) { s.st.textContent = `done in ${secs(s.job.seconds)} by @${s.job.by}`; s.st.className = "st done"; }
-  if (s.ask) { s.st.textContent = "needs you"; s.st.className = "st ask"; }
+  s.row.className = s.m.from === "you" ? "row me" : "row"; s.b.classList.remove("hold");
+  if (s.m.ask) { s.st.textContent = "needs you"; s.st.className = "st ask"; }
 }
 function reset() {
-  timers.forEach(clearTimeout); timers = []; cancelAnimationFrame(frame); frames.forEach(cancelAnimationFrame); frames.clear();
+  timers.forEach(clearTimeout); timers = [];
   for (const s of rows) {
     s.row.className = s.m.from === "you" ? "row me later" : "row later";
-    s.b.className = "b hold"; s.b.classList.remove("approved");
+    s.b.classList.add("hold"); s.b.classList.remove("show", "approved");
     if (s.st) { s.st.textContent = ""; s.st.className = "st"; }
-    for (const v of s.videos || []) { v.pause(); try { v.currentTime = 0; } catch (e) { /* not loaded yet */ } v.dispatchEvent(new Event("timeupdate")); v.parentElement.classList.add("idle"); }
+    if (s.orb) s.orb.classList.remove("sealed");
   }
-}
-function counter(s) {                                  // "studio is on it · 4.2 s", counting real seconds
-  const begin = performance.now();
-  const tick = (now) => {
-    if (!s.b.classList.contains("hold")) return;
-    const real = Math.min(s.job.seconds, ((now - begin) / 1000) * SPEED);
-    s.st.textContent = `@${s.job.by} is on it · ${secs(real)}`;
-    frames.add(requestAnimationFrame(tick));
-  };
-  frames.add(requestAnimationFrame(tick));
-}
-function playWhenSeen(videos) {                         // play once, when they're actually on screen
-  const go = () => videos.forEach((v) => {
-    v.muted = true;
-    const p = v.play();
-    if (p) p.catch(() => v.parentElement.classList.add("idle"));
-  });
-  if (!("IntersectionObserver" in window)) return go();
-  const io = new IntersectionObserver((es) => { if (es.some((e) => e.isIntersecting)) { io.disconnect(); go(); } }, { threshold: 0.5 });
-  io.observe(videos[0].parentElement);
 }
 function play() {
   reset(); playing = true;
-  label.textContent = `Playing at ${SPEED}×`;
-  let prevEnd = 0;
+  label.textContent = "A demo · nothing is sent";
   for (const s of rows) {
-    const show = T(s.m.t);
-    if (s.m.from === "you") {
-      later(show, () => { s.row.classList.replace("later", "show"); s.b.classList.remove("hold"); });
-    } else if (s.job) {
-      later(T(s.from), () => { s.row.classList.replace("later", "show"); counter(s); });
-      later(show, () => {
-        s.b.classList.replace("hold", "show"); finalState(s);
-        if (s.videos) playWhenSeen(s.videos);
-      });
-    } else {
-      later(show, () => { s.row.classList.replace("later", "show"); s.b.classList.replace("hold", "show"); finalState(s); });
-    }
-    prevEnd = show;
+    later(s.m.t * 1000, () => { s.row.classList.replace("later", "show"); s.b.classList.replace("hold", "show"); finalState(s); });
   }
-  later(prevEnd + 900, () => { playing = false; label.textContent = "Tap below to play it again"; chip.setAttribute("aria-label", "Replay the run: cut clips from a video"); });
+  later(SCRIPT[SCRIPT.length - 1].t * 1000 + 700, () => { playing = false; label.textContent = "Your turn: tap Approve"; });
 }
-function still() {                                     // reduced motion: the whole exchange, at rest; videos play on tap
+function still() {                                     // reduced motion: the whole exchange, at rest
   reset();
   for (const s of rows) finalState(s);
-  label.textContent = "Ready";
+  label.textContent = "A demo · nothing is sent";
 }
 
 chip.addEventListener("click", () => {
@@ -185,8 +134,8 @@ chip.addEventListener("click", () => {
 });
 if (reduce) { still(); return; }
 reset();
-// start when the chat is in view (it usually is, straight away)
+// start when the demo is in view
 if (!("IntersectionObserver" in window)) { play(); return; }
-const seen = new IntersectionObserver((es) => { if (es.some((e) => e.isIntersecting)) { seen.disconnect(); play(); } }, { threshold: 0.2 });
+const seen = new IntersectionObserver((es) => { if (es.some((e) => e.isIntersecting)) { seen.disconnect(); play(); } }, { threshold: 0.35 });
 seen.observe(log);
 })();

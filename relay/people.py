@@ -62,6 +62,16 @@ class VerifyIn(BaseModel):
     token_hash: Optional[str] = None
 
 
+class InviteAsk(BaseModel):
+    name: str
+    contact: str
+    note: Optional[str] = None
+    website: Optional[str] = None       # left empty by people; bots fill every field they see
+
+
+ASKS_PER_HOUR, ASKS_WAITING = 3, 200     # per address, and in all
+
+
 class PersonIn(BaseModel):
     handle: str
     email: str
@@ -408,6 +418,54 @@ def mount(app, hub, supabase: Optional[Supabase], resend: Optional[Resend] = Non
             with store.tx() as c:
                 c.execute("DELETE FROM sessions WHERE token_hash=?", (hub.hash(tok),))
         return {"signed_out": True}
+
+    # ------------------------------------------------------------ asking for an invite (strangers)
+    with store.tx() as c:
+        c.execute("CREATE TABLE IF NOT EXISTS invite_requests(id TEXT PRIMARY KEY, name TEXT NOT NULL, contact TEXT NOT NULL,"
+                  " note TEXT, origin TEXT, created REAL NOT NULL, status TEXT NOT NULL DEFAULT 'waiting', handled REAL)")
+
+    @app.post("/invite-requests")
+    def ask_for_invite(body: InviteAsk, request: Request):
+        """No sign-in: a stranger leaves a name and a way to reach them; the hub's owner decides."""
+        name, contact, note = body.name.strip()[:60], body.contact.strip()[:120], (body.note or "").strip()[:300] or None
+        if body.website:                   # a bot: say thanks, keep nothing
+            return {"asked": True}
+        if not name or len(contact) < 3:
+            raise HTTPException(400, "Add your name and how to reach you.")
+        fwd = request.headers.get("x-forwarded-for", "").split(",")[0].strip()
+        origin = hub.hash("ask:" + (fwd or (request.client.host if request.client else "")))
+        now = hub.now()
+        with store.tx() as c:
+            if c.execute("SELECT COUNT(*) n FROM invite_requests WHERE origin=? AND created>?", (origin, now - 3600)).fetchone()["n"] >= ASKS_PER_HOUR:
+                raise HTTPException(429, "You've asked already. The owner will get back to you.")
+            if c.execute("SELECT COUNT(*) n FROM invite_requests WHERE status='waiting'").fetchone()["n"] >= ASKS_WAITING:
+                raise HTTPException(429, "Lots of people asked today. Try again tomorrow.")
+            c.execute("INSERT INTO invite_requests(id,name,contact,note,origin,created) VALUES (?,?,?,?,?,?)",
+                      ("ir_" + secrets.token_hex(6), name, contact, note, origin, now))
+        return {"asked": True}
+
+    @app.get("/invite-requests")
+    def invite_requests(me: dict = Depends(auth)):
+        need_owner(me)
+        with store.ro() as c:
+            return [{"id": r["id"], "name": r["name"], "contact": r["contact"], "note": r["note"], "created": r["created"]}
+                    for r in c.execute("SELECT * FROM invite_requests WHERE status='waiting' ORDER BY created DESC LIMIT 100")]
+
+    def handle_ask(rid: str, me: dict, status: str) -> dict:
+        need_owner(me)
+        with store.tx() as c:
+            if not c.execute("UPDATE invite_requests SET status=?, handled=? WHERE id=? AND status='waiting'",
+                             (status, hub.now(), rid)).rowcount:
+                raise HTTPException(404, "no such request")
+        return {"id": rid, "status": status}
+
+    @app.post("/invite-requests/{rid}/invited")
+    def ask_invited(rid: str, me: dict = Depends(auth)):
+        return handle_ask(rid, me, "invited")
+
+    @app.delete("/invite-requests/{rid}")
+    def ask_dismissed(rid: str, me: dict = Depends(auth)):
+        return handle_ask(rid, me, "dismissed")
 
     # ------------------------------------------------------------ people and their emails
     @app.post("/people")

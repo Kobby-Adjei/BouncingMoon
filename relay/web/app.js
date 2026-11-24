@@ -330,13 +330,14 @@ function known(r) {
   if (top === "me") return (!x || (x === "apps" && !y) || (x === "keys" && (!y || y === "new" || /^k_[0-9a-f]{12}$/.test(y))))
     && !!ME && ME.role !== "admin";
   if (top === "approve") return !!ME && ME.role === "human" && /^c_[0-9a-f]{16}$/.test(x || "") && !y;
+  if (top === "ask") return isOwner() && /^ir_[0-9a-f]{12}$/.test(x || "") && !y;
   return false;
 }
 function parentOf(r) {
   const p = r.split("/");
   if (p[0] === "add") return p.length > 2 ? `add/${p[1]}` : p.length > 1 ? "add" : (listPane && listPane.dataset.tab) || "agents";
   if (p[0] === "me") return p[2] ? "me/keys" : p[1] ? "me" : (WIDE && listPane && listPane.dataset.tab) || "agents";
-  if (p[0] === "approve") return "activity";
+  if (p[0] === "approve" || p[0] === "ask") return "activity";
   if (p[0] === "activity" && p[1] === "to") return "activity";
   return p.length > 1 ? p.slice(0, -1).join("/") : null;
 }
@@ -365,6 +366,7 @@ function screenFor(r) {
   if (p[0] === "me" && p[1] === "apps") return [appsScreen];
   if (p[0] === "me" && p[1] === "keys") return !p[2] ? [keysScreen] : p[2] === "new" ? [keyNew] : [keyDetail, p[2]];
   if (p[0] === "approve") return [approveScreen, p[1]];
+  if (p[0] === "ask") return [askScreen, p[1]];
   return [meScreen];
 }
 function call(slot, fn, ...args) {
@@ -381,7 +383,7 @@ function render(r) {
   drawMe();
   if (WIDE) {
     ensureShell();
-    const tab = p[0] === "activity" || p[0] === "agents" ? p[0] : p[0] === "approve" ? "activity" : (listPane.dataset.tab || "agents");
+    const tab = p[0] === "activity" || p[0] === "agents" ? p[0] : p[0] === "approve" || p[0] === "ask" ? "activity" : (listPane.dataset.tab || "agents");
     if (listPane.dataset.tab !== tab || !listPane.firstChild) {
       listPane.dataset.tab = tab; listRefresh = null;
       call("list", tab === "activity" ? activity : agents);
@@ -544,9 +546,35 @@ function signin(message, mode) {
     firstTime());
 }
 // below the sign-in: a new hub asks its owner for the admin key once; a claimed one is invite-only
-const firstTime = () => h("p", { class: "first", text: AUTH.claimed
-  ? "New here? Relay is invite-only for now. Open the invite link you were sent."
-  : "First time here? Use your admin key, once." });
+const firstTime = () => AUTH.claimed
+  ? h("p", { class: "first" }, "New here? Relay is invite-only for now. ",
+      h("button", { class: "inline press", type: "button", onclick: askInvite }, "Ask for an invite"))
+  : h("p", { class: "first", text: "First time here? Use your admin key, once." });
+
+// a stranger asks the hub's owner for an invite: a name, a way back to them, a line about why
+function askInvite() {
+  const name = h("input", { class: "field", type: "text", placeholder: "Your name", autocomplete: "name", maxlength: "60", "aria-label": "Your name" });
+  const contact = h("input", { class: "field", type: "text", placeholder: "Email, phone or @handle", autocomplete: "email", maxlength: "120",
+                                spellcheck: "false", "aria-label": "How to reach you" });
+  const note = h("input", { class: "field", type: "text", placeholder: "What would you use it for? (optional)", maxlength: "300", "aria-label": "Note" });
+  const trap = h("input", { type: "text", name: "website", tabindex: "-1", autocomplete: "off", class: "trap", "aria-hidden": "true" });
+  const err = h("p", { class: "err", role: "alert" });
+  const btn = h("button", { class: "btn press", type: "submit" }, "Ask for an invite");
+  const form = h("form", { class: "stack tight", onsubmit: async (e) => {
+    e.preventDefault();
+    if (!name.value.trim() || contact.value.trim().length < 3) { err.textContent = "Add your name and how to reach you."; return; }
+    btn.disabled = true; err.textContent = "";
+    try {
+      await api("POST", "/invite-requests", { name: name.value.trim(), contact: contact.value.trim(), note: note.value.trim() || null,
+        website: trap.value || null }, null);
+      fuse(() => welcomeView(brand("Asked", "When you're in, you'll get a link. It opens a page like this one.", name.value.trim()),
+        ways(way("Back", () => signin(null, "start")))));
+    } catch (x) { err.textContent = x.message; btn.disabled = false; }
+  } }, name, contact, note, trap, btn, err);
+  welcomeView(brand("Ask for an invite", "Whoever runs this Relay gets your note."), form,
+    ways(way("I have an invite link", () => signin(null))));
+  name.focus();
+}
 
 function keySignin(message) {
   const input = h("input", { class: "field", type: "password", placeholder: "Relay key", autocomplete: "current-password",
@@ -643,6 +671,33 @@ function finishLink(link) {
   });
   welcomeView(brand("Relay", "One tap to finish signing in."), h("div", { class: "stack tight" }, go, err));
   go.focus();
+}
+
+// the owner answers someone who asked for an invite: one press makes their join link
+async function askScreen(id) {
+  const tk = ticket();
+  let r = null;
+  try { r = (await api("GET", "/invite-requests")).find((x) => x.id === id); } catch {}
+  if (!fresh(tk)) return;
+  if (!r) return nav("activity", { replace: true });
+  const handle = h("input", { class: "field", type: "text", value: r.name.toLowerCase().replace(/[^a-z0-9._-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 32),
+                               spellcheck: "false", maxlength: "32", "aria-label": "Their name on Relay" });
+  slug(handle);
+  const err = h("p", { class: "err", role: "alert" });
+  const yes = h("button", { class: "btn press", type: "submit" }, "Send an invite");
+  const form = h("form", { class: "stack tight", onsubmit: async (e) => {
+    e.preventDefault();
+    yes.disabled = true; err.textContent = "";
+    try {
+      const inv = await api("POST", "/invites", { handle: handle.value.trim(), hours: 72, role: "human" });
+      await api("POST", `/invite-requests/${enc(id)}/invited`);
+      nav(`agents/${enc(inv.handle)}/invite`, { replace: true, data: { app: APPS.find((a) => a.id === "person"), inv } });
+    } catch (x) { err.textContent = x.message; yes.disabled = false; }
+  } }, h("div", { class: "fieldnote" }, h("span", { class: "k", text: "Their name on Relay" }), handle), yes, err,
+    h("div", { class: "ways" }, way("Not now", async () => { try { await api("DELETE", `/invite-requests/${enc(id)}`); } catch {} if (listRefresh) listRefresh(); nav("activity", { replace: true }); })));
+  screen("ask", tk, heroHead(avatar("person", 72), `${r.name} would like an invite`, `Reach them at ${r.contact}`),
+    h("div", { class: "stack" }, r.note ? h("p", { class: "why", text: r.note }) : null, form));
+  handle.select();
 }
 
 // ------------------------------------------------------------------ join (/join#inv_…)
@@ -1187,11 +1242,16 @@ function connectHint() {
 // ------------------------------------------------------------------ keys: your agents use them, never see them
 // A key is drawn as the website's half (its initial) meeting a dark half with a keyhole: Relay's half.
 const ASK_TEXT = { changes: "Asks before it changes anything", always: "Asks every time", never: "Never asks" };
+// `what`: which kind of key the website wants for posting; a plain API key often can only read.
 const KEY_PRESETS = [
-  { name: "instagram", label: "Instagram", hosts: ["graph.facebook.com", "graph.instagram.com"], place: "query", field: "access_token" },
-  { name: "youtube", label: "YouTube", hosts: ["www.googleapis.com"], place: "query", field: "key" },
-  { name: "tiktok", label: "TikTok", hosts: ["open.tiktokapis.com"], place: "bearer" },
-  { name: "x", label: "X", hosts: ["api.x.com"], place: "bearer" },
+  { name: "instagram", label: "Instagram", hosts: ["graph.facebook.com", "graph.instagram.com"], place: "query", field: "access_token",
+    what: "An access token from your Meta app (Business or Creator account). It can post; long-lived ones last about 60 days." },
+  { name: "youtube", label: "YouTube", hosts: ["www.googleapis.com"], place: "bearer",
+    what: "A sign-in (OAuth) access token can upload. A plain API key can only read: switch to In the URL, parameter key." },
+  { name: "tiktok", label: "TikTok", hosts: ["open.tiktokapis.com"], place: "bearer",
+    what: "A user access token with the video.publish scope. It expires after a day unless refreshed." },
+  { name: "x", label: "X", hosts: ["api.x.com"], place: "bearer",
+    what: "A user access token (OAuth 2.0 with tweet.write) can post. An app-only bearer token can only read." },
 ];
 function keyOrb(name, size = 56, left) {
   return h("span", { class: "morb keyorb", style: `--s:${size}px`, "aria-hidden": "true" },
@@ -1241,8 +1301,9 @@ function keyNew() {
   }
   const orbBox = h("span", { class: "keyhero" }, keyOrb("", 96));
   name.addEventListener("input", () => { orbBox.querySelector(".mh.l b").textContent = (name.value.trim()[0] || "").toUpperCase(); });
+  const what = h("p", { class: "quiet center" });
   const presets = h("div", { class: "presets" }, ...KEY_PRESETS.map((p) => h("button", { class: "preset press", type: "button", onclick: () => {
-    name.value = p.name; site.value = p.hosts.join(", "); field.value = p.field || ""; setPlace(p.place);
+    name.value = p.name; site.value = p.hosts.join(", "); field.value = p.field || ""; setPlace(p.place); what.textContent = p.what;
     name.dispatchEvent(new Event("input")); secret.focus();
   } }, p.label)));
   const err = h("p", { class: "err", role: "alert" });
@@ -1257,7 +1318,7 @@ function keyNew() {
       secret.value = "";
       nav(`me/keys/${k.id}`, { replace: true });
     } catch (x) { err.textContent = x.message; btn.disabled = false; }
-  } }, presets, name, site, secret,
+  } }, presets, what, name, site, secret,
     h("div", { class: "fieldnote" }, h("span", { class: "k", text: "How the website takes it" }), placeSeg), field,
     h("div", { class: "fieldnote" }, h("span", { class: "k", text: "Ask me first" }),
       seg([["changes", "Changes"], ["always", "Every time"], ["never", "Never"]], ask, (v) => { ask = v; })),
@@ -1817,8 +1878,8 @@ async function activity() {
   let first = true;
   async function refresh() {
     try {
-      const [msgs, ags, asks] = await Promise.all([api("GET", "/messages?latest=true&limit=200"), api("GET", "/agents"),
-        ME.role === "human" ? api("GET", "/approvals").catch(() => []) : []]);
+      const [msgs, ags, asks, wants] = await Promise.all([api("GET", "/messages?latest=true&limit=200"), api("GET", "/agents"),
+        ME.role === "human" ? api("GET", "/approvals").catch(() => []) : [], isOwner() ? api("GET", "/invite-requests").catch(() => []) : []]);
       const by = Object.fromEntries(ags.map((a) => [a.handle, a]));
       const threads = new Map();
       for (const m of msgs) {
@@ -1833,7 +1894,10 @@ async function activity() {
         h("div", { class: "grow" }, h("div", { class: "t", text: `${r.agent} wants to ${VERB[r.method] || r.method}` }),
           h("div", { class: "s", text: `Needs your OK · ${r.key} · ${hostOf(r.url)}` })),
         h("span", { class: "btn small", text: "Review" })));
-      const rows = oks;
+      const rows = oks.concat(wants.map((w) => h("button", { class: "cell jobcell press", type: "button", "data-key": `ask/${w.id}`, onclick: () => nav(`ask/${w.id}`) },
+        h("span", { class: "stackav" }, avatar("person", 44)),
+        h("div", { class: "grow" }, h("div", { class: "t", text: `${w.name} would like an invite` }), h("div", { class: "s", text: w.contact })),
+        h("span", { class: "btn small", text: "Review" }))));
       const sorted = [...threads.values()].sort((x, y) => y.msgs[y.msgs.length - 1].id - x.msgs[x.msgs.length - 1].id);
       for (const t of sorted) {
         const last = t.msgs[t.msgs.length - 1];
