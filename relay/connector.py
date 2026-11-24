@@ -221,17 +221,10 @@ TOOLS = [
 
 # Which app is on the other end, from the name it gives itself when it connects (MCP clientInfo).
 # Checked in order; the first word found wins. Display only: it picks the logo, nothing else.
-CLIENT_PROVIDERS = (("muse", "muse"), ("meta", "muse"), ("codex", "codex"), ("chatgpt", "openai"),
-                    ("openai", "openai"), ("claude", "claude"), ("anthropic", "claude"),
-                    ("gemini", "gemini"), ("cursor", "cursor"), ("copilot", "copilot"))
-
-
 def provider_from_client(name: str) -> Optional[str]:
-    n = (name or "").lower()
-    for word, provider in CLIENT_PROVIDERS:
-        if word in n:
-            return provider
-    return None
+    """The provider an app's own name (MCP clientInfo) points to; see providers.py."""
+    from .providers import detect
+    return detect(name)
 
 
 class ContactIn(BaseModel):

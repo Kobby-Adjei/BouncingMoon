@@ -784,6 +784,11 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
         except FileNotFoundError:
             raise HTTPException(500, f"{name} is missing from this install")
 
+    @app.get("/providers", include_in_schema=False)
+    def providers_table():      # the apps Relay knows: one table for the hub, the Allow page and the web app
+        from . import providers
+        return providers.table()
+
     @app.get("/join", include_in_schema=False)
     def join_page():           # the invite code travels in the #fragment, never the path
         return web("app.html")
