@@ -101,8 +101,7 @@ def test_reset_token_kills_the_old_one(hub):
 
 
 def test_pages_are_served_with_a_strict_policy(hub):
-    for path, kind in [("/", "text/html"), ("/join", "text/html"), ("/ui.js", "text/javascript"),
-                       ("/cli.py", "text/x-python")]:
+    for path, kind in [("/", "text/html"), ("/join", "text/html"), ("/cli.py", "text/x-python")]:
         r = hub.get(path)
         assert r.status_code == 200 and r.headers["content-type"].startswith(kind), path
         assert "script-src 'self'" in r.headers["content-security-policy"]
@@ -112,9 +111,7 @@ def test_pages_are_served_with_a_strict_policy(hub):
         assert r.status_code == 200 and r.headers["content-type"].startswith("image/svg+xml")
     assert hub.get("/logos/..%2Fhub.svg").status_code == 404
     assert hub.get("/logos/nope.svg").status_code == 404
-    # the page never writes hub data as HTML
-    js = hub.get("/ui.js").text
-    assert "innerHTML" not in js and "insertAdjacentHTML" not in js and "eval(" not in js
+    assert hub.get("/classic").status_code == 404 and hub.get("/ui.js").status_code == 404     # the old dashboard is gone
 
 
 def _free_port():

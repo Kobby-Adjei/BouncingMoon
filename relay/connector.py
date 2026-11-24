@@ -688,9 +688,7 @@ def mount(app, hub) -> None:
               "view_media": tool_view_media, "request_upload": tool_request_upload, "get_files": tool_get_files,
               "call_api": tool_call_api}
     handlers = {"contacts": tool_contacts, "save_contact": tool_save_contact, "saved_keys": tool_saved_keys, **routed}
-    extra = getattr(hub, "extra_tools", None) or {}          # tools other parts of the hub add (streams)
-    handlers.update(extra.get("handlers", {}))
-    tool_list = TOOLS + list(extra.get("tools", []))
+    tool_list = TOOLS
 
     # ------------------------------------------------------------ JSON-RPC
     def rpc_error(mid, code, message):

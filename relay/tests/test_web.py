@@ -22,7 +22,7 @@ def H(tok):
 
 
 def test_pages_and_static_files_are_served_with_a_strict_policy(hub):
-    assert "Feel connected." in hub.get("/").text and hub.get("/classic").status_code == 200
+    assert "Feel connected." in hub.get("/").text and hub.get("/classic").status_code == 404
     assert hub.get("/welcome", follow_redirects=False).headers["location"] == "/"
     for path, kind in [("/app", "text/html"), ("/", "text/html"), ("/static/app.js", "text/javascript"),
                        ("/static/landing.js", "text/javascript"), ("/static/relay.css", "text/css"),
@@ -76,7 +76,7 @@ def test_the_hero_replays_a_real_recorded_run():
 
 
 def test_no_script_writes_html():
-    for path in glob.glob(os.path.join(WEB, "*.js")) + [os.path.join(WEB, "..", "ui.js")]:
+    for path in glob.glob(os.path.join(WEB, "*.js")):
         src = open(path).read()
         for bad in ("innerHTML", "outerHTML", "insertAdjacentHTML", "document.write", "eval("):
             assert bad not in src, f"{bad} in {os.path.basename(path)}"

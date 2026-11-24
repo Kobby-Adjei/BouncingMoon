@@ -385,12 +385,10 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
                retry_base_seconds: Optional[float] = None,
                allow_private_fetch: Optional[bool] = None,
                wake_opener=None, wake_check_url: bool = True, wake_cooldown: Optional[float] = None,
-               youtube_key: Optional[str] = None, youtube_opener=None, youtube_threads: bool = True,
                supabase_url: Optional[str] = None, supabase_key: Optional[str] = None,
                supabase_send=None, resend_key: Optional[str] = None, email_from: Optional[str] = None,
                resend_send=None, vault_send=None, vault_resolve=None, caption_transcriber=None, caption_threads: bool = True,
-               caption_public_url: Optional[str] = None, caption_tool_wait: Optional[float] = None,
-               caption_idle_seconds: Optional[float] = None,
+               caption_public_url: Optional[str] = None,
                session_idle_seconds: Optional[float] = None,
                session_sweep_seconds: Optional[float] = None,
                media_threads: Optional[bool] = None) -> FastAPI:
@@ -786,17 +784,9 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
         except FileNotFoundError:
             raise HTTPException(500, f"{name} is missing from this install")
 
-    @app.get("/classic", include_in_schema=False)
-    def classic():             # the first dashboard, kept while the new app settles in
-        return static("ui.html", "text/html; charset=utf-8")
-
     @app.get("/join", include_in_schema=False)
     def join_page():           # the invite code travels in the #fragment, never the path
         return web("app.html")
-
-    @app.get("/ui.js", include_in_schema=False)
-    def ui_js():
-        return static("ui.js", "text/javascript; charset=utf-8")
 
     logos = {f[:-4] for f in os.listdir(os.path.join(here, "logos"))
              if f.endswith(".svg")} if os.path.isdir(os.path.join(here, "logos")) else set()
@@ -1510,30 +1500,14 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
                 "SELECT * FROM artifacts WHERE parent=? ORDER BY created", (aid,))]
             return out
 
-    # ---------------------------------------------------------------- live stream chat (YouTube)
+    # ---------------------------------------------------------------- the speech model media listens with
     from types import SimpleNamespace
-    from . import streams
-    watcher = streams.Watcher(store, youtube_key if youtube_key is not None else os.environ.get("YOUTUBE_API_KEY"),
-                              opener=youtube_opener or urllib.request.urlopen, threads=youtube_threads)
-    app.state.watcher = watcher
-    stream_tools = streams.mount(app, SimpleNamespace(auth=auth), watcher)
-    watcher.resume()
-
-    # ---------------------------------------------------------------- captioned shorts (made here, in the cloud)
     from . import captions
-    captioner = captions.Captioner(store, private_host, transcriber=caption_transcriber, threads=caption_threads,
-                                   allow_private=allow_private, public_url=caption_public_url,
-                                   idle_seconds=600 if caption_idle_seconds is None else caption_idle_seconds)
-    app.state.captioner = captioner
-    caption_tools = captions.mount(app, SimpleNamespace(auth=auth), captioner,
-                                   tool_wait=captions.TOOL_WAIT if caption_tool_wait is None else caption_tool_wait)
-    captioner.resume()
-    extra_tools = {"tools": stream_tools["tools"] + caption_tools["tools"],
-                   "handlers": {**stream_tools["handlers"], **caption_tools["handlers"]}}
+    transcriber = caption_transcriber or captions.WhisperTranscriber(download_root=os.path.join(store.dir, "models"))
 
     # ---------------------------------------------------------------- media (videos, audio, images, files)
     media_svc = media_mod.Media(
-        store, private_host, os.environ.get("RELAY_SECRET_KEY") or admin_token, transcriber=captioner.transcriber,
+        store, private_host, os.environ.get("RELAY_SECRET_KEY") or admin_token, transcriber=transcriber,
         threads=caption_threads if media_threads is None else media_threads, allow_private=allow_private,
         public_url=caption_public_url, max_upload=max_upload)
     app.state.media = media_svc
@@ -1562,7 +1536,7 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
     # ---------------------------------------------------------------- contacts + connector
     from . import connector
     connector.mount(app, SimpleNamespace(
-        extra_tools=extra_tools, store=store, auth=auth, post=post, inbox_for=inbox_for, ack_to=ack_to,
+        store=store, auth=auth, post=post, inbox_for=inbox_for, ack_to=ack_to,
         take=take, check_session=check_session, CONVERSATION=CONVERSATION, media=media_svc, origin=origin, no_session=no_session, start_session=start_session,
         mark_read=mark_read, msg_out=msg_out, with_context=with_context, now=_now, loads=_loads, handle_re=HANDLE_RE,
         vault=vault))
