@@ -502,8 +502,12 @@ function orb(who) {
 function fuse(then) {          // the halves close, turn once and a seal lands; then carry on
   const o = app.querySelector(".welcome .orb");
   if (!o || matchMedia("(prefers-reduced-motion: reduce)").matches) return then();
-  o.querySelector(".seal").replaceChildren(tick("sealtick")); o.classList.add("fused");
-  setTimeout(then, 1150);
+  o.querySelector(".seal").replaceChildren(tick("sealtick"));
+  const gap = parseFloat(getComputedStyle(o).columnGap) || 0;
+  o.classList.add("fused");
+  const ms = window.relayFuse ? relayFuse(o, { left: ".half.l", right: ".half.r", seal: ".seal", marks: ".half > *", gap }) : 0;
+  if (ms) o.classList.add("physical");                 // real physics took over from the keyframes
+  setTimeout(then, ms ? ms + 250 : 1150);
 }
 function welcomeView(...kids) {
   bar.classList.add("hidden");

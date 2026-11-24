@@ -14,11 +14,15 @@
   --shadow-lift: var(--shadow);
   --r: 20px; --r-sm: 14px; --r-btn: 999px;
   --ease: cubic-bezier(.22, .8, .24, 1);
-  --spring: cubic-bezier(.34, 1.45, .55, 1);
+  --spring: cubic-bezier(.34, 1.45, .55, 1);   /* older browsers; below, a real spring where linear() works */
   --font: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Inter", "Segoe UI", system-ui, sans-serif;
   --display: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Inter", "Segoe UI", system-ui, sans-serif;
   --mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace;
   color-scheme: light dark;
+}
+/* a damped spring (damping ratio .45), solved and sampled: it overshoots once, then settles, like a real one */
+@supports (transition-timing-function: linear(0, 1)) {
+  :root { --spring: linear(0, 0.04, 0.143, 0.287, 0.452, 0.62, 0.777, 0.915, 1.027, 1.111, 1.167, 1.197, 1.205, 1.196, 1.174, 1.144, 1.11, 1.076, 1.043, 1.016, 0.993, 0.976, 0.965, 0.959, 0.958, 0.96, 0.965, 0.971, 0.978, 0.985, 0.992, 0.997, 1.002, 1.005, 1.007, 1.008, 1.009, 1.008, 1.007, 1.006, 1); }
 }
 @media (prefers-color-scheme: dark) {
   :root {

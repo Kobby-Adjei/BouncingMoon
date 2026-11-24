@@ -1,3 +1,8 @@
+// The hero: the two halves are thrown in and become one, with physics (fuse.js). The page's own styles
+// are the sealed resting state, so reduced motion or no script simply shows it.
+if (window.relayFuse) relayFuse(document.querySelector(".hero .orb"),
+  { left: ".h.l", right: ".h.r", seal: ".seal", marks: ".h > *", enter: true, sealBase: "translate(-50%, -50%)" });
+
 // Landing page: a short demo of how Relay feels, played once when it comes into view.
 // You ask Claude; Claude hands Muse the video, already watched; Muse asks to post; you tap Approve.
 // It's a demo: it never talks to the hub, shows nothing about anyone's agents, and posts nothing.
