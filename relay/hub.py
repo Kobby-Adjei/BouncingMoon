@@ -1563,7 +1563,7 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
     sb_url = supabase_url or os.environ.get("SUPABASE_URL")
     sb_key = supabase_key or os.environ.get("SUPABASE_PUBLISHABLE_KEY")
     supabase = people.Supabase(sb_url, sb_key, send=supabase_send) if sb_url and sb_key else None
-    rs_key = resend_key or os.environ.get("RESEND_API_KEY")
+    rs_key = resend_key or os.environ.get("RESEND_API_KEY") or os.environ.get("RESEND_KEY")
     resend = people.Resend(rs_key, email_from or os.environ.get("RELAY_EMAIL_FROM") or "Relay <onboarding@resend.dev>",
                            send=resend_send) if rs_key else None
     people.mount(app, SimpleNamespace(store=store, auth=auth, now=_now, hash=_hash,

@@ -267,3 +267,24 @@ def test_resend_refusals_say_what_to_do(rs):
     # nothing went out, so there's no minute to wait before trying again
     fake.reply = (200, b'{"id":"e_2"}')
     assert c.post("/auth/email", json={"email": "kobby@example.com"}).status_code == 200
+
+
+def test_when_resend_refuses_supabase_sends_the_code_instead(tmp_path):
+    """Before a sending domain is verified, Resend only mails its own account's address. The hub doesn't
+    fail then: Supabase sends that email, and its code works as it always did."""
+    sb, rs = FakeSupabase(), FakeResend()
+    rs.reply = (403, b'{"message":"You can only send testing emails to your own email address"}')
+    c = TestClient(create_app(data_dir=str(tmp_path), admin_token=ADMIN, supabase_url="https://sb.example",
+                              supabase_key="sb_publishable_test", supabase_send=sb, resend_key="re_test",
+                              resend_send=rs), base_url="https://hub.example")
+    owner = c.post("/owner", headers=H(ADMIN), json={"handle": "kobby"}).json()["token"]
+    c.put("/people/kobby/email", headers=H(owner), json={"email": "kobby@example.com"})
+    assert c.post("/auth/email", json={"email": "kobby@example.com"}).json() == {"sent": True}
+    assert len(rs.sent) == 1 and len(sb.sent) == 1
+    sb.codes[("kobby@example.com", "424242")] = {"email": "kobby@example.com", "email_confirmed_at": "now"}
+    r = c.post("/auth/verify", json={"email": "kobby@example.com", "code": "424242"})
+    assert r.status_code == 200 and r.json()["handle"] == "kobby"
+    # and once Resend works, its own codes are used
+    rs.reply = (200, b'{"id":"e_3"}')
+    c.post("/auth/email", json={"email": "kobby@example.com"})
+    assert c.post("/auth/verify", json={"email": "kobby@example.com", "code": rs.code()}).status_code == 200
