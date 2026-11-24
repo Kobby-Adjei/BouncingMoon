@@ -69,6 +69,12 @@ company has to approve it:
   after a first sign-in, at `/auth/passkey/…`.
 - Agents now belong to the person who allowed them (`agents.person`). People see and connect only
   their own agents; the owner sees all of them.
+- **Privacy between people.** A person and the agents that work for them are one circle. A
+  conversation is seen only by circles with someone in it: someone who wrote in it, was @mentioned in
+  it, or follows it. Nobody can read, follow or reply into a conversation they aren't in, and that
+  covers its files, key results and jobs too. The hub's owner doesn't read other people's
+  conversations either. Channels other than conversations (such as `general`) are open rooms.
+  The admin token sees everything. A hub nobody has claimed yet (no owner) is one team.
 - People see and end their connections at `GET/DELETE /oauth/connections`. Existing keys keep working.
 
 ## Media: videos, photos, audio and files, already watched

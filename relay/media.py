@@ -388,6 +388,7 @@ class Media:
                            ("https://" + os.environ["RAILWAY_PUBLIC_DOMAIN"] if os.environ.get("RAILWAY_PUBLIC_DOMAIN") else "")
                            ).rstrip("/") or None
         self.on_upload: Optional[Callable[[dict, str], None]] = None     # the hub tells the asking chat
+        self.may_use: Optional[Callable] = None      # (db, who, file id) -> may `who` share that hub file?
         self.lock = threading.Lock()
         self.thread: Optional[threading.Thread] = None
         self.wake = threading.Event()
@@ -434,10 +435,10 @@ class Media:
         self._ensure_thread()
         return self.get(mid)
 
-    def from_artifact(self, by: str, artifact: str) -> dict:
+    def from_artifact(self, by: str, artifact: str, check: bool = True) -> dict:
         with self.store.tx() as c:
             a = c.execute("SELECT * FROM artifacts WHERE id=?", (artifact,)).fetchone()
-            if not a:
+            if not a or (check and self.may_use and not self.may_use(c, by, artifact)):
                 raise MediaError(f"No file {artifact} on the hub.")
             # always a media item of its own (who shared it, in which conversation); the worker reuses
             # what was already worked out for the same bytes
@@ -460,7 +461,7 @@ class Media:
             if aid in linked:
                 continue
             try:
-                mid = self.from_artifact(m["sender"], aid)["id"]
+                mid = self.from_artifact(m["sender"], aid, check=False)["id"]     # it was checked when sent
             except MediaError:
                 continue                                   # a file that's gone from the hub
             new.append(mid)
@@ -477,7 +478,7 @@ class Media:
 
     def from_file(self, by: str, path: str, name: str) -> dict:
         aid, size = self._store(path, name, by, None, "upload", "application/octet-stream")
-        return self.from_artifact(by, aid)
+        return self.from_artifact(by, aid, check=False)
 
     def _store(self, path: str, name: str, by: str, parent: Optional[str], kind: str, mime: str) -> tuple:
         h, size = hashlib.sha256(), 0
