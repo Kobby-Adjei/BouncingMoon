@@ -204,16 +204,14 @@ function avatar(a, size = 40, withPresence = false) {
 }
 const appAvatar = (a, size) => avatar(a.id === "person" ? "person" : a.id === "other" ? "other" : a.provider, size);
 
-// app ---- relay: dashed while waiting, draws solid with a tick when the first call lands
-function linkup(left) {
-  const relay = avatar("relay", 64);
-  const line = svg("0 0 100 40", [{ tag: "line", x1: "4", y1: "20", x2: "96", y2: "20", class: "base" },
-    { tag: "line", x1: "4", y1: "20", x2: "96", y2: "20", class: "live", pathLength: "100" }], "line");
-  line.setAttribute("preserveAspectRatio", "none");
-  const node = h("span", { class: "node" }, h("span", { class: "dot wait" }));
-  const el = h("div", { class: "linkup" }, left, h("div", { class: "wire" }, line, node), relay);
-  el.connect = () => { if (el.classList.contains("done")) return; el.classList.add("done"); node.replaceChildren(tick()); };
-  el.disconnect = () => { el.classList.remove("done"); node.replaceChildren(h("span", { class: "dot wait" })); };
+// the app's half and Relay's half, apart while waiting; they close under the green seal when it connects
+function linkup(p, name) {
+  const orb = miniOrb(p && p !== "other" ? p : null, "relay", 92, [name || "?", ""]);
+  orb.classList.add("keyorb");
+  orb.append(h("span", { class: "kseal" }, tick("sealtick")));
+  const el = h("div", { class: "orbwrap" }, orb);
+  el.connect = () => orb.classList.add("sealed");
+  el.disconnect = () => orb.classList.remove("sealed");
   return el;
 }
 
@@ -990,7 +988,7 @@ function connectGuide(a, created) {
       [say("With this header:"), copyField("Header name", "Authorization"), copyField("Header value", bearer, { secret: true })],
     ];
   }
-  const link = linkup(appAvatar(a, 64));
+  const link = linkup(a.id === "other" ? null : a.provider, a.label);
   let status = stickyStatus(`Waiting for ${handle}…`);
   const list = h("ol", { class: "steps" }, ...steps.map((parts) => h("li", null, h("div", null, ...parts))));
   const done = h("button", { class: "btn ghost press", type: "button", onclick: finish(handle) }, "Done");
@@ -1054,7 +1052,7 @@ function inviteGuide(a, inv) {
   const code = inv.code, handle = inv.handle;
   const person = a.style === "person";
   const link = `${ORIGIN}/join#${code}`;
-  const diagram = linkup(appAvatar(a, 64));
+  const diagram = linkup(a.style === "person" ? null : a.provider, a.style === "person" ? inv.handle : a.label);
   const done = h("button", { class: "btn ghost press", type: "button", onclick: finish(handle) }, "Done");
   let status = stickyStatus(`Waiting for ${handle}…`);
   const body = person
@@ -1255,7 +1253,7 @@ const KEY_PRESETS = [
 ];
 function keyOrb(name, size = 56, left) {
   return h("span", { class: "morb keyorb", style: `--s:${size}px`, "aria-hidden": "true" },
-    h("span", { class: "mh l" }, left || h("b", { text: (name || "?")[0].toUpperCase() })),
+    h("span", { class: "mh l" }, left || h("b", { text: name ? name[0].toUpperCase() : "" })),
     h("span", { class: "mh r dark" }, h("i", { class: "kh" })), h("span", { class: "kseal" }, tick("sealtick")));
 }
 const hostOf = (url) => { try { return new URL(url).hostname; } catch { return url; } };
@@ -1559,7 +1557,7 @@ async function wake(handle) {
   try { cur = await api("GET", path); } catch {}
   if (!fresh(tk)) return;
   const way = wakePath(a);
-  const link = linkup(avatar(a, 64));
+  const link = linkup(providerOf(a), a.handle);
   const main = h("div", { class: "stack" });
 
   // the one place a stored wake-up turns into words, whichever way it was set. A fire that got through

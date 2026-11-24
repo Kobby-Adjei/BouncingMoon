@@ -1,5 +1,6 @@
-/* Relay design system. Warm paper, one iris accent, apricot as the only second colour.
-   Flat colours only. Motion plays once or on touch, never loops. Shared by the app and the landing page. */
+/* Relay design system: two halves make a whole. Warm paper, one iris accent, a green seal for "done".
+   Pills and circles, no boxes or hairlines: space and type weight separate things. Motion plays once or
+   on touch, never loops. Shared by the app and the landing page. */
 :root {
   --bg: #f6f4ef; --bg2: #eeebe4; --card: #ffffff; --ink: #18171d; --ink2: #64626b; --ink3: #bdbac2;
   --sep: rgba(24, 23, 29, .08); --line: rgba(24, 23, 29, .1); --fill: rgba(24, 23, 29, .05); --fill2: rgba(24, 23, 29, .08);
@@ -11,7 +12,7 @@
   /* elevation is only for things that float over content: a sticky status, the phone composer */
   --shadow: 0 1px 2px rgba(24, 23, 29, .05), 0 4px 14px rgba(24, 23, 29, .07);
   --shadow-lift: var(--shadow);
-  --r: 12px; --r-sm: 10px; --r-btn: 10px;
+  --r: 20px; --r-sm: 14px; --r-btn: 999px;
   --ease: cubic-bezier(.22, .8, .24, 1);
   --spring: cubic-bezier(.34, 1.45, .55, 1);
   --font: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Inter", "Segoe UI", system-ui, sans-serif;
@@ -94,7 +95,7 @@ main { overflow-x: clip; }   /* slide-ins must never widen a phone's layout view
 .btn.danger:hover { background: var(--fill); color: var(--red); }   /* red stays AA: no darker fill */
 .btn.danger { color: var(--red); }
 .btn.done, .btn.done:hover { background: var(--green-btn); color: var(--on-green); }
-.btn.small { height: 34px; width: auto; padding: 0 14px; font-size: 14px; border-radius: 8px; gap: 6px; }
+.btn.small { height: 34px; width: auto; padding: 0 16px; font-size: 14px; border-radius: 999px; gap: 6px; }
 .btn svg { width: 18px; height: 18px; flex: none; }
 .btn.small svg { width: 16px; height: 16px; }
 .link { border: 0; background: none; color: var(--accent); padding: 8px 4px; cursor: pointer; font-size: 15px; font-weight: 500; border-radius: 6px; }
@@ -102,7 +103,7 @@ main { overflow-x: clip; }   /* slide-ins must never widen a phone's layout view
 .link.sm { font-size: 14px; }
 .link.red { color: var(--red); }
 .link.muted { color: var(--ink2); }
-.field { width: 100%; height: 48px; padding: 0 14px; border: 0; border-radius: var(--r-btn); background: var(--fill); color: var(--ink);
+.field { width: 100%; height: 48px; padding: 0 18px; border: 0; border-radius: var(--r-btn); background: var(--fill); color: var(--ink);
   font: inherit; font-size: 16px; outline: none; box-shadow: inset 0 0 0 1px transparent;
   transition: box-shadow .2s var(--ease), background-color .2s var(--ease); }
 .field::placeholder { color: var(--ink2); }
@@ -117,13 +118,11 @@ main { overflow-x: clip; }   /* slide-ins must never widen a phone's layout view
 .row { display: flex; align-items: center; gap: 12px; }
 .spread { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 
-/* ---------------------------------------------------------------- lists: rows on the page, hairlines between them */
-.group { margin-inline: -12px; }
-.cell { display: flex; align-items: center; gap: 14px; min-height: 56px; padding: 10px 12px; position: relative; width: 100%;
-  border: 0; border-radius: 10px; background: transparent; color: inherit; text-align: left; font: inherit; }
-.cell + .cell::before, .group > div + .cell::before, .group > .cell + div > .cell::before, .group > div + div > .cell::before {
-  content: ""; position: absolute; top: 0; left: 12px; right: 12px; border-top: 1px solid var(--line); transition: opacity .2s var(--ease); }
-.group.people .cell + .cell::before { left: 72px; }
+/* ---------------------------------------------------------------- lists: rows on the page, space between them */
+.group { margin-inline: -12px; display: grid; gap: 4px; }
+.cell { display: flex; align-items: center; gap: 14px; min-height: 60px; padding: 10px 12px; position: relative; width: 100%;
+  border: 0; border-radius: 18px; background: transparent; color: inherit; text-align: left; font: inherit; }
+.cell::before { content: none !important; }
 button.cell { cursor: pointer; transition: background-color .2s var(--ease), transform .45s var(--spring); }
 button.cell:hover { background: var(--fill); }
 button.cell:active { background: var(--fill2); }
@@ -136,16 +135,16 @@ button.cell:hover::before, button.cell:hover + .cell::before { opacity: 0; }
 .cell .v.blue { color: var(--accent); }
 .chev { width: 7px; height: 12px; color: var(--ink3); flex: none; }
 .empty { color: var(--ink2); font-size: 15px; padding: 20px 12px; text-align: center; }
-/* a block of facts: a hairline above the first and below the last row too */
-.group.info { border-block: 1px solid var(--line); margin-inline: 0; }
-.group.info .cell { padding-inline: 0; border-radius: 0; min-height: 52px; }
+/* a block of facts: label on the left, value on the right, space between rows */
+.group.info { margin-inline: 0; gap: 0; }
+.group.info .cell { padding-inline: 0; border-radius: 0; min-height: 50px; }
 .group.info .cell::before { left: 0 !important; right: 0 !important; }
 .group.info button.cell:hover { background: transparent; }
 .group.info button.cell:hover .v { text-decoration: underline; text-underline-offset: 3px; }
 .group.info button.cell:hover::before, .group.info button.cell:hover + .cell::before { opacity: 1; }
 
 /* ---------------------------------------------------------------- avatars and presence */
-.av { --s: 40px; position: relative; width: var(--s); height: var(--s); flex: none; border-radius: calc(var(--s) * .3);
+.av { --s: 40px; position: relative; width: var(--s); height: var(--s); flex: none; border-radius: 50%;
   background: var(--bg2); display: inline-grid; place-items: center; color: var(--ink); }
 .av svg { width: 54%; height: 54%; }
 .av img { width: 58%; height: 58%; display: block; user-select: none; }
@@ -164,20 +163,21 @@ button.cell:hover::before, button.cell:hover + .cell::before { opacity: 0; }
 .stackav .av + .av { margin-left: -14px; box-shadow: 0 0 0 2.5px var(--bg); }
 
 /* ---------------------------------------------------------------- copy rows and code blocks */
-.copyfield { display: flex; align-items: center; gap: 12px; padding: 9px 0; border-block: 1px solid var(--line); min-width: 0; }
-.steps .copyfield + .copyfield { margin-top: -11px; }
+.copyfield { display: flex; align-items: center; gap: 12px; padding: 9px 9px 9px 20px; border-radius: 26px; background: var(--card);
+  box-shadow: 0 0 0 .5px var(--line), 0 10px 26px -18px rgba(24, 23, 29, .35); min-width: 0; }
+.steps .copyfield + .copyfield { margin-top: -2px; }
 .copyfield .k { font-size: 12px; color: var(--ink2); }
 .copyfield .val { font: 13.5px/1.45 var(--mono); letter-spacing: 0; overflow-wrap: anywhere; color: var(--ink); }
 .copyfield .grow { flex: 1; min-width: 0; }
-.copybtn { border: 0; background: none; color: var(--accent); font-weight: 600; font-size: 14px; height: 32px; padding: 0 10px; margin-right: -10px;
-  border-radius: 7px; cursor: pointer; flex: none; transition: background-color .2s var(--ease), color .2s var(--ease); }
-.copybtn:hover { background: var(--fill); }
-.copybtn.ok, .copybtn.ok:hover { color: var(--green-ink); background: none; animation: bump .4s var(--spring); }
+.copybtn { border: 0; background: var(--accent); color: var(--on-accent); font-weight: 600; font-size: 13px; height: 32px; padding: 0 14px;
+  border-radius: 999px; cursor: pointer; flex: none; transition: background-color .2s var(--ease), color .2s var(--ease); }
+.copybtn:hover { background: var(--accent-hover); }
+.copybtn.ok, .copybtn.ok:hover { color: var(--on-green); background: var(--green-btn); animation: bump .4s var(--spring); }
 .btn.ok, .btn.ok:hover { background: var(--green-btn); color: var(--on-green); animation: bump .4s var(--spring); }
 .msgcard { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 12px; min-width: 0; }
 .msgcard .top { order: 2; display: flex; margin-left: auto; }
 .msgcard .top .link { padding: 8px 2px; }
-pre.block { flex: 1 1 100%; min-width: 0; margin: 0; padding: 14px 16px; border-radius: var(--r-btn); background: var(--fill); white-space: pre-wrap;
+pre.block { flex: 1 1 100%; min-width: 0; margin: 0; padding: 16px 18px; border-radius: 20px; background: var(--fill); white-space: pre-wrap;
   word-break: break-word; font: 12.5px/1.6 var(--mono); letter-spacing: 0; color: var(--ink); }
 .msgcard.folded pre.block { max-height: calc(14px + 5 * 1.6em); overflow: hidden; color: var(--ink2); }
 .msgcard .btn { order: 1; flex: 1 1 auto; width: auto; }
@@ -197,11 +197,11 @@ pre.block { flex: 1 1 100%; min-width: 0; margin: 0; padding: 14px 16px; border-
 @media (prefers-reduced-motion: reduce) { .tick path { stroke-dashoffset: 0; } }
 
 /* ---------------------------------------------------------------- segmented + picker + switch + steps */
-.seg { display: grid; grid-auto-flow: column; grid-auto-columns: 1fr; background: var(--fill); border-radius: 9px; padding: 2px; gap: 2px; }
-.seg button { border: 0; background: transparent; color: var(--ink2); font-size: 14px; font-weight: 500; height: 30px; border-radius: 7px;
+.seg { display: grid; grid-auto-flow: column; grid-auto-columns: 1fr; background: var(--fill); border-radius: 999px; padding: 3px; gap: 2px; }
+.seg button { border: 0; background: transparent; color: var(--ink2); font-size: 14px; font-weight: 500; height: 32px; border-radius: 999px;
   cursor: pointer; transition: background-color .25s var(--ease), color .25s var(--ease); }
 .seg button:hover { color: var(--ink); }
-.seg button[aria-pressed=true] { background: var(--thumb); color: var(--ink); font-weight: 600; }
+.seg button[aria-pressed=true] { background: var(--thumb); color: var(--ink); font-weight: 600; box-shadow: 0 2px 8px -3px rgba(24, 23, 29, .25); }
 .pick { display: grid; grid-template-columns: repeat(auto-fill, minmax(96px, 1fr)); gap: 4px; margin-inline: -6px; }
 .opt { display: grid; justify-items: center; align-content: start; gap: 8px; padding: 14px 6px 12px; border: 0; border-radius: var(--r);
   background: transparent; color: var(--ink); font-size: 14px; font-weight: 600; cursor: pointer; text-align: center; }
@@ -218,6 +218,5 @@ pre.block { flex: 1 1 100%; min-width: 0; margin: 0; padding: 14px 16px; border-
 .steps > li { counter-increment: step; display: grid; grid-template-columns: 24px minmax(0, 1fr); gap: 14px; align-items: start; position: relative; }
 .steps > li::before { content: counter(step); width: 24px; height: 24px; border-radius: 50%; background: var(--fill2); color: var(--ink);
   font-size: 12px; font-weight: 650; display: grid; place-items: center; font-variant-numeric: tabular-nums; }
-.steps > li:not(:last-child)::after { content: ""; position: absolute; left: 11.5px; top: 32px; bottom: -20px; border-left: 1px solid var(--line); }
 .steps > li > div { min-width: 0; display: grid; gap: 10px; padding-top: 1px; font-size: 15px; }
 .steps b { font-weight: 600; }
