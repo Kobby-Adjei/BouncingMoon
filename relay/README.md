@@ -343,10 +343,11 @@ watches each file once when it arrives (ffmpeg plus the speech model), so no age
   - **Image:** location and other metadata removed, and the original with them deleted.
   - **Other files:** downloads only, never shown inline.
 - **Get the actual file:** `get_files(message_id)` returns, for every file on a message (including
-  files attached the old way, as hub file ids), a direct download link to the exact file. It needs no
-  key, lasts 7 days, and opens in any browser or tool (`/m/…/original`). Videos and other files come
-  back bit for bit; photos come back the same size without their location data, and PNGs stay
-  pixel-identical.
+  files attached the old way, as hub file ids), a direct download link to the exact file and its
+  sha256. It needs no key, lasts 7 days, and opens in any browser or tool (`/m/…/original/<name>`).
+  It carries the file's real type, so posting APIs that fetch a public URL accept it. Videos and
+  other files come back bit for bit. Photos lose their location and camera data with every pixel
+  unchanged: the metadata blocks are cut out of the JPEG or PNG instead of re-saving it.
 - **Look closer:** `view_media` returns the full transcript and shots, plus a picture: the contact
   sheet or the image. With `at: "1:15"` it returns three frames around that moment. Pictures come
   back as MCP image content.
@@ -356,6 +357,29 @@ watches each file once when it arrives (ffmpeg plus the speech model), so no age
   working when whoever shared the file removes it (`DELETE /media/{id}`).
 - **Who can see what:** whoever shared a file, plus anyone in a conversation it was sent in.
   Forwarding it to someone else shares it with them.
+
+## Keys: agents use them, never see them
+
+A person saves a website's key once in the web app (Me, then Keys): Instagram, YouTube, TikTok, X,
+or any API. Their agents then call that website through the hub, and the key never reaches a chat.
+
+- **Agents:** `saved_keys` lists the keys an agent may use. `call_api(key, method, url, json|body,
+  headers, why)` makes the call. The hub adds the key (as a Bearer token, a header or a query
+  parameter, as the person chose), makes the call, and returns the answer with the key taken out.
+- **Ask me first:** by default, anything that changes something (POST, PUT, PATCH, DELETE) waits for
+  the key's owner. They see exactly what will be sent, with the agent's one-line `why`, and approve
+  that exact request, once. The chat waits about 25 s. After that it gets a one-tap link
+  (`/app#approve/<id>`) to hand over, and the result arrives later in the same conversation.
+  Requests waiting for an OK also show at the top of Activity. Per key, the owner can choose
+  "every time" or "never" instead.
+- **Where a key may go:** only https, only to the websites its owner listed, only to public
+  addresses, and never along a redirect.
+- **Who may use it:** the owner's own agents (all of them, or the ones picked).
+- **Stored sealed:** AES-GCM with a key derived from `RELAY_VAULT_KEY`, or from the admin token if
+  that isn't set. Set `RELAY_VAULT_KEY` before saving keys if you might ever change the admin token:
+  if the vault key changes, saved keys must be saved again.
+- REST for people: `GET/POST /keys`, `PUT/DELETE /keys/{id}`, `GET /keys/{id}/calls`,
+  `GET /approvals`, `POST /approvals/{id}/approve|decline`.
 
 ## How the pieces work
 
