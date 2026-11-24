@@ -1,4 +1,10 @@
-"""People: email sign-in (Supabase magic links) and the emails that may sign in.
+"""People: email sign-in (a code by email) and the emails that may sign in.
+
+Two ways to send the email; the first one set up wins:
+  Resend   (RESEND_API_KEY, RELAY_EMAIL_FROM): the hub makes a 6-digit code, keeps only its hash for
+           10 minutes, and sends it in an email with no link at all, so a mail scanner has nothing to
+           open. Five wrong tries and the code is dead; one email per address per minute.
+  Supabase (SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY): magic links and codes, as below.
 
 Agents authenticate with their own Relay keys. People don't have to: the owner attaches an
 email to a person, the person types it at /app, Supabase emails them a link, and the link
@@ -80,6 +86,9 @@ SEND_REFUSED = {
                                           "Ask the hub's owner to set up email sending, or sign in with a key."),
 }
 SEND_FAILED = (502, "The email couldn't be sent just now. Try again in a minute, or sign in with a key.")
+NOT_SET_UP = (503, "This hub's email sender isn't set up for outside addresses yet. "
+                   "Ask the hub's owner to set up email sending, or sign in with a key.")
+CODE_SECONDS, RESEND_GAP = 600, 60         # a hub-made code lives 10 minutes; one email a minute per address
 CODE_TRIES, CODE_WINDOW = 5, 900          # wrong codes allowed per email per 15 minutes
 
 
@@ -111,6 +120,18 @@ def norm_email(email: str) -> str:
     return e
 
 
+def http(method: str, url: str, headers: dict, body: Optional[bytes]) -> tuple:
+    """(status, body); 0 when there was no answer at all."""
+    req = urllib.request.Request(url, data=body, method=method, headers=headers)
+    try:
+        with urllib.request.urlopen(req, timeout=15) as r:
+            return r.status, r.read()
+    except urllib.error.HTTPError as e:
+        return e.code, e.read()
+    except (urllib.error.URLError, OSError) as e:     # unreachable, timed out: no answer at all
+        return 0, json.dumps({"error_code": "unreachable", "msg": str(e)}).encode()
+
+
 class Supabase:
     """The two Supabase Auth calls the hub makes. `send` is injectable for tests."""
 
@@ -119,14 +140,7 @@ class Supabase:
         self.send = send or self._http
 
     def _http(self, method: str, url: str, headers: dict, body: Optional[bytes]):
-        req = urllib.request.Request(url, data=body, method=method, headers=headers)
-        try:
-            with urllib.request.urlopen(req, timeout=15) as r:
-                return r.status, r.read()
-        except urllib.error.HTTPError as e:
-            return e.code, e.read()
-        except (urllib.error.URLError, OSError) as e:     # unreachable, timed out: no answer at all
-            return 0, json.dumps({"error_code": "unreachable", "msg": str(e)}).encode()
+        return http(method, url, headers, body)
 
     def send_link(self, email: str, redirect_to: str) -> tuple:
         """(status, body) from Supabase; the email carries a link and, if the template has it, a code."""
@@ -152,7 +166,51 @@ class Supabase:
             return None
 
 
-def mount(app, hub, supabase: Optional[Supabase]) -> None:
+class Resend:
+    """Sends the hub's own sign-in codes through Resend (resend.com). `send` is injectable for tests."""
+
+    def __init__(self, key: str, sender: str, send: Optional[Callable] = None):
+        self.key, self.sender = key, sender
+        self.send = send or self._http
+
+    def _http(self, method: str, url: str, headers: dict, body: Optional[bytes]):
+        return http(method, url, headers, body)
+
+    def send_code(self, email: str, code: str) -> tuple:
+        """(status, body) from Resend. The email carries the code and nothing to click."""
+        spaced = f"{code[:3]} {code[3:]}"
+        text = (f"Your Relay sign-in code is {spaced}\n\nType it on the page that asked for it. It works for 10 "
+                f"minutes, once.\n\nDidn't ask for this? Ignore this email; nobody can sign in without the code.")
+        page = ("<div style=\"background:#f6f4ef;padding:40px 16px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',"
+                "Helvetica,Arial,sans-serif;color:#18171d;text-align:center\">"
+                "<div style=\"font-size:15px;color:#6b6972\">Your Relay sign-in code</div>"
+                f"<div style=\"font-size:40px;font-weight:700;letter-spacing:6px;margin:14px 0 18px\">{spaced}</div>"
+                "<div style=\"font-size:14px;color:#6b6972;line-height:1.5\">Type it on the page that asked for it.<br>"
+                "It works for 10 minutes, once.</div>"
+                "<div style=\"font-size:12px;color:#9a98a0;margin-top:28px\">Didn't ask for this? Ignore it; "
+                "nobody can sign in without the code.</div></div>")
+        return self.send("POST", "https://api.resend.com/emails",
+                         {"Authorization": f"Bearer {self.key}", "Content-Type": "application/json",
+                          "User-Agent": "relay-hub"},
+                         json.dumps({"from": self.sender, "to": [email], "subject": f"{spaced} is your Relay code",
+                                     "text": text, "html": page}).encode())
+
+
+def resend_refusal(status: int, body: bytes) -> tuple:
+    """(status for the page, message) for a Resend error."""
+    try:
+        d = json.loads(body or b"{}")
+    except ValueError:
+        d = {}
+    msg = str(d.get("message") or "") if isinstance(d, dict) else ""
+    if status == 429:
+        return 429, "Too many emails right now. Try again in a few minutes."
+    if status == 403 or "verify a domain" in msg or "testing emails" in msg:
+        return NOT_SET_UP
+    return SEND_FAILED
+
+
+def mount(app, hub, supabase: Optional[Supabase], resend: Optional[Resend] = None) -> None:
     store, auth = hub.store, hub.auth
     wrong_codes: dict = {}          # email -> times of recent wrong codes (in memory; a restart forgets)
 
@@ -187,22 +245,24 @@ def mount(app, hub, supabase: Optional[Supabase]) -> None:
     # ------------------------------------------------------------ sign-in
     @app.get("/auth/config")
     def auth_config():
-        """What the sign-in page offers. `claimed`: the hub has an owner, so a stranger is told it's
+        """What the sign-in page offers. `email`: a code can be emailed. `claimed`: the hub has an owner, so a stranger is told it's
         invite-only rather than asked for an admin key they don't have."""
         with store.ro() as c:
             claimed = bool(c.execute("SELECT 1 FROM agents WHERE owner=1 LIMIT 1").fetchone())
-        return {"email": supabase is not None, "claimed": claimed}
+        return {"email": bool(resend or supabase), "claimed": claimed}
 
     @app.post("/auth/email")
     def auth_email(body: EmailIn, request: Request):
         """Send a sign-in link. The answer is the same whether or not the email is on this hub,
         so the page can't be used to find out who is."""
-        if supabase is None:
+        if not (resend or supabase):
             raise HTTPException(404, "email sign-in isn't set up on this hub")
         email = norm_email(body.email)
         with store.ro() as c:
             known = c.execute("SELECT 1 FROM people_emails WHERE email=?", (email,)).fetchone()
-        if known:
+        if known and resend:
+            send_code(email)
+        elif known:
             origin = f"{request.url.scheme}://{request.url.netloc}"
             status, raw = supabase.send_link(email, origin + "/app")
             if not 200 <= status < 300:
@@ -214,7 +274,7 @@ def mount(app, hub, supabase: Optional[Supabase]) -> None:
 
     @app.post("/auth/session")
     def auth_session(body: SessionIn):
-        if supabase is None:
+        if supabase is None or resend:
             raise HTTPException(404, "email sign-in isn't set up on this hub")
         return start_session(supabase.user(body.access_token.strip()))
 
@@ -222,9 +282,13 @@ def mount(app, hub, supabase: Optional[Supabase]) -> None:
     def auth_verify(body: VerifyIn):
         """Sign in with the code from the email (with the email it went to), or with the token hash
         from a link that points at /app (the page only sends it when the person presses Sign in)."""
-        if supabase is None:
+        if not (resend or supabase):
             raise HTTPException(404, "email sign-in isn't set up on this hub")
         bad = HTTPException(401, "That code didn't work. Check it, or ask for a new email.")
+        if resend:
+            if body.token_hash:
+                raise HTTPException(400, "Type the code from the email.")
+            return start_session(check_code(norm_email(body.email or ""), body.code or "", bad))
         if body.token_hash:
             payload, email = {"token_hash": body.token_hash.strip()}, None
             bad = HTTPException(401, "That sign-in link has expired or was already used. Ask for a new one.")
@@ -264,6 +328,53 @@ def mount(app, hub, supabase: Optional[Supabase]) -> None:
         if email:
             wrong_codes.pop(email, None)
         return start_session(u)
+
+    # ------------------------------------------------------------ the hub's own codes (Resend)
+    with store.tx() as c:
+        c.execute("CREATE TABLE IF NOT EXISTS email_codes(email TEXT PRIMARY KEY, code_hash TEXT NOT NULL,"
+                  " sent REAL NOT NULL, expires REAL NOT NULL, tries INTEGER NOT NULL DEFAULT 0)")
+
+    def code_hash(email: str, code: str) -> str:
+        return hub.hash(f"email-code:{email}:{code}")
+
+    def send_code(email: str) -> None:
+        now = hub.now()
+        with store.tx() as c:
+            r = c.execute("SELECT sent FROM email_codes WHERE email=?", (email,)).fetchone()
+            if r and now - r["sent"] < RESEND_GAP:
+                raise HTTPException(429, "An email is already on its way. Wait a minute before asking for another.")
+            code = f"{secrets.randbelow(10 ** 6):06d}"
+            c.execute("INSERT OR REPLACE INTO email_codes(email,code_hash,sent,expires,tries) VALUES (?,?,?,?,0)",
+                      (email, code_hash(email, code), now, now + CODE_SECONDS))
+        status, raw = resend.send_code(email, code)
+        if not 200 <= status < 300:
+            with store.tx() as c:          # nothing was sent: no code to wait for, and no minute to wait
+                c.execute("DELETE FROM email_codes WHERE email=?", (email,))
+            log(f"Resend refused to send a sign-in code to {mask_email(email)}: status={status} "
+                f"body={raw[:200].decode('utf-8', 'replace') if isinstance(raw, bytes) else str(raw)[:200]}")
+            raise HTTPException(*resend_refusal(status, raw))
+
+    def check_code(email: str, typed: str, bad: HTTPException) -> dict:
+        code = re.sub(r"\s+", "", typed)
+        if not CODE_RE.match(code):
+            raise HTTPException(400, "Type the code from the email.")
+        now, refuse = hub.now(), None
+        with store.tx() as c:            # decide inside, raise after: a wrong try must be counted, not rolled back
+            r = c.execute("SELECT * FROM email_codes WHERE email=?", (email,)).fetchone()
+            if not r:
+                refuse = bad
+            elif r["expires"] <= now:
+                refuse = HTTPException(401, "That code has expired. Ask for a new email.")
+            elif r["tries"] >= CODE_TRIES:
+                refuse = HTTPException(429, "Too many wrong codes. Ask for a new email.")
+            elif not secrets.compare_digest(r["code_hash"], code_hash(email, code)):
+                c.execute("UPDATE email_codes SET tries=tries+1 WHERE email=?", (email,))
+                refuse = bad
+            else:
+                c.execute("DELETE FROM email_codes WHERE email=?", (email,))   # a code works once
+        if refuse:
+            raise refuse
+        return {"email": email, "email_confirmed_at": now}
 
     def start_session(u: Optional[dict]) -> dict:
         """A hub session for a confirmed Supabase user whose email is on this hub."""

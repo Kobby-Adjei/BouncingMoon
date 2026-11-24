@@ -1023,7 +1023,7 @@ async function meScreen() {
   const tk = ticket();
   let mine = { handle: ME.handle, role: "human", email: null };
   try { mine = (await api("GET", "/agents")).find((x) => x.handle === ME.handle) || mine; } catch {}
-  const rows = isOwner() && AUTH.email ? h("section", { class: "facts" }, h("h2", { class: "label", text: "Signing in" }),
+  const rows = AUTH.email ? h("section", { class: "facts" }, h("h2", { class: "label", text: "Signing in" }),
     h("div", { class: "group info" }, emailRow(mine, "Email sign-in"))) : null;
   screen("me", tk,
     h("div", { class: "profile" }, avatar({ handle: ME.handle, role: "human" }, 88), h("h1", { class: "title", text: ME.handle }),

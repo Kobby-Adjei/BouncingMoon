@@ -1,5 +1,6 @@
 """Email sign-in for people (Supabase magic links, relayed by the hub)."""
 import json
+import re
 
 import pytest
 from fastapi.testclient import TestClient
@@ -197,3 +198,72 @@ def test_email_sessions_from_before_the_scanner_fix_are_ended_once(tmp_path):
     with store.ro() as db:
         assert db.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 1
     assert c2.get("/agents/me", headers=H(owner)).json()["handle"] == "kobby"   # keys untouched
+
+
+# ---------------------------------------------------------------- the hub's own codes, sent by Resend
+class FakeResend:
+    def __init__(self):
+        self.sent, self.reply = [], (200, b'{"id":"e_1"}')
+
+    def __call__(self, method, url, headers, body):
+        self.sent.append({"url": url, "auth": headers.get("Authorization"), **json.loads(body)})
+        return self.reply
+
+    def code(self):
+        return re.search(r"code is (\d{3}) (\d{3})", self.sent[-1]["text"]).expand(r"\1\2")
+
+
+@pytest.fixture
+def rs(tmp_path):
+    fake = FakeResend()
+    app = create_app(data_dir=str(tmp_path), admin_token=ADMIN, resend_key="re_test", email_from="Relay <in@relay.test>",
+                     resend_send=fake)
+    c = TestClient(app, base_url="https://hub.example")
+    owner = c.post("/owner", headers=H(ADMIN), json={"handle": "kobby"}).json()["token"]
+    c.put("/people/kobby/email", headers=H(owner), json={"email": "Kobby@Example.com"})
+    return c, fake
+
+
+def test_resend_emails_a_code_with_nothing_to_click_and_it_signs_in_once(rs):
+    c, fake = rs
+    assert c.get("/auth/config").json()["email"] is True
+    assert c.post("/auth/email", json={"email": "kobby@example.com"}).json() == {"sent": True}
+    m = fake.sent[-1]
+    assert m["url"] == "https://api.resend.com/emails" and m["auth"] == "Bearer re_test"
+    assert m["to"] == ["kobby@example.com"] and m["from"] == "Relay <in@relay.test>"
+    assert "http" not in m["text"] and "href" not in m["html"]          # a mail scanner has nothing to open
+    code = fake.code()
+    assert code in m["subject"].replace(" ", "")
+    r = c.post("/auth/verify", json={"email": "KOBBY@example.com", "code": code[:3] + " " + code[3:]})
+    assert r.status_code == 200 and r.json()["handle"] == "kobby" and r.json()["token"].startswith("rly_sess_")
+    # a code works once
+    assert c.post("/auth/verify", json={"email": "kobby@example.com", "code": code}).status_code == 401
+
+
+def test_resend_codes_are_rate_limited_and_die_after_five_wrong_tries(rs):
+    c, fake = rs
+    c.post("/auth/email", json={"email": "kobby@example.com"})
+    # one email a minute per address
+    assert c.post("/auth/email", json={"email": "kobby@example.com"}).status_code == 429
+    good = fake.code()
+    wrong = "000000" if good != "000000" else "111111"
+    for _ in range(5):
+        assert c.post("/auth/verify", json={"email": "kobby@example.com", "code": wrong}).status_code == 401
+    assert c.post("/auth/verify", json={"email": "kobby@example.com", "code": good}).status_code == 429
+
+
+def test_resend_says_nothing_about_who_is_on_the_hub(rs):
+    c, fake = rs
+    assert c.post("/auth/email", json={"email": "stranger@example.com"}).json() == {"sent": True}
+    assert fake.sent == []
+    assert c.post("/auth/verify", json={"email": "stranger@example.com", "code": "123456"}).status_code == 401
+
+
+def test_resend_refusals_say_what_to_do(rs):
+    c, fake = rs
+    fake.reply = (403, b'{"name":"validation_error","message":"You can only send testing emails to your own email address"}')
+    r = c.post("/auth/email", json={"email": "kobby@example.com"})
+    assert r.status_code == 503 and "set up email sending" in r.json()["detail"]
+    # nothing went out, so there's no minute to wait before trying again
+    fake.reply = (200, b'{"id":"e_2"}')
+    assert c.post("/auth/email", json={"email": "kobby@example.com"}).status_code == 200

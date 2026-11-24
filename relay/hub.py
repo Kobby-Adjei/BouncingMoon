@@ -387,7 +387,8 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
                wake_opener=None, wake_check_url: bool = True, wake_cooldown: Optional[float] = None,
                youtube_key: Optional[str] = None, youtube_opener=None, youtube_threads: bool = True,
                supabase_url: Optional[str] = None, supabase_key: Optional[str] = None,
-               supabase_send=None, caption_transcriber=None, caption_threads: bool = True,
+               supabase_send=None, resend_key: Optional[str] = None, email_from: Optional[str] = None,
+               resend_send=None, caption_transcriber=None, caption_threads: bool = True,
                caption_public_url: Optional[str] = None, caption_tool_wait: Optional[float] = None,
                caption_idle_seconds: Optional[float] = None,
                session_idle_seconds: Optional[float] = None,
@@ -1138,8 +1139,8 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
     def agents(me: dict = Depends(auth)):
         sees_emails = me["role"] == "admin" or me.get("owner")
         with store.ro() as c:
-            emails = {r["handle"]: r["email"] for r in c.execute("SELECT handle, email FROM people_emails")} \
-                if sees_emails else {}
+            emails = {r["handle"]: r["email"] for r in c.execute("SELECT handle, email FROM people_emails")
+                      if sees_emails or r["handle"] == me["handle"]}      # everyone sees their own
             return [{"handle": r["handle"], "caps": _loads(r["caps"], []), "role": r["role"],
                      "provider": r["provider"], "client": r["client"], "last_seen": r["last_seen"],
                      "owner": bool(r["owner"]), "listener": listener_out(r),
@@ -1562,8 +1563,11 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
     sb_url = supabase_url or os.environ.get("SUPABASE_URL")
     sb_key = supabase_key or os.environ.get("SUPABASE_PUBLISHABLE_KEY")
     supabase = people.Supabase(sb_url, sb_key, send=supabase_send) if sb_url and sb_key else None
+    rs_key = resend_key or os.environ.get("RESEND_API_KEY")
+    resend = people.Resend(rs_key, email_from or os.environ.get("RELAY_EMAIL_FROM") or "Relay <onboarding@resend.dev>",
+                           send=resend_send) if rs_key else None
     people.mount(app, SimpleNamespace(store=store, auth=auth, now=_now, hash=_hash,
-                                      check_new_agent=check_new_agent), supabase)
+                                      check_new_agent=check_new_agent), supabase, resend)
 
     # ---------------------------------------------------------------- connect apps with "Allow" (OAuth)
     def new_session(handle: str) -> dict:
@@ -1579,7 +1583,7 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
     from . import oauth
     oauth.mount(app, SimpleNamespace(store=store, auth=auth, now=_now, check_new_agent=check_new_agent,
                                      private_host=(lambda h: False) if allow_private else private_host,
-                                     origin=origin, email_on=supabase is not None, log=log, new_session=new_session))
+                                     origin=origin, email_on=bool(supabase or resend), log=log, new_session=new_session))
     return app
 
 
