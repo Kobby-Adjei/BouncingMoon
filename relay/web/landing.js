@@ -154,7 +154,7 @@ function playWhenSeen(videos) {                         // play once, when they'
 }
 function play() {
   reset(); playing = true;
-  label.textContent = `A real run, replayed at ${SPEED}×`;
+  label.textContent = `Playing at ${SPEED}×`;
   let prevEnd = 0;
   for (const s of rows) {
     const show = T(s.m.t);
@@ -171,12 +171,12 @@ function play() {
     }
     prevEnd = show;
   }
-  later(prevEnd + 900, () => { playing = false; label.textContent = "A real run, replayed"; chip.setAttribute("aria-label", "Replay the run: cut clips from a video"); });
+  later(prevEnd + 900, () => { playing = false; label.textContent = "Tap below to play it again"; chip.setAttribute("aria-label", "Replay the run: cut clips from a video"); });
 }
 function still() {                                     // reduced motion: the whole exchange, at rest; videos play on tap
   reset();
   for (const s of rows) finalState(s);
-  label.textContent = "A real run";
+  label.textContent = "Ready";
 }
 
 chip.addEventListener("click", () => {
