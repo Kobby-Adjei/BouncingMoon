@@ -53,9 +53,10 @@ def setup(tmp_path):
 
 def test_config_says_whether_email_sign_in_is_on(setup, tmp_path):
     c, _, _ = setup
-    assert c.get("/auth/config").json() == {"email": True}
+    assert c.get("/auth/config").json() == {"email": True, "claimed": True}
     off = TestClient(create_app(data_dir=str(tmp_path / "x"), admin_token=ADMIN))
-    assert off.get("/auth/config").json() == {"email": False}
+    # no owner yet: the sign-in page may ask for the admin key; once claimed it says invite-only
+    assert off.get("/auth/config").json() == {"email": False, "claimed": False}
     assert off.post("/auth/email", json={"email": "a@b.co"}).status_code == 404
 
 

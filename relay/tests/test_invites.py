@@ -264,3 +264,21 @@ def test_cli_join_with_a_rejoin_code_over_real_http(tmp_path, monkeypatch, capsy
         assert admin.post("/invites/peek", json={"code": code}).json()["state"] == "claimed"
     finally:
         server.should_exit = True; t.join(5)
+
+
+def test_a_person_joins_from_an_invite_link_without_ever_holding_a_key_in_the_browser(hub):
+    owner = hub.post("/owner", headers=H(ADMIN), json={"handle": "kobby"}).json()["token"]
+    inv = hub.post("/invites", headers=H(owner), json={"handle": "ama", "role": "human", "hours": 72}).json()
+    # the link opens the web app; the code rides in the #fragment, so it never reaches the server's logs
+    page = hub.get("/join")
+    assert page.status_code == 200 and "/static/app.js" in page.text
+    peek = hub.post("/invites/peek", json={"code": inv["code"]}).json()
+    assert peek == {**peek, "handle": "ama", "role": "human", "state": "pending", "host": "kobby"}
+    key = hub.post("/invites/claim", json={"code": inv["code"]}).json()["token"]
+    # the key buys a session that expires; the page keeps the session, then adds a passkey with it
+    sess = hub.post("/auth/session/owner", headers=H(key)).json()["token"]
+    me = hub.get("/agents/me", headers=H(sess)).json()
+    assert sess.startswith("rly_sess_") and me["handle"] == "ama" and me["role"] == "human" and not me.get("owner")
+    assert hub.post("/auth/passkey/register/options", headers=H(sess)).status_code == 200
+    # a person can't hand out invites: only the owner brings people in
+    assert hub.post("/invites", headers=H(sess), json={"handle": "x"}).status_code == 403

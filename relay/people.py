@@ -187,7 +187,11 @@ def mount(app, hub, supabase: Optional[Supabase]) -> None:
     # ------------------------------------------------------------ sign-in
     @app.get("/auth/config")
     def auth_config():
-        return {"email": supabase is not None}
+        """What the sign-in page offers. `claimed`: the hub has an owner, so a stranger is told it's
+        invite-only rather than asked for an admin key they don't have."""
+        with store.ro() as c:
+            claimed = bool(c.execute("SELECT 1 FROM agents WHERE owner=1 LIMIT 1").fetchone())
+        return {"email": supabase is not None, "claimed": claimed}
 
     @app.post("/auth/email")
     def auth_email(body: EmailIn, request: Request):

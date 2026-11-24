@@ -11,7 +11,7 @@ const SVGNS = "http://www.w3.org/2000/svg";
 
 let KEY = null;          // the signed-in key or email session (owner's or a person's); the admin token is never stored
 let ME = null;           // { handle, role, owner }
-let AUTH = { email: false };   // what this hub offers for signing in
+let AUTH = { email: false, claimed: true };   // what this hub offers for signing in; claimed: it has an owner
 let timer = null;
 const trail = [];        // in-app back stack
 
@@ -308,9 +308,9 @@ function scrollEnd(view, smooth = true) {
 }
 
 // ------------------------------------------------------------------ routes
-//   agents · agents/<name> · agents/<name>/wake|connect|invite|added|key · add · add/<app>
+//   agents · agents/<name> · agents/<name>/wake|connect|invite|key · add · add/<app>
 //   activity · activity/<id> · activity/new · activity/to/<name> · me · shorts · shorts/<id>
-const ONE_TIME = new Set(["connect", "invite", "added", "key"]);
+const ONE_TIME = new Set(["connect", "invite", "key"]);
 function known(r) {
   const [top, x, y, z] = r.split("/");
   if (z !== undefined) return false;
@@ -337,7 +337,6 @@ function screenFor(r) {
     const d = payloads.get(r);
     if (p[2] === "connect") return [connectGuide, d.app, d.created];
     if (p[2] === "invite") return [inviteGuide, d.app, d.inv];
-    if (p[2] === "added") return [personAdded, d];
     if (p[2] === "key") return [keyShown, p[1], d];
   }
   if (p[0] === "activity") {
@@ -527,8 +526,12 @@ function signin(message, mode) {
   });
   welcomeView(brand("Relay", "Face ID, a fingerprint or your PIN."), h("div", { class: "stack tight" }, b, err),
     ways(AUTH.email ? way("Email me a code", () => signin(null, "email")) : null, way("Use a key", () => signin(null, "key"))),
-    h("p", { class: "first", text: "First time here? Use your admin key, once." }));
+    firstTime());
 }
+// below the sign-in: a new hub asks its owner for the admin key once; a claimed one is invite-only
+const firstTime = () => h("p", { class: "first", text: AUTH.claimed
+  ? "New here? Relay is invite-only for now. Open the invite link you were sent."
+  : "First time here? Use your admin key, once." });
 
 function keySignin(message) {
   const input = h("input", { class: "field", type: "password", placeholder: "Relay key", autocomplete: "current-password",
@@ -547,7 +550,7 @@ function keySignin(message) {
       KEY = k; ME = me; store.set(k, remember.checked); fuse(() => goTab(agents));
     } catch (x) { err.textContent = x.status === 401 ? "That key isn't recognised." : x.message; btn.disabled = false; }
   } }, input, btn, h("label", { class: "check" }, remember, "Keep me signed in"), err);
-  welcomeView(brand("Relay", "Your key, or the admin key the first time."), form,
+  welcomeView(brand("Relay", AUTH.claimed ? "Your Relay key." : "Your key, or the admin key the first time."), form,
     ways(CAN_PASSKEY ? way("Use a passkey", () => signin(null, "start")) : null, AUTH.email ? way("Email me a code", () => signin(null, "email")) : null));
   input.focus();
 }
@@ -625,6 +628,50 @@ function finishLink(link) {
   });
   welcomeView(brand("Relay", "One tap to finish signing in."), h("div", { class: "stack tight" }, go, err));
   go.focus();
+}
+
+// ------------------------------------------------------------------ join (/join#inv_…)
+// An invite link: a person joins with one press and a passkey; an agent's link shows the line to run.
+// The code is read from the #fragment, then wiped from the address bar before anything is drawn.
+async function joinView(code) {
+  const out = () => { history.replaceState(null, "", "/app"); signin(); };
+  let inv = null;
+  if (/^inv_[\w-]{8,}$/.test(code)) { try { inv = await api("POST", "/invites/peek", { code }, null); } catch {} }
+  if (!inv || inv.state !== "pending") {
+    return welcomeView(brand("This link has run out", inv && inv.state === "claimed"
+        ? "It was already used. If that was you, sign in." : "Ask whoever sent it for a new one."),
+      ways(way("Sign in", out, true)));
+  }
+  if (inv.role !== "human") {
+    const connect = { claude: "claude-code", codex: "codex" }[inv.provider];
+    return welcomeView(brand(`Join as ${inv.handle}`, connect
+        ? "Paste this into a terminal on the computer where the agent works."
+        : "Paste this into your agent's chat. It sets itself up."),
+      connect ? installBlock(code, connect) : copyBlock(agentPrompt(inv, code, null), "Copy message"));
+  }
+  const err = h("p", { class: "err", role: "alert" });
+  const go = h("button", { class: "btn press", type: "button" }, "Join");
+  go.addEventListener("click", async () => {
+    go.disabled = true; err.textContent = "";
+    try {
+      const r = await api("POST", "/invites/claim", { code }, null);
+      // the key stays out of the browser: it buys a session that expires, and is offered once as a backup
+      const s = await api("POST", "/auth/session/owner", {}, r.token);
+      KEY = s.token; ME = await api("GET", "/agents/me", undefined, s.token);
+      store.set(s.token, true);
+      history.replaceState(null, "", "/app#me/apps");           // first stop: connect your own Claude
+      const into = () => goTab(agents);
+      const backup = way("Copy a backup key", null);
+      backup.addEventListener("click", () => copy(r.token, backup, "Copy a backup key"));
+      if (CAN_PASSKEY) return offerPasskey(`Welcome, ${r.handle}`, "Add a passkey. It's how you'll sign in.", into, [backup]);
+      welcomeView(brand(`Welcome, ${r.handle}`, "Keep your key somewhere safe. It's how you'll sign in.", r.handle),
+        h("div", { class: "stack tight" }, h("button", { class: "btn press", type: "button", onclick: () => fuse(into) }, "Open Relay")),
+        ways(backup));
+    } catch (x) { err.textContent = x.status === 404 ? "This link has run out. Ask for a new one." : x.message; go.disabled = false; }
+  });
+  welcomeView(brand("You're invited", `${inv.host ? inv.host + " added you to Relay" : "You're invited to Relay"} as ${inv.handle}.`, inv.handle),
+    h("div", { class: "stack tight" }, go, err),
+    h("p", { class: "first", text: "Your agents will talk to theirs. Nothing to install." }));
 }
 
 // first sign-in with the admin token: make the hub yours, then forget the token
@@ -732,15 +779,14 @@ async function addName(a) {
   const tk = ticket();
   let taken = new Set();
   try { taken = new Set((await api("GET", "/agents")).map((x) => x.handle)); } catch {}
-  const person = a.style === "person", byEmail = person && AUTH.email;
+  const person = a.style === "person";
   let suggestion = a.name;
   if (suggestion) { let i = 2; while (taken.has(suggestion)) suggestion = `${a.name}-${i++}`; }
   const name = h("input", { class: "field", type: "text", value: suggestion, placeholder: person ? "Their name" : "Name",
                              spellcheck: "false", maxlength: "32", "aria-label": "Name" });
   slug(name);
-  const email = byEmail ? h("input", { class: "field", type: "email", placeholder: "Their email", autocomplete: "off", spellcheck: "false", "aria-label": "Email" }) : null;
   const err = h("p", { class: "err", role: "alert" });
-  const btn = h("button", { class: "btn press", type: "submit" }, byEmail ? "Add" : "Continue");
+  const btn = h("button", { class: "btn press", type: "submit" }, "Continue");
   const works = h("button", { type: "button", class: "switch", role: "switch", "aria-checked": "false", "aria-label": "Does work for others",
     onclick: () => works.setAttribute("aria-checked", String(works.getAttribute("aria-checked") !== "true")) });
   const extra = a.style === "invite" ? h("div", { class: "group info" }, h("div", { class: "cell" },
@@ -749,41 +795,28 @@ async function addName(a) {
   const form = h("form", { class: "stack tight", onsubmit: async (e) => {
     e.preventDefault();
     const handle = name.value.trim(); if (!handle) { err.textContent = "Give it a name."; return; }
-    if (email && !email.value.trim().includes("@")) { err.textContent = "Add their email."; return; }
     btn.disabled = true; err.textContent = "";
     try {
-      if (byEmail) {
-        const r = await api("POST", "/people", { handle, email: email.value.trim() });
-        if (listRefresh) listRefresh();
-        nav(`agents/${enc(r.handle)}/added`, { data: r });
-      } else if (a.style === "connector") {
+      if (a.style === "connector") {
         const r = await api("POST", "/agents", { handle, provider: a.provider, role: "agent" });
         if (listRefresh) listRefresh();
         nav(`agents/${enc(r.handle)}/connect`, { data: { app: a, created: r } });
       } else {
         const caps = works.getAttribute("aria-checked") === "true" ? ["fetch", "digest"] : [];
-        const inv = await api("POST", "/invites", { handle, hours: 24, provider: a.provider,
+        // a person gets three days to open their link; an agent's code is for a terminal, right now
+        const inv = await api("POST", "/invites", { handle, hours: person ? 72 : 24, provider: a.provider,
           role: person ? "human" : "agent", caps });
         nav(`agents/${enc(inv.handle)}/invite`, { data: { app: a, inv } });
       }
     } catch (x) { err.textContent = x.message; btn.disabled = false; }
-  } }, name, email, extra, h("div", { style: "margin-top:8px" }, btn), err);
+  } }, name, extra, h("div", { style: "margin-top:8px" }, btn), err);
   screen("addname", tk, heroHead(appAvatar(a, 72), person ? "Who is it?" : `Name your ${a.label}`,
-    person ? (byEmail ? "They sign in with their email." : "Their name on Relay.") : "Its address on Relay."), form);
+    person ? "Their name on Relay. They get a link to join." : "Its address on Relay."), form);
   name.focus(); name.select();
 }
 
 // the end of an add flow: a desktop opens the new one, a phone goes back to the list
 const finish = (handle) => () => { if (listRefresh) listRefresh(); nav(WIDE ? `agents/${enc(handle)}` : "agents", { replace: true }); };
-
-function personAdded(r) {
-  screen("added", ticket(), heroHead(bigTick(), `${r.handle} is in`, null),
-    h("div", { class: "stack" },
-      h("div", { class: "group info" }, h("div", { class: "cell" }, avatar("person", 40), h("div", { class: "grow" },
-        h("div", { class: "t", text: r.handle }), h("div", { class: "s", text: r.email || "" })))),
-      h("div", { class: "stack tight" }, h("p", { class: "hint", style: "margin:0", text: "They sign in here with that email:" }), copyField("Sign-in page", `${ORIGIN}/app`)),
-      h("button", { class: "btn press", type: "button", onclick: finish(r.handle) }, "Done")));
-}
 
 function stickyStatus(text, ok) { const s = statusLine(text, ok); s.classList.add("sticky-status"); if (ok) s.classList.add("ok"); return s; }
 
@@ -899,7 +932,7 @@ function inviteGuide(a, inv) {
   let status = stickyStatus(`Waiting for ${handle}…`);
   const me = `python3 ~/.relay/bin/cli.py --as ${handle}`;
   const body = person
-    ? h("div", { class: "stack tight" }, h("p", { class: "hint", style: "margin:0", text: "Send privately. Works once, for 24 h." }), copyField("Invite link", link))
+    ? h("div", { class: "stack tight" }, h("p", { class: "hint", style: "margin:0", text: "Send it privately: a message, not a group. It works once, for 3 days. They join with Face ID or a fingerprint, no password." }), copyField("Invite link", link))
     : h("div", { class: "stack tight" },
         h("p", { class: "hint", style: "margin:0", text: `Paste into a terminal on the computer where ${a.label} is signed in. It answers by itself after that, on your own plan. Works once, for 24 h.` }),
         installBlock(code, a.connect),
@@ -1037,7 +1070,7 @@ async function appsScreen() {
       api("GET", "/agents").then((all) => Object.fromEntries(all.map((a) => [a.handle, a]))).catch(() => ({}))]);
   } catch (x) { list.replaceChildren(h("p", { class: "err", text: x.message })); return; }
   if (!view.isConnected) return;
-  if (!conns.length) return list.replaceChildren(emptyApps());
+  if (!conns.length) { view.querySelector(".addapp .k").textContent = "Your Relay address"; return list.replaceChildren(emptyApps()); }
   list.replaceChildren(...conns.map((c, i) => pairItem(c, agentsBy[c.agent], i, list)));
 }
 function pairItem(c, agent, i, list) {
@@ -1858,6 +1891,12 @@ async function shortView(id, first) {
 // ------------------------------------------------------------------ start
 brandmini.append(mark(), h("span", { class: "word", text: "Relay" }));
 (async function start() {
+  // an invite link: take the code from the #fragment and clear it from the address bar at once
+  let joinCode = null;
+  if (location.pathname === "/join") {
+    try { joinCode = decodeURIComponent(location.hash.slice(1)).trim(); } catch { joinCode = ""; }
+    history.replaceState(null, "", "/join");
+  }
   // back from an emailed sign-in link: read the fragment, then wipe it from the address bar before anything else
   let link = null;
   if (location.hash.length > 1 || location.search.includes("token_hash=")) {
@@ -1869,8 +1908,9 @@ brandmini.append(mark(), h("span", { class: "word", text: "Relay" }));
       history.replaceState(null, "", "/app");
     }
   }
-  try { const c = await api("GET", "/auth/config", undefined, null); AUTH = { email: !!(c && c.email) }; } catch { AUTH = { email: false }; }
+  try { const c = await api("GET", "/auth/config", undefined, null); AUTH = { email: !!(c && c.email), claimed: !(c && c.claimed === false) }; } catch { AUTH = { email: false, claimed: true }; }
   if (link && (link.token || link.hash)) return finishLink(link);
+  if (joinCode !== null) return joinView(joinCode);
   if (link && link.error) return signin(link.error, AUTH.email ? "email" : "key");
   const saved = store.get();
   if (saved) {

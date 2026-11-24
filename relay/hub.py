@@ -791,7 +791,7 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
 
     @app.get("/join", include_in_schema=False)
     def join_page():           # the invite code travels in the #fragment, never the path
-        return static("ui.html", "text/html; charset=utf-8")
+        return web("app.html")
 
     @app.get("/ui.js", include_in_schema=False)
     def ui_js():
@@ -1101,8 +1101,11 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
         if not r:
             raise HTTPException(404, "invite is not valid: it was used, revoked, expired or mistyped")
         out = invite_out(r)
+        with store.ro() as c:          # who runs this hub, so the page can say who invited you
+            host = c.execute("SELECT handle FROM agents WHERE owner=1 ORDER BY created LIMIT 1").fetchone()
         return {"handle": out["handle"], "role": out["role"], "caps": out["caps"],
-                "provider": out["provider"], "expires": out["expires"], "state": out["state"]}
+                "provider": out["provider"], "expires": out["expires"], "state": out["state"],
+                "host": host["handle"] if host else None}
 
     @app.post("/invites/claim")
     def claim_invite(body: ClaimInviteIn):
