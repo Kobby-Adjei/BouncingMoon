@@ -374,6 +374,20 @@ def transcript_lines(words: list, gap: float = 0.9, max_words: int = 14) -> list
 
 
 # --------------------------------------------------------------------------- the service
+KEEP_FREE = float(os.environ.get("RELAY_KEEP_FREE", 0.15))     # new files stop when less than this share is free
+
+
+def disk(path: str) -> tuple:
+    """(free bytes, total bytes) of the disk `path` is on."""
+    u = shutil.disk_usage(path)
+    return u.free, u.total
+
+
+def room(path: str, nbytes: int, keep: float = None) -> bool:
+    free, total = disk(path)
+    return free - max(nbytes, 0) >= (KEEP_FREE if keep is None else keep) * total
+
+
 class Media:
     def __init__(self, store, private_host: Callable[[str], bool], secret: str,
                  transcriber: Optional[captions.Transcriber] = None, threads: bool = True,
@@ -388,6 +402,7 @@ class Media:
                            ("https://" + os.environ["RAILWAY_PUBLIC_DOMAIN"] if os.environ.get("RAILWAY_PUBLIC_DOMAIN") else "")
                            ).rstrip("/") or None
         self.on_upload: Optional[Callable[[dict, str], None]] = None     # the hub tells the asking chat
+        self.may_use: Optional[Callable] = None      # (db, who, file id) -> may `who` share that hub file?
         self.lock = threading.Lock()
         self.thread: Optional[threading.Thread] = None
         self.wake = threading.Event()
@@ -434,10 +449,10 @@ class Media:
         self._ensure_thread()
         return self.get(mid)
 
-    def from_artifact(self, by: str, artifact: str) -> dict:
+    def from_artifact(self, by: str, artifact: str, check: bool = True) -> dict:
         with self.store.tx() as c:
             a = c.execute("SELECT * FROM artifacts WHERE id=?", (artifact,)).fetchone()
-            if not a:
+            if not a or (check and self.may_use and not self.may_use(c, by, artifact)):
                 raise MediaError(f"No file {artifact} on the hub.")
             # always a media item of its own (who shared it, in which conversation); the worker reuses
             # what was already worked out for the same bytes
@@ -460,7 +475,7 @@ class Media:
             if aid in linked:
                 continue
             try:
-                mid = self.from_artifact(m["sender"], aid)["id"]
+                mid = self.from_artifact(m["sender"], aid, check=False)["id"]     # it was checked when sent
             except MediaError:
                 continue                                   # a file that's gone from the hub
             new.append(mid)
@@ -477,7 +492,7 @@ class Media:
 
     def from_file(self, by: str, path: str, name: str) -> dict:
         aid, size = self._store(path, name, by, None, "upload", "application/octet-stream")
-        return self.from_artifact(by, aid)
+        return self.from_artifact(by, aid, check=False)
 
     def _store(self, path: str, name: str, by: str, parent: Optional[str], kind: str, mime: str) -> tuple:
         h, size = hashlib.sha256(), 0
@@ -651,6 +666,12 @@ class Media:
             raise TimeoutError("expired")
         return r
 
+    def room_for(self, nbytes: int) -> None:
+        """Refuse new files that would leave the disk under KEEP_FREE free: the database lives on the same
+        disk, and a full one stops everything. A video takes about twice its size once it's processed."""
+        if not room(self.store.dir, nbytes):
+            raise MediaError("The hub is nearly full. Ask its owner to make room, then try again.")
+
     def start_file(self, token: str, name: str, size: int, mime: str) -> dict:
         """One file of an upload. The same name and size again resumes where it stopped."""
         link = self.upload_link(token)
@@ -658,6 +679,7 @@ class Media:
             raise MediaError("That file is empty.")
         if size > self.max_upload:
             raise MediaError(f"That file is over {self.max_upload // 2 ** 20} MB.")
+        self.room_for(2 * size)
         name = safe_name(name)
         with self.store.tx() as c:
             same = c.execute("SELECT * FROM upload_files WHERE link=? AND name=? AND size=? AND media IS NULL"
@@ -812,6 +834,7 @@ class Media:
         if not artifact:                                 # a link: fetch it first
             self._set(mid, stage="downloading")
             dl = os.path.join(work, "download")
+            self.room_for(2 * min(self.max_upload, captions.MAX_DOWNLOAD * 4))
             captions.download(r["source_url"], dl, self.private_host, self.allow_private,
                               cap=min(self.max_upload, captions.MAX_DOWNLOAD * 4))
             artifact, size = self._store(dl, r["name"] or "link", by, None, "upload", "application/octet-stream")

@@ -45,6 +45,9 @@ CODE_SECONDS = 600
 REQUEST_SECONDS = 1800             # how long the sign-in page stays good
 CHALLENGE_SECONDS = 300
 MAX_CLIENTS = 2000
+REGISTER_PER_HOUR = 20             # app registrations from one address in an hour
+UNUSED_CLIENT_SECONDS = 86400      # an app that registered but never finished signing in is forgotten after this
+REFRESH_GRACE = 60                 # a refresh token used again this soon after it was swapped: a retry, not a copy
 SCOPE = "relay"
 BAD_SCHEMES = {"javascript", "data", "file", "vbscript", "about", "blob", "http"}
 LOOPBACK = ("localhost", "127.0.0.1", "[::1]", "::1")
@@ -147,6 +150,10 @@ def mount(app, hub) -> None:
                 c.execute(stmt)
         if "person" not in {r["name"] for r in c.execute("PRAGMA table_info(agents)")}:
             c.execute("ALTER TABLE agents ADD COLUMN person TEXT")      # the person an agent belongs to
+        if "origin" not in {r["name"] for r in c.execute("PRAGMA table_info(oauth_clients)")}:
+            c.execute("ALTER TABLE oauth_clients ADD COLUMN origin TEXT")   # who registered it (hashed), for the rate limit
+        if "rotated" not in {r["name"] for r in c.execute("PRAGMA table_info(oauth_tokens)")}:
+            c.execute("ALTER TABLE oauth_tokens ADD COLUMN rotated REAL")   # swapped for a new one (not ended)
 
     def issuer(request: Request) -> str:
         return hub.origin(request)
@@ -192,7 +199,7 @@ def mount(app, hub) -> None:
 
     # ------------------------------------------------------------ app registration
     @app.post("/oauth/register", include_in_schema=False)
-    def register(body: ClientIn):
+    def register(body: ClientIn, request: Request):
         uris = [u.strip() for u in body.redirect_uris if u and u.strip()]
         if not uris or len(uris) > 10 or not all(redirect_ok(u) and len(u) <= 500 for u in uris):
             return oauth_error("invalid_redirect_uri", "redirect URIs must be https, http://localhost, or an app scheme")
@@ -202,11 +209,21 @@ def mount(app, hub) -> None:
             return oauth_error("invalid_client_metadata", "unsupported token_endpoint_auth_method")
         cid = "rc_" + secrets.token_urlsafe(18)
         secret = "rcs_" + secrets.token_urlsafe(32) if method != "none" else None
+        origin = _h("register:" + hub.client_ip(request))
         with store.tx() as c:
+            # apps that registered but never finished signing in are forgotten after a day
+            c.execute("DELETE FROM oauth_clients WHERE created<? AND client_id NOT LIKE 'https://%'"
+                      " AND client_id NOT IN (SELECT client_id FROM oauth_tokens)"
+                      " AND client_id NOT IN (SELECT client_id FROM oauth_codes)", (now() - UNUSED_CLIENT_SECONDS,))
+            if c.execute("SELECT COUNT(*) AS n FROM oauth_clients WHERE origin=? AND created>?",
+                         (origin, now() - 3600)).fetchone()["n"] >= REGISTER_PER_HOUR:
+                return oauth_error("temporarily_unavailable", "too many apps registered from here; try again in an hour", 429)
             if c.execute("SELECT COUNT(*) AS n FROM oauth_clients").fetchone()["n"] >= MAX_CLIENTS:
                 return oauth_error("temporarily_unavailable", "too many registered apps", 503)
-            c.execute("INSERT INTO oauth_clients(client_id,name,uri,redirect_uris,secret_hash,created) VALUES (?,?,?,?,?,?)",
-                      (cid, name, (body.client_uri or "")[:300] or None, json.dumps(uris), _h(secret) if secret else None, now()))
+            c.execute("INSERT INTO oauth_clients(client_id,name,uri,redirect_uris,secret_hash,created,origin)"
+                      " VALUES (?,?,?,?,?,?,?)",
+                      (cid, name, (body.client_uri or "")[:300] or None, json.dumps(uris), _h(secret) if secret else None,
+                       now(), origin))
         out = {"client_id": cid, "client_name": name, "redirect_uris": uris, "token_endpoint_auth_method": method,
                "grant_types": ["authorization_code", "refresh_token"], "response_types": ["code"],
                "client_id_issued_at": int(now())}
@@ -454,14 +471,22 @@ def mount(app, hub) -> None:
                               (_h(f.get("refresh_token", "")),)).fetchone()
                 if not r or r["client_id"] != cl["client_id"]:
                     return oauth_error("invalid_grant", "unknown refresh token")
-                if r["revoked"]:                    # an old refresh token again: it was copied. End the connection.
+                if r["revoked"]:
+                    # Swapped a moment ago and the connection is still on: the app retried, or two of its
+                    # requests raced. Give it a fresh pair instead of signing the person out.
+                    if (r["rotated"] and now() - r["rotated"] <= REFRESH_GRACE and r["expires"] >= now() and c.execute(
+                            "SELECT 1 FROM oauth_tokens WHERE family=? AND kind='refresh' AND revoked IS NULL AND expires>?",
+                            (r["family"], now())).fetchone() and c.execute(
+                            "SELECT 1 FROM agents WHERE handle=?", (r["handle"],)).fetchone()):
+                        return js(issue(c, r["handle"], r["person"], cl["client_id"], r["scope"] or SCOPE, r["family"]))
+                    # an old refresh token again, later: it was copied. End the connection.
                     c.execute("UPDATE oauth_tokens SET revoked=? WHERE family=? AND revoked IS NULL", (now(), r["family"]))
                     return oauth_error("invalid_grant", "refresh token already used; connect again")
                 if r["expires"] < now():
                     return oauth_error("invalid_grant", "refresh token expired; connect again")
                 if not c.execute("SELECT 1 FROM agents WHERE handle=?", (r["handle"],)).fetchone():
                     return oauth_error("invalid_grant", "that agent no longer exists")
-                c.execute("UPDATE oauth_tokens SET revoked=? WHERE token_hash=?", (now(), r["token_hash"]))
+                c.execute("UPDATE oauth_tokens SET revoked=?, rotated=? WHERE token_hash=?", (now(), now(), r["token_hash"]))
                 return js(issue(c, r["handle"], r["person"], cl["client_id"], r["scope"] or SCOPE, r["family"]))
         return oauth_error("unsupported_grant_type", "authorization_code or refresh_token")
 

@@ -118,6 +118,7 @@ CONVERSATION = "thread:"   # session of a chat whose app sends no id: it is know
 SESSION_RE = re.compile(r"^[\x21-\x7e]{1,200}$")     # visible ASCII, as MCP session ids are
 RESERVED = {"relay", "admin", "me"}
 SYSTEM = "relay"            # sender name for messages the hub writes itself
+DIRECT = "direct"           # the channel conversations live in: private to the people in them
 MEDIA_PREFIXES = ("video/", "audio/")
 CLIP_ASPECTS = ("9:16",)          # the shapes a clip node will cut
 
@@ -134,6 +135,16 @@ def private_host(host: str) -> bool:
     except ValueError:
         return "." not in h            # single-label names resolve on the local network
     return not ip.is_global
+
+
+DISK_LOW = 0.05             # /health says "not ok" under this share of the disk free
+
+
+def client_ip(request) -> str:
+    """Who is calling, for rate limits. Behind a proxy (Railway) the last X-Forwarded-For entry is the
+    one the proxy added; earlier entries are whatever the caller wrote, so they are never trusted."""
+    fwd = [p.strip() for p in request.headers.get("x-forwarded-for", "").split(",") if p.strip()]
+    return fwd[-1] if fwd else (request.client.host if request.client else "")
 
 
 def _now() -> float:
@@ -418,7 +429,7 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
             f.write(hub_secret)
     lease = float(lease_seconds or os.environ.get("RELAY_LEASE_SECONDS", 300))
     max_att = int(max_attempts or os.environ.get("RELAY_MAX_ATTEMPTS", 3))
-    max_upload = int(max_upload_mb or os.environ.get("RELAY_MAX_UPLOAD_MB", 4096)) * 2**20
+    max_upload = int(max_upload_mb or os.environ.get("RELAY_MAX_UPLOAD_MB", 500)) * 2**20
     retry_base = float(retry_base_seconds if retry_base_seconds is not None
                        else os.environ.get("RELAY_RETRY_BASE_SECONDS", 30))
     allow_private = (allow_private_fetch if allow_private_fetch is not None
@@ -490,6 +501,51 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
     def need_agent(me: dict) -> None:
         if me["role"] == "admin":
             raise HTTPException(403, "admin token is for registration only; use an agent token")
+
+    # ---------------------------------------------------------------- privacy between people
+    # A person and the agents that work for them are one circle. A conversation (the "direct" channel)
+    # is seen only by circles with someone in it: someone who wrote in it, was @mentioned in it, or
+    # follows it. Nobody can follow, reply into or read a conversation they aren't in. Other channels
+    # ("general", a node's "jobs") are open rooms. The admin token, the operator's key, sees everything.
+    # A hub nobody has made theirs yet (no owner: agents and people the admin token registered) is one
+    # team, as before: there are no people's things to keep apart.
+    def first_owner(c) -> Optional[str]:
+        o = c.execute("SELECT handle FROM agents WHERE owner=1 ORDER BY created, handle LIMIT 1").fetchone()
+        return o["handle"] if o else None
+
+    def person_of(c, h: str) -> Optional[str]:
+        """Who `h` works for: itself for a person; the person who connected an agent, else the owner."""
+        r = c.execute("SELECT role, person FROM agents WHERE handle=?", (h,)).fetchone()
+        if not r:
+            return None
+        if r["role"] == "human":
+            return h
+        return r["person"] or first_owner(c)
+
+    def circle(c, h: str) -> list:
+        if not first_owner(c):
+            return [r["handle"] for r in c.execute("SELECT handle FROM agents")]
+        p = person_of(c, h)
+        if not p:
+            return [h]
+        theirs = " OR person IS NULL" if p == first_owner(c) else ""     # the hub's own agents are the owner's
+        return sorted({h, p} | {r["handle"] for r in c.execute(
+            f"SELECT handle FROM agents WHERE role='agent' AND (person=?{theirs})", (p,))})
+
+    def visible(c, h: str, alias: str = "m") -> tuple:
+        """SQL (and its values) that keeps only messages `h`'s circle may see."""
+        if h == "admin" or not first_owner(c):
+            return "1=1", []
+        who = circle(c, h)
+        qs = ",".join("?" * len(who))
+        return (f"({alias}.channel!=? OR {alias}.thread IN (SELECT thread FROM follows WHERE agent IN ({qs})"
+                f" UNION SELECT thread FROM messages WHERE sender IN ({qs})"
+                f" UNION SELECT x.thread FROM messages x, json_each(x.mentions) j WHERE j.value IN ({qs})))",
+                [DIRECT] + who * 3)
+
+    def can_see(c, h: str, thread: int) -> bool:
+        sql, a = visible(c, h)
+        return bool(c.execute(f"SELECT 1 FROM messages m WHERE m.id=? AND {sql}", [thread] + a).fetchone())
 
     # ---------------------------------------------------------------- internals
     def check_session(session: Optional[str]) -> Optional[str]:
@@ -593,13 +649,16 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
             if not parent:
                 raise HTTPException(404, f"reply_to {reply_to} not found")
             channel, thread = parent["channel"], parent["thread"] or parent["id"]
+            if sender != SYSTEM and not can_see(c, sender, thread):     # not your conversation: it doesn't exist
+                raise HTTPException(404, f"reply_to {reply_to} not found")
         elif not channel:
             raise HTTPException(400, "channel is required to start a thread")
         for m in mentions:     # resolved at post time; unknown handles fail before commit
             if not c.execute("SELECT 1 FROM agents WHERE handle=?", (m,)).fetchone():
                 raise HTTPException(400, f"unknown mention @{m}")
-        for a in artifacts:
-            if not c.execute("SELECT 1 FROM artifacts WHERE id=?", (a,)).fetchone():
+        for a in artifacts:            # only files the sender may see can travel with its messages
+            if not c.execute("SELECT 1 FROM artifacts WHERE id=?", (a,)).fetchone() or (
+                    sender != SYSTEM and not artifact_seen(c, {"handle": sender, "role": "agent"}, a)):
                 raise HTTPException(400, f"unknown artifact {a}")
         for m in media:
             if not c.execute("SELECT 1 FROM media WHERE id=?", (m,)).fetchone():
@@ -652,9 +711,9 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
         last = cur["last"] if cur else 0
         q = ("SELECT m.* FROM messages m WHERE m.id>? AND m.sender!=? AND ("
              " EXISTS (SELECT 1 FROM json_each(m.mentions) WHERE value=?)"
-             " OR m.channel IN (SELECT channel FROM subs WHERE agent=?)"
+             " OR (m.channel!=? AND m.channel IN (SELECT channel FROM subs WHERE agent=?))"
              " OR m.thread IN (SELECT thread FROM follows WHERE agent=?))")
-        a: list = [last, h, h, h, h]
+        a: list = [last, h, h, DIRECT, h, h]
         if session:
             q += (" AND NOT EXISTS (SELECT 1 FROM routes r WHERE r.msg=m.id AND r.handle=? AND r.session!=?)"
                   " AND NOT EXISTS (SELECT 1 FROM delivered d WHERE d.msg=m.id AND d.handle=? AND d.session=?)"
@@ -714,8 +773,9 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
             if not allow_private and private_host(urllib.parse.urlparse(url).hostname or ""):
                 raise HTTPException(400, "fetch may not target local or private network addresses")
         if kind in ("digest", "clip"):
-            if not c.execute("SELECT 1 FROM artifacts WHERE id=?",
-                             (str(params.get("artifact", "")),)).fetchone():
+            aid = str(params.get("artifact", ""))
+            if not c.execute("SELECT 1 FROM artifacts WHERE id=?", (aid,)).fetchone() or (
+                    is_agent(c, me_handle) and not artifact_seen(c, {"handle": me_handle, "role": "agent"}, aid)):
                 raise HTTPException(400, f"{kind} needs params.artifact (an existing artifact id)")
         if kind == "clip":
             try:
@@ -747,6 +807,13 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
     def get_job(c, jid) -> sqlite3.Row:
         j = c.execute("SELECT * FROM jobs WHERE id=?", (jid,)).fetchone()
         if not j:
+            raise HTTPException(404, f"job {jid} not found")
+        return j
+
+    def my_job(c, me: dict, jid) -> sqlite3.Row:
+        """A job my circle asked for, or one I'm working on. Anyone else's doesn't exist."""
+        j = get_job(c, jid)
+        if me["role"] != "admin" and j["claimed_by"] != me["handle"] and j["requested_by"] not in circle(c, me["handle"]):
             raise HTTPException(404, f"job {jid} not found")
         return j
 
@@ -924,7 +991,17 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
                 "release": int(m.group(1)) if m else None, "signed": signed}
 
     @app.get("/health")
-    def health():
+    def health(response: Response):
+        """Honest: not ok when the disk is almost full (the database lives on it). For monitors."""
+        free, total = media_mod.disk(store.dir)
+        ok = free >= DISK_LOW * total
+        if not ok:
+            response.status_code = 503
+        return {"ok": ok, "version": app.version, "disk": "ok" if ok else "nearly full"}
+
+    @app.get("/health/live", include_in_schema=False)
+    def live():
+        """The process answers. Deploys check this one, so a fix can still go out when the disk is full."""
         return {"ok": True, "version": app.version}
 
     # ---------------------------------------------------------------- agents
@@ -1221,13 +1298,15 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
              after: int = 0, limit: int = Query(50, ge=1, le=200),
              latest: bool = False, me: dict = Depends(auth)):
         """Oldest first from `after`; with latest=true, the newest `limit` (still oldest first)."""
-        q, a = "SELECT * FROM messages WHERE id>?", [after]
+        q, a = "SELECT * FROM messages m WHERE id>?", [after]
         if channel:
             q += " AND channel=?"; a.append(channel)
         if thread:
             q += " AND thread=?"; a.append(thread)
-        q += " ORDER BY id DESC LIMIT ?" if latest else " ORDER BY id LIMIT ?"; a.append(limit)
         with store.ro() as c:
+            only, more = visible(c, me["handle"])          # only conversations my circle is in
+            q += f" AND {only}"; a += more
+            q += " ORDER BY id DESC LIMIT ?" if latest else " ORDER BY id LIMIT ?"; a.append(limit)
             rows = [msg_out(r) for r in c.execute(q, a)]
         return rows[::-1] if latest else rows
 
@@ -1325,6 +1404,8 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
     @app.post("/subscriptions")
     def subscribe(body: ChannelIn, me: dict = Depends(auth)):
         need_agent(me)
+        if body.channel == DIRECT:
+            raise HTTPException(400, "conversations aren't a channel: you get the ones you're in")
         with store.tx() as c:
             c.execute("INSERT OR IGNORE INTO subs(agent,channel) VALUES (?,?)",
                       (me["handle"], body.channel))
@@ -1334,6 +1415,8 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
     def follow(body: FollowIn, me: dict = Depends(auth)):
         need_agent(me)
         with store.tx() as c:
+            if not can_see(c, me["handle"], body.thread):
+                raise HTTPException(404, f"no conversation {body.thread}")
             c.execute("INSERT OR IGNORE INTO follows(agent,thread) VALUES (?,?)",
                       (me["handle"], body.thread))
         return {"ok": True}
@@ -1351,6 +1434,11 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
     def list_jobs(status: Optional[str] = None, kind: Optional[str] = None,
                   limit: int = Query(50, ge=1, le=200), me: dict = Depends(auth)):
         q, a = "SELECT * FROM jobs WHERE 1=1", []
+        if me["role"] != "admin":          # what my circle asked for, and what I work on as a node
+            with store.ro() as c:
+                who = circle(c, me["handle"])
+            qs = ",".join("?" * len(who))
+            q += f" AND (requested_by IN ({qs}) OR claimed_by=?)"; a += who + [me["handle"]]
         if status:
             q += " AND status=?"; a.append(status)
         if kind:
@@ -1364,7 +1452,7 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
     def show_job(jid: str, me: dict = Depends(auth)):
         with store.tx() as c:
             requeue_expired(c)
-            return job_out(get_job(c, jid))
+            return job_out(my_job(c, me, jid))
 
     @app.post("/jobs/claim")
     def claim(body: ClaimIn, me: dict = Depends(auth)):
@@ -1464,7 +1552,7 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
         if me["role"] not in ("human", "admin"):
             raise HTTPException(403, "only a human can approve")
         with store.tx() as c:
-            j = get_job(c, jid)
+            j = my_job(c, me, jid)
             if j["status"] != "needs_approval":
                 raise HTTPException(409, f"job {jid} is {j['status']}")
             c.execute("UPDATE jobs SET status='queued', approved_by=?, updated=? WHERE id=?",
@@ -1481,6 +1569,14 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
         """Raw body upload, streamed to disk. Big files never sit in memory and never
         travel inside a message: the message carries the id this returns."""
         need_agent(me)
+        try:
+            expected = int(request.headers.get("content-length") or 0)
+        except ValueError:
+            expected = 0
+        if expected > max_upload:
+            raise HTTPException(413, "upload too large")
+        if not media_mod.room(store.dir, expected):
+            raise HTTPException(507, "the hub is nearly full")
         h = hashlib.sha256()
         size = 0
         fd, tmp = tempfile.mkstemp(dir=store.tmp)
@@ -1490,6 +1586,8 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
                     size += len(chunk)
                     if size > max_upload:
                         raise HTTPException(413, "upload too large")
+                    if size > expected and size % (64 * 2**20) < len(chunk) and not media_mod.room(store.dir, 0):
+                        raise HTTPException(507, "the hub is nearly full")
                     h.update(chunk)
                     f.write(chunk)
             aid = h.hexdigest()
@@ -1511,10 +1609,36 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
                       (aid, name, mime, size, me["handle"], _now(), parent, kind))
             return art_out(c.execute("SELECT * FROM artifacts WHERE id=?", (aid,)).fetchone())
 
+    def artifact_seen(c, me: dict, aid: str) -> bool:
+        """Its maker's circle; anyone in a conversation it was shared in; a node working on a job that
+        uses it; and, for a file made from another (a digest, a clip), whoever may see the original."""
+        if me["role"] == "admin":
+            return True
+        h, seen = me["handle"], set()
+        while aid and aid not in seen:
+            seen.add(aid)
+            r = c.execute("SELECT created_by, parent FROM artifacts WHERE id=?", (aid,)).fetchone()
+            if not r:
+                return False
+            if r["created_by"] in circle(c, h):
+                return True
+            only, more = visible(c, h)
+            if c.execute(f"SELECT 1 FROM messages m, json_each(m.artifacts) j WHERE j.value=? AND {only} LIMIT 1",
+                         [aid] + more).fetchone():
+                return True
+            if c.execute("SELECT 1 FROM jobs WHERE claimed_by=? AND (json_extract(params,'$.artifact')=?"
+                         " OR EXISTS (SELECT 1 FROM json_each(jobs.artifacts) j WHERE j.value=?)) LIMIT 1",
+                         (h, aid, aid)).fetchone():
+                return True
+            aid = r["parent"]
+        return False
+
     @app.get("/artifacts/{aid}")
     def download(aid: str, me: dict = Depends(auth)):
         with store.ro() as c:
             r = c.execute("SELECT * FROM artifacts WHERE id=?", (aid,)).fetchone()
+            if r and not artifact_seen(c, me, aid):
+                r = None
         if not r or not os.path.exists(store.blob_path(aid)):
             raise HTTPException(404, "no such artifact")
         return FileResponse(store.blob_path(aid), media_type=r["mime"], filename=r["name"])
@@ -1523,7 +1647,7 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
     def meta(aid: str, me: dict = Depends(auth)):
         with store.ro() as c:
             r = c.execute("SELECT * FROM artifacts WHERE id=?", (aid,)).fetchone()
-            if not r:
+            if not r or not artifact_seen(c, me, aid):
                 raise HTTPException(404, "no such artifact")
             out = art_out(r)
             out["derived"] = [art_out(x) for x in c.execute(
@@ -1541,6 +1665,7 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
         threads=caption_threads if media_threads is None else media_threads, allow_private=allow_private,
         public_url=caption_public_url, max_upload=max_upload)
     app.state.media = media_svc
+    media_svc.may_use = lambda c, who, aid: artifact_seen(c, {"handle": who, "role": "agent"}, aid)
     if not os.environ.get("RELAY_SECRET_KEY"):
         media_svc.also_accept(admin_token)          # links made before the hub had its own secret keep working
     media_mod.mount(app, SimpleNamespace(auth=auth), media_svc)
@@ -1581,7 +1706,7 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
     rs_key = resend_key or os.environ.get("RESEND_API_KEY") or os.environ.get("RESEND_KEY")
     resend = people.Resend(rs_key, email_from or os.environ.get("RELAY_EMAIL_FROM") or "Relay <onboarding@resend.dev>",
                            send=resend_send) if rs_key else None
-    people.mount(app, SimpleNamespace(store=store, auth=auth, now=_now, hash=_hash,
+    people.mount(app, SimpleNamespace(store=store, auth=auth, now=_now, hash=_hash, client_ip=client_ip,
                                       check_new_agent=check_new_agent), supabase, resend)
 
     # ---------------------------------------------------------------- connect apps with "Allow" (OAuth)
@@ -1596,7 +1721,7 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
         return {"token": token, "handle": handle, "owner": bool(owner and owner["owner"])}
 
     from . import oauth
-    oauth.mount(app, SimpleNamespace(store=store, auth=auth, now=_now, check_new_agent=check_new_agent,
+    oauth.mount(app, SimpleNamespace(store=store, auth=auth, now=_now, check_new_agent=check_new_agent, client_ip=client_ip,
                                      private_host=(lambda h: False) if allow_private else private_host,
                                      origin=origin, email_on=bool(supabase or resend), log=log, new_session=new_session))
     vault_mod.mount(app, SimpleNamespace(auth=auth, store=store, post=post, SYSTEM=SYSTEM), vault)
