@@ -1,11 +1,10 @@
-# Relay hub. On Railway: set the service's Root Directory to `relay`, attach a Volume
-# at /data, and set RELAY_ADMIN_TOKEN as a variable. The fetch/digest/clip worker node does NOT run
-# here - it runs on a machine with yt-dlp and ffmpeg (see README). Captioned shorts are made here.
+# Relay hub. On Railway: set the service's Root Directory to `relay`, attach a Volume at /data, and
+# set RELAY_ADMIN_TOKEN as a variable (used once, to claim the hub). Media is watched here: ffmpeg makes
+# contact sheets and playable copies, and the speech model below writes the transcripts.
 FROM python:3.12-slim
 WORKDIR /app
 
-# ffmpeg (Debian's build has libass, for burned-in captions) and the caption font: Montserrat ExtraBold,
-# with Liberation Sans Bold as the fallback. The build stops here if either is missing.
+# ffmpeg and the fonts its contact-sheet labels are drawn with. The build stops here if either is missing.
 RUN apt-get update \
  && apt-get install -y --no-install-recommends ffmpeg fonts-montserrat fonts-liberation \
  && rm -rf /var/lib/apt/lists/* \
@@ -16,7 +15,7 @@ RUN apt-get update \
 RUN pip install --no-cache-dir fastapi==0.164.0 uvicorn==0.54.0 cryptography==50.0.1 faster-whisper==1.2.1
 
 # The English speech model, baked into the image outside /data (the volume would hide it) so the first
-# short isn't slow and nothing is downloaded at run time. The build stops if it doesn't load.
+# transcript isn't slow and nothing is downloaded at run time. The build stops if it doesn't load.
 ARG WHISPER_MODEL=small.en
 ENV RELAY_WHISPER_MODEL=${WHISPER_MODEL} RELAY_WHISPER_DIR=/opt/whisper HF_HUB_DISABLE_TELEMETRY=1
 RUN python -c "import os; from faster_whisper import download_model; m = os.environ['RELAY_WHISPER_MODEL']; download_model(m, output_dir='/opt/whisper/' + m)" \

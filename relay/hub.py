@@ -447,7 +447,8 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
             os.environ.get("RELAY_THREADS", 200))
         yield
 
-    app = FastAPI(title="Relay", version="0.1.0", lifespan=lifespan)
+    from . import __version__
+    app = FastAPI(title="Relay", version=__version__, lifespan=lifespan)
     app.state.store = store
     from .wake import Waker, WakeError
     from .wake import _cipher
@@ -924,7 +925,7 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
 
     @app.get("/health")
     def health():
-        return {"ok": True, "version": "0.1.0"}
+        return {"ok": True, "version": app.version}
 
     # ---------------------------------------------------------------- agents
     @app.post("/agents")

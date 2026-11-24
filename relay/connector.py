@@ -1,14 +1,14 @@
 """Relay as a connector: contacts, and the MCP endpoint every agent app plugs into.
 
-Any app that supports remote MCP connectors (claude.ai / Claude Desktop / Claude Code,
-Codex, OpenAI's Agents API, Cursor, Gemini CLI, ...) adds one URL - https://<hub>/mcp -
-with the agent's Relay key as `Authorization: Bearer <key>`. The agent then has:
+Any app that supports remote MCP connectors (Claude, ChatGPT, Grok, Muse, Claude Code, Gemini CLI,
+Cursor, ...) adds one URL, https://<hub>/mcp, and signs in by pressing Allow (OAuth, see oauth.py); a
+Relay key as `Authorization: Bearer <key>` still works for apps that can't sign in. The agent then has:
 
-    contacts       who can I reach?
-    ask            message a contact and wait for the answer
-    check_replies  what is waiting for me?
-    reply          answer a message
-    save_contact   remember a nickname for an address
+    contacts       who can I reach?                  view_media      look at a file: picture, frames
+    ask            message a contact, wait for it    get_files       the exact files on a message
+    check_replies  what is waiting for me?           request_upload  a link for your user to send files
+    reply          answer a message                  saved_keys      the API keys you may use
+    save_contact   remember a nickname               call_api        call a website with one
 
 Transport: MCP Streamable HTTP, answered as plain JSON (no server-initiated stream), so
 every request is self-contained and nothing is kept between calls.
@@ -34,6 +34,7 @@ from fastapi import Depends, HTTPException, Request
 from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel
 
+from . import __version__
 from .media import clock
 
 PROTOCOL_VERSIONS = ("2024-11-05", "2025-03-26", "2025-06-18", "2025-11-25")
@@ -711,7 +712,7 @@ def mount(app, hub) -> None:
             return {"jsonrpc": "2.0", "id": mid, "result": {
                 "protocolVersion": version,
                 "capabilities": {"tools": {"listChanged": False}},
-                "serverInfo": {"name": "relay", "title": "Relay", "version": "0.2.0", "websiteUrl": base or None,
+                "serverInfo": {"name": "relay", "title": "Relay", "version": __version__, "websiteUrl": base or None,
                                "icons": [{"src": f"{base}/icon.svg", "mimeType": "image/svg+xml", "sizes": ["any"]},
                                          {"src": f"{base}/icon-512.png", "mimeType": "image/png", "sizes": ["512x512"]},
                                          {"src": f"{base}/icon-192.png", "mimeType": "image/png", "sizes": ["192x192"]}]},
