@@ -309,7 +309,8 @@ function scrollEnd(view, smooth = true) {
 
 // ------------------------------------------------------------------ routes
 //   agents · agents/<name> · agents/<name>/wake|connect|invite|key · add · add/<app>
-//   activity · activity/<id> · activity/new · activity/to/<name> · me · shorts · shorts/<id>
+//   activity · activity/<id> · activity/new · activity/to/<name> · me · me/apps · me/keys[/new|/<id>]
+//   approve/<request> · shorts · shorts/<id>
 const ONE_TIME = new Set(["connect", "invite", "key"]);
 function known(r) {
   const [top, x, y, z] = r.split("/");
@@ -317,14 +318,17 @@ function known(r) {
   if (top === "agents") return !y || !!x && (y === "wake" || ONE_TIME.has(y));
   if (top === "activity") return !x || (x === "new" && !y) || (x === "to" && !!y) || (/^\d+$/.test(x) && !y);
   if (top === "add") return isOwner() && !y;
-  if (top === "me") return (!x || (x === "apps" && !y)) && !!ME && ME.role !== "admin";
+  if (top === "me") return (!x || (x === "apps" && !y) || (x === "keys" && (!y || y === "new" || /^k_[0-9a-f]{12}$/.test(y))))
+    && !!ME && ME.role !== "admin";
+  if (top === "approve") return !!ME && ME.role === "human" && /^c_[0-9a-f]{16}$/.test(x || "") && !y;
   if (top === "shorts") return !!ME && ME.role !== "admin" && (!x || (/^c_[0-9a-f]{12}$/.test(x) && !y));
   return false;
 }
 function parentOf(r) {
   const p = r.split("/");
   if (p[0] === "add") return p.length > 1 ? "add" : (listPane && listPane.dataset.tab) || "agents";
-  if (p[0] === "me") return p[1] ? "me" : (WIDE && listPane && listPane.dataset.tab) || "agents";
+  if (p[0] === "me") return p[2] ? "me/keys" : p[1] ? "me" : (WIDE && listPane && listPane.dataset.tab) || "agents";
+  if (p[0] === "approve") return "activity";
   if (p[0] === "activity" && p[1] === "to") return "activity";
   return p.length > 1 ? p.slice(0, -1).join("/") : null;
 }
@@ -348,6 +352,8 @@ function screenFor(r) {
   if (p[0] === "shorts") return p[1] ? [shortView, p[1], payloads.get(r)] : [shortMaker];
   if (p[0] === "add") { const a = p[1] && APPS.find((x) => x.id === p[1]); return a ? [addName, a] : [addPick]; }
   if (p[0] === "me" && p[1] === "apps") return [appsScreen];
+  if (p[0] === "me" && p[1] === "keys") return !p[2] ? [keysScreen] : p[2] === "new" ? [keyNew] : [keyDetail, p[2]];
+  if (p[0] === "approve") return [approveScreen, p[1]];
   return [meScreen];
 }
 function call(slot, fn, ...args) {
@@ -364,7 +370,7 @@ function render(r) {
   drawMe();
   if (WIDE) {
     ensureShell();
-    const tab = p[0] === "activity" || p[0] === "agents" || p[0] === "shorts" ? p[0] : (listPane.dataset.tab || "agents");
+    const tab = p[0] === "activity" || p[0] === "agents" || p[0] === "shorts" ? p[0] : p[0] === "approve" ? "activity" : (listPane.dataset.tab || "agents");
     if (listPane.dataset.tab !== tab || !listPane.firstChild) {
       listPane.dataset.tab = tab; listRefresh = null;
       call("list", tab === "activity" ? activity : tab === "shorts" ? shortsList : agents);
@@ -1031,6 +1037,9 @@ async function meScreen() {
     h("div", { class: "stack" }, h("button", { class: "door press", type: "button", onclick: () => nav("me/apps") },
         miniOrb("claude", "relay", 40), h("span", { class: "grow" }, h("b", { text: "Connected apps" }),
           h("span", { text: "Apps that speak as your agents" })), chev()),
+      h("button", { class: "door press", type: "button", onclick: () => nav("me/keys") },
+        keyOrb("", 40), h("span", { class: "grow" }, h("b", { text: "Keys" }),
+          h("span", { text: "Websites your agents use, without seeing the key" })), chev()),
       rows, h("button", { class: "btn danger press", type: "button", onclick: userSignOut }, "Sign out")));
 }
 
@@ -1111,6 +1120,206 @@ function connectHint() {
   btn.addEventListener("click", () => copy(url, btn.querySelector(".c"), "Copy"));
   return h("div", { class: "addapp" }, h("span", { class: "k", text: "Connect another app" }), btn,
     h("span", { class: "s", text: "Paste it as a custom connector, press Connect, then Allow." }));
+}
+
+// ------------------------------------------------------------------ keys: your agents use them, never see them
+// A key is drawn as the website's half (its initial) meeting a dark half with a keyhole: Relay's half.
+const ASK_TEXT = { changes: "Asks before it changes anything", always: "Asks every time", never: "Never asks" };
+const KEY_PRESETS = [
+  { name: "instagram", label: "Instagram", hosts: ["graph.facebook.com", "graph.instagram.com"], place: "query", field: "access_token" },
+  { name: "youtube", label: "YouTube", hosts: ["www.googleapis.com"], place: "query", field: "key" },
+  { name: "tiktok", label: "TikTok", hosts: ["open.tiktokapis.com"], place: "bearer" },
+  { name: "x", label: "X", hosts: ["api.x.com"], place: "bearer" },
+];
+function keyOrb(name, size = 56, left) {
+  return h("span", { class: "morb keyorb", style: `--s:${size}px`, "aria-hidden": "true" },
+    h("span", { class: "mh l" }, left || h("b", { text: (name || "?")[0].toUpperCase() })),
+    h("span", { class: "mh r dark" }, h("i", { class: "kh" })), h("span", { class: "kseal" }, tick("sealtick")));
+}
+const hostOf = (url) => { try { return new URL(url).hostname; } catch { return url; } };
+const VERB = { GET: "read", POST: "post", PUT: "change", PATCH: "change", DELETE: "delete" };
+function since(t) {           // when something happened, in words
+  if (!t) return "";
+  const s = Date.now() / 1000 - t;
+  if (s < 90) return "just now";
+  if (s < 3600) return `${Math.floor(s / 60)} min ago`;
+  if (s < 86400) return `${Math.floor(s / 3600)} h ago`;
+  return new Date(t * 1000).toLocaleDateString(undefined, { month: "short", day: "numeric" });
+}
+
+async function keysScreen() {
+  const tk = ticket();
+  const add = h("button", { class: "btn small press", type: "button", onclick: () => nav("me/keys/new") }, icon("plus", "2.4"), "Add");
+  const list = h("div", { class: "pairs" });
+  const view = screen("keys", tk, head("Keys", "Your agents use them. They never see them.", add), list);
+  let keys = [];
+  try { keys = await api("GET", "/keys"); } catch (x) { list.replaceChildren(h("p", { class: "err", text: x.message })); return; }
+  if (!view.isConnected) return;
+  if (!keys.length) return list.replaceChildren(h("div", { class: "noapps" },
+    h("span", { class: "morb lone", style: "--s:92px", "aria-hidden": "true" }, h("span", { class: "mh l ghost" }), h("span", { class: "mh r dark" }, h("i", { class: "kh" }))),
+    h("b", { text: "No keys yet" }), h("span", { text: "Save a website's key once. Your agents post and upload with it through Relay, and never see it." }),
+    h("button", { class: "btn press", type: "button", style: "margin-top:18px", onclick: () => nav("me/keys/new") }, "Add a key")));
+  list.replaceChildren(...keys.map((k, i) => h("button", { class: "pair keyrow press", type: "button", style: `--i:${i}`, onclick: () => nav(`me/keys/${k.id}`) },
+    keyOrb(k.name, 60), h("div", { class: "grow" }, h("b", { text: k.name }), h("span", { class: "as", text: k.hosts.join(", ") }),
+      h("span", { class: "when", text: ASK_TEXT[k.ask] + (k.last_used ? ` · used ${since(k.last_used)}` : "") })), chev())));
+}
+
+function keyNew() {
+  const tk = ticket();
+  const name = h("input", { class: "field", type: "text", placeholder: "Name, like instagram", spellcheck: "false", maxlength: "40", "aria-label": "Name" });
+  const site = h("input", { class: "field", type: "text", placeholder: "Website, like graph.facebook.com", spellcheck: "false", autocapitalize: "off", "aria-label": "Website" });
+  const secret = h("input", { class: "field", type: "password", placeholder: "The key", autocomplete: "off", spellcheck: "false", "aria-label": "The key" });
+  const field = h("input", { class: "field hidden", type: "text", placeholder: "Header name", spellcheck: "false", autocapitalize: "off", "aria-label": "Where it goes" });
+  let place = "bearer", ask = "changes";
+  const placeSeg = seg([["bearer", "Bearer"], ["header", "Header"], ["query", "In the URL"]], place, (v) => setPlace(v));
+  function setPlace(v) {
+    place = v; field.classList.toggle("hidden", v === "bearer");
+    field.placeholder = v === "query" ? "Parameter name, like key" : "Header name, like X-Api-Key";
+    for (const b of placeSeg.children) b.setAttribute("aria-pressed", String(b.dataset.v === v));
+  }
+  const orbBox = h("span", { class: "keyhero" }, keyOrb("", 96));
+  name.addEventListener("input", () => { orbBox.querySelector(".mh.l b").textContent = (name.value.trim()[0] || "").toUpperCase(); });
+  const presets = h("div", { class: "presets" }, ...KEY_PRESETS.map((p) => h("button", { class: "preset press", type: "button", onclick: () => {
+    name.value = p.name; site.value = p.hosts.join(", "); field.value = p.field || ""; setPlace(p.place);
+    name.dispatchEvent(new Event("input")); secret.focus();
+  } }, p.label)));
+  const err = h("p", { class: "err", role: "alert" });
+  const btn = h("button", { class: "btn press", type: "submit" }, "Save key");
+  const form = h("form", { class: "stack tight", onsubmit: async (e) => {
+    e.preventDefault();
+    if (!name.value.trim() || !site.value.trim() || !secret.value.trim()) { err.textContent = "Fill in the name, the website and the key."; return; }
+    btn.disabled = true; err.textContent = "";
+    try {
+      const k = await api("POST", "/keys", { name: name.value.trim(), hosts: site.value.split(/[\s,]+/).filter(Boolean), secret: secret.value,
+        place, field: place === "bearer" ? null : field.value.trim(), ask });
+      secret.value = "";
+      nav(`me/keys/${k.id}`, { replace: true });
+    } catch (x) { err.textContent = x.message; btn.disabled = false; }
+  } }, presets, name, site, secret,
+    h("div", { class: "fieldnote" }, h("span", { class: "k", text: "How the website takes it" }), placeSeg), field,
+    h("div", { class: "fieldnote" }, h("span", { class: "k", text: "Ask me first" }),
+      seg([["changes", "Changes"], ["always", "Every time"], ["never", "Never"]], ask, (v) => { ask = v; })),
+    h("div", { style: "margin-top:10px" }, btn), err,
+    h("p", { class: "first", text: "It's locked away on your hub. Nobody sees it again, not even you." }));
+  screen("keynew", tk, heroHead(orbBox, "Add a key", "Your agents use it through Relay."), form);
+  name.focus();
+}
+
+function callRow(c) {
+  const u = (() => { try { return new URL(c.url); } catch { return null; } })();
+  const state = { done: c.result_status && c.result_status < 400 ? "ok" : "bad", failed: "bad", declined: "off", expired: "off", waiting: "wait", approved: "wait", running: "wait" }[c.status] || "off";
+  const what = { done: `HTTP ${c.result_status}`, failed: "Didn't go through", declined: "You said no", expired: "Expired", waiting: "Needs your OK", approved: "Sending", running: "Sending" }[c.status];
+  const row = h(c.status === "waiting" ? "button" : "div", { class: "callrow" + (c.status === "waiting" ? " press" : ""), type: c.status === "waiting" ? "button" : null,
+    onclick: c.status === "waiting" ? () => nav(`approve/${c.id}`) : null },
+    h("span", { class: "cdot " + state }), h("div", { class: "grow" },
+      h("b", null, h("span", { text: c.agent }), h("span", { class: "m", text: ` ${VERB[c.method] || c.method} ` }), h("code", { text: u ? u.pathname : c.url })),
+      h("span", { text: [what, c.decided_by && c.status !== "declined" ? `OK'd by ${c.decided_by}` : null, since(c.created)].filter(Boolean).join(" · ") })));
+  return row;
+}
+
+async function keyDetail(id) {
+  const tk = ticket();
+  let k, calls = [];
+  try { [k, calls] = await Promise.all([api("GET", "/keys").then((all) => all.find((x) => x.id === id)), api("GET", `/keys/${enc(id)}/calls`).catch(() => [])]); } catch {}
+  if (!fresh(tk)) return;
+  if (!k) return nav("me/keys", { replace: true });
+  const saved = h("span", { class: "saved", "aria-live": "polite" });
+  const askSeg = seg([["changes", "Changes"], ["always", "Every time"], ["never", "Never"]], k.ask, async (v) => {
+    saved.textContent = "";
+    try { await api("PUT", `/keys/${enc(id)}`, { ask: v }); saved.textContent = "Saved"; } catch (x) { saved.textContent = x.message; }
+  });
+  const swap = h("div");
+  const showSwap = () => swap.replaceChildren(h("button", { class: "way", type: "button", onclick: editSwap }, "Replace the key"));
+  function editSwap() {
+    const input = h("input", { class: "field", type: "password", placeholder: "The new key", autocomplete: "off", "aria-label": "The new key" });
+    const err = h("p", { class: "err", role: "alert" });
+    swap.replaceChildren(h("form", { class: "stack tight", onsubmit: async (e) => {
+      e.preventDefault(); if (!input.value.trim()) return;
+      try { const r = await api("PUT", `/keys/${enc(id)}`, { secret: input.value }); input.value = ""; hint.textContent = r.hint ? `•••• ${r.hint}` : "Saved"; showSwap(); }
+      catch (x) { err.textContent = x.message; }
+    } }, input, h("div", { class: "row" }, h("button", { class: "btn small press", type: "submit" }, "Save"),
+      h("button", { class: "btn small ghost press", type: "button", onclick: showSwap }, "Cancel")), err));
+    input.focus();
+  }
+  showSwap();
+  const hint = h("span", { class: "hint mono", text: k.hint ? `•••• ${k.hint}` : "Saved" });
+  const off = h("button", { class: "unpair press", type: "button" }, "Remove key");
+  let armed = false;
+  off.addEventListener("click", async () => {
+    if (!armed) { armed = true; off.textContent = "Remove for good?"; off.classList.add("armed"); setTimeout(() => { if (armed && off.isConnected) { armed = false; off.textContent = "Remove key"; off.classList.remove("armed"); } }, 3500); return; }
+    try { await api("DELETE", `/keys/${enc(id)}`); nav("me/keys", { replace: true }); } catch (x) { alert(x.message); }
+  });
+  screen("key", tk, h("div", { class: "hero" }, h("span", { class: "keyhero" }, keyOrb(k.name, 96)), h("h1", { class: "title", text: k.name }),
+      h("p", { class: "lede", text: k.hosts.join(", ") }), hint),
+    h("div", { class: "stack" },
+      h("section", { class: "facts" }, h("h2", { class: "label" }, "Ask me first ", saved), askSeg),
+      h("section", { class: "facts" }, h("h2", { class: "label", text: "Recent" }),
+        calls.length ? h("div", { class: "calls" }, ...calls.map(callRow)) : h("p", { class: "quiet", text: "No agent has used it yet." })),
+      h("div", { class: "spread" }, swap, off)));
+}
+
+// ------------------------------------------------------------------ approve: one tap, for exactly what will be sent
+function bodyView(text) {
+  let v = null;
+  try { v = JSON.parse(text); } catch {}
+  const val = (x) => {
+    const s = typeof x === "string" ? x : JSON.stringify(x);
+    if (typeof x === "string" && /^https:\/\//.test(x)) return h("a", { href: x, target: "_blank", rel: "noopener noreferrer", text: x.length > 80 ? x.slice(0, 77) + "…" : x });
+    return h("span", { text: s.length > 400 ? s.slice(0, 397) + "…" : s });
+  };
+  if (v && typeof v === "object" && !Array.isArray(v)) {
+    return h("dl", { class: "sendlist" }, ...Object.entries(v).flatMap(([k, x]) => [h("dt", { text: k }), h("dd", null, val(x))]));
+  }
+  return h("pre", { class: "sendraw", text: text.length > 3000 ? text.slice(0, 2997) + "…" : text });
+}
+
+async function approveScreen(cid) {
+  const tk = ticket();
+  let r, ags = [];
+  try { [r, ags] = await Promise.all([api("GET", `/approvals/${enc(cid)}`), api("GET", "/agents").catch(() => [])]); }
+  catch (x) { screen("approve", tk, blank("This request isn't here", "It may belong to someone else, or it was removed.")); return; }
+  if (!fresh(tk)) return;
+  const agent = ags.find((a) => a.handle === r.agent);
+  const p = agent ? providerOf(agent) : null;
+  const orb = keyOrb(r.key, 104, halfMark(p && p !== "other" ? p : null, r.agent));
+  let u = null; try { u = new URL(r.url); } catch {}
+  const status = h("div", { class: "decided", role: "status" });
+  const err = h("p", { class: "err", role: "alert" });
+  const yes = h("button", { class: "btn press", type: "button" }, "Approve");
+  const no = way("Decline", null);
+  const acts = h("div", { class: "stack tight approveacts" }, yes, h("div", { class: "ways" }, no), err);
+  function settle(got) {
+    acts.remove();
+    if (got.status === "done" || got.status === "failed") {
+      const okCall = got.status === "done" && got.result_status < 400;
+      orb.classList.add("sealed");
+      status.replaceChildren(statusLine(okCall ? `Sent · HTTP ${got.result_status}` : got.error || `The website answered HTTP ${got.result_status}`, okCall),
+        h("p", { class: "quiet", text: `${r.agent} gets the answer in its chat.` }));
+    } else {
+      status.replaceChildren(statusLine({ declined: "You said no. Nothing was sent.", expired: "This expired. Nothing was sent." }[got.status] || got.status),
+        got.status === "declined" ? h("p", { class: "quiet", text: `${r.agent} has been told.` }) : null);
+    }
+  }
+  async function decide(ok) {
+    yes.disabled = no.disabled = true; err.textContent = "";
+    if (ok) yes.textContent = "Sending…";
+    try { const got = await api("POST", `/approvals/${enc(cid)}/${ok ? "approve" : "decline"}`); settle(got); if (listRefresh) listRefresh(); }
+    catch (x) { err.textContent = x.message; yes.disabled = no.disabled = false; yes.textContent = "Approve"; }
+  }
+  yes.addEventListener("click", () => decide(true));
+  no.addEventListener("click", () => decide(false));
+  const headers = Object.entries(r.headers || {}).filter(([k]) => k.toLowerCase() !== "content-type");
+  screen("approve", tk,
+    h("div", { class: "hero approvehero" }, orb, h("h1", { class: "title", text: `${r.agent} wants to ${VERB[r.method] || r.method}` }),
+      h("p", { class: "lede", text: `with your ${r.key || "saved"} key, on ${u ? u.hostname : r.url}` }),
+      r.why ? h("p", { class: "why", text: r.why }) : null),
+    h("div", { class: "stack" },
+      h("section", { class: "facts" }, h("h2", { class: "label", text: "What will be sent" }),
+        h("p", { class: "sendline" }, h("b", { text: r.method }), h("code", { text: u ? u.pathname + u.search : r.url })),
+        r.body ? bodyView(r.body) : null,
+        headers.length ? h("dl", { class: "sendlist small" }, ...headers.flatMap(([k, v]) => [h("dt", { text: k }), h("dd", { text: v })])) : null),
+      r.status === "waiting" ? acts : null, status));
+  if (r.status !== "waiting") settle(r);
 }
 
 function runsOn(a) {
@@ -1553,8 +1762,8 @@ async function activity() {
   let first = true;
   async function refresh() {
     try {
-      const [msgs, ags, waiting] = await Promise.all([api("GET", "/messages?latest=true&limit=200"), api("GET", "/agents"),
-        api("GET", "/jobs?status=needs_approval&limit=20")]);
+      const [msgs, ags, waiting, asks] = await Promise.all([api("GET", "/messages?latest=true&limit=200"), api("GET", "/agents"),
+        api("GET", "/jobs?status=needs_approval&limit=20"), ME.role === "human" ? api("GET", "/approvals").catch(() => []) : []]);
       const by = Object.fromEntries(ags.map((a) => [a.handle, a]));
       const threads = new Map();
       for (const m of msgs) {
@@ -1564,7 +1773,12 @@ async function activity() {
         for (const x of m.mentions || []) t.people.add(x);
         threads.set(m.thread, t);
       }
-      const rows = waiting.map((j) => {
+      const oks = asks.map((r) => h("button", { class: "cell jobcell press", type: "button", "data-key": `approve/${r.id}`, onclick: () => nav(`approve/${r.id}`) },
+        h("span", { class: "stackav" }, avatar(by[r.agent] || { handle: r.agent }, 44)),
+        h("div", { class: "grow" }, h("div", { class: "t", text: `${r.agent} wants to ${VERB[r.method] || r.method}` }),
+          h("div", { class: "s", text: `Needs your OK · ${r.key} · ${hostOf(r.url)}` })),
+        h("span", { class: "btn small", text: "Review" })));
+      const rows = oks.concat(waiting.map((j) => {
         const b = h("button", { class: "btn small press", type: "button", onclick: async (e) => {
           e.stopPropagation(); b.disabled = true;
           try { await api("POST", `/jobs/${encodeURIComponent(j.id)}/approve`); refresh(); } catch { b.disabled = false; }
@@ -1572,7 +1786,7 @@ async function activity() {
         return h("div", { class: "cell jobcell" }, h("span", { class: "stackav" }, avatar(by[j.requested_by] || { handle: j.requested_by }, 44)),
           h("div", { class: "grow" }, h("div", { class: "t", text: `${j.kind} for ${j.requested_by}` }),
             h("div", { class: "s", text: `Needs your OK · ${(j.params && j.params.url) || j.id}` })), b);
-      });
+      }));
       const sorted = [...threads.values()].sort((x, y) => y.msgs[y.msgs.length - 1].id - x.msgs[x.msgs.length - 1].id);
       for (const t of sorted) {
         const last = t.msgs[t.msgs.length - 1];
