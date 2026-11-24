@@ -317,14 +317,14 @@ function known(r) {
   if (top === "agents") return !y || !!x && (y === "wake" || ONE_TIME.has(y));
   if (top === "activity") return !x || (x === "new" && !y) || (x === "to" && !!y) || (/^\d+$/.test(x) && !y);
   if (top === "add") return isOwner() && !y;
-  if (top === "me") return !x && !!ME && ME.role !== "admin";
+  if (top === "me") return (!x || (x === "apps" && !y)) && !!ME && ME.role !== "admin";
   if (top === "shorts") return !!ME && ME.role !== "admin" && (!x || (/^c_[0-9a-f]{12}$/.test(x) && !y));
   return false;
 }
 function parentOf(r) {
   const p = r.split("/");
   if (p[0] === "add") return p.length > 1 ? "add" : (listPane && listPane.dataset.tab) || "agents";
-  if (p[0] === "me") return (WIDE && listPane && listPane.dataset.tab) || "agents";
+  if (p[0] === "me") return p[1] ? "me" : (WIDE && listPane && listPane.dataset.tab) || "agents";
   if (p[0] === "activity" && p[1] === "to") return "activity";
   return p.length > 1 ? p.slice(0, -1).join("/") : null;
 }
@@ -348,6 +348,7 @@ function screenFor(r) {
   }
   if (p[0] === "shorts") return p[1] ? [shortView, p[1], payloads.get(r)] : [shortMaker];
   if (p[0] === "add") { const a = p[1] && APPS.find((x) => x.id === p[1]); return a ? [addName, a] : [addPick]; }
+  if (p[0] === "me" && p[1] === "apps") return [appsScreen];
   return [meScreen];
 }
 function call(slot, fn, ...args) {
@@ -994,8 +995,89 @@ async function meScreen() {
   screen("me", tk,
     h("div", { class: "profile" }, avatar({ handle: ME.handle, role: "human" }, 88), h("h1", { class: "title", text: ME.handle }),
       ME.owner ? h("span", { class: "pill-tag", text: "Owner" }) : null),
-    h("div", { class: "stack" }, rows,
-      h("button", { class: "btn danger press", type: "button", onclick: userSignOut }, "Sign out")));
+    h("div", { class: "stack" }, h("button", { class: "door press", type: "button", onclick: () => nav("me/apps") },
+        miniOrb("claude", "relay", 40), h("span", { class: "grow" }, h("b", { text: "Connected apps" }),
+          h("span", { text: "Apps that speak as your agents" })), chev()),
+      rows, h("button", { class: "btn danger press", type: "button", onclick: userSignOut }, "Sign out")));
+}
+
+// ------------------------------------------------------------------ connected apps: two halves per connection
+// Each connection is the circle from the Allow page: the app on the left, the agent it speaks as on the right.
+// Disconnecting pulls the halves apart.
+const APP_WORDS = [["claude", "claude"], ["anthropic", "claude"], ["chatgpt", "openai"], ["openai", "openai"], ["muse", "muse"],
+                   ["meta", "muse"], ["codex", "codex"], ["cursor", "cursor"], ["gemini", "gemini"], ["copilot", "copilot"]];
+const appProvider = (name) => { const n = (name || "").toLowerCase(); const w = APP_WORDS.find(([k]) => n.includes(k)); return w ? w[1] : null; };
+function halfMark(p, name) {
+  if (p === "relay") return h("i", { class: "mk" });
+  const logo = LOGOS[p];
+  if (logo && logo.src) return h("img", { src: logo.src, alt: "" });
+  if (logo) return svg("0 0 24 24", [{ d: logo.d, fill: "currentColor", "fill-rule": "evenodd" }]);
+  return h("b", { text: (name || "?")[0].toUpperCase() });
+}
+function miniOrb(left, right, size = 56, names = []) {
+  return h("span", { class: "morb", style: `--s:${size}px`, "aria-hidden": "true" },
+    h("span", { class: "mh l" + (left === "relay" ? " dark" : "") }, halfMark(left, names[0])),
+    h("span", { class: "mh r" + (right === "relay" ? " dark" : "") }, halfMark(right, names[1])));
+}
+function lastUsed(t) {
+  if (!t) return "";
+  const s = Date.now() / 1000 - t;
+  if (s < 120) return "active now";
+  if (s < 3600) return `active ${Math.floor(s / 60)} min ago`;
+  if (s < 86400) return `active ${Math.floor(s / 3600)} h ago`;
+  const d = Math.floor(s / 86400); return `active ${d} ${d === 1 ? "day" : "days"} ago`;
+}
+async function appsScreen() {
+  const tk = ticket();
+  const list = h("div", { class: "pairs" });
+  const view = screen("apps", tk, head("Connected apps", "Apps that speak as your agents."), list, connectHint());
+  let conns = [], agentsBy = {};
+  try {
+    [conns, agentsBy] = await Promise.all([api("GET", "/oauth/connections"),
+      api("GET", "/agents").then((all) => Object.fromEntries(all.map((a) => [a.handle, a]))).catch(() => ({}))]);
+  } catch (x) { list.replaceChildren(h("p", { class: "err", text: x.message })); return; }
+  if (!view.isConnected) return;
+  if (!conns.length) return list.replaceChildren(emptyApps());
+  list.replaceChildren(...conns.map((c, i) => pairItem(c, agentsBy[c.agent], i, list)));
+}
+function pairItem(c, agent, i, list) {
+  const left = appProvider(c.app), right = agent ? providerOf(agent) : null;
+  const orb = miniOrb(left, right && right !== "other" ? right : null, 60, [c.app, c.agent]);
+  const err = h("p", { class: "err" });
+  const off = h("button", { class: "unpair press", type: "button" }, "Disconnect");
+  const item = h("div", { class: "pair", style: `--i:${i}` }, orb,
+    h("div", { class: "grow" }, h("b", { text: c.app || "An app" }), h("span", { class: "as" }, "as ", h("strong", { text: c.agent })),
+      h("span", { class: "when", text: lastUsed(c.last_active) })), off, err);
+  let armed = false;
+  off.addEventListener("click", async () => {
+    if (!armed) {                       // first tap arms it; the second one disconnects
+      armed = true; off.textContent = "Disconnect?"; off.classList.add("armed");
+      setTimeout(() => { if (armed && off.isConnected) { armed = false; off.textContent = "Disconnect"; off.classList.remove("armed"); } }, 3500);
+      return;
+    }
+    off.disabled = true; err.textContent = "";
+    item.classList.add("splitting");
+    try {
+      await api("DELETE", `/oauth/connections/${encodeURIComponent(c.id)}`);
+      setTimeout(() => {
+        item.classList.add("gone");
+        setTimeout(() => { item.remove(); if (!list.querySelector(".pair")) list.replaceChildren(emptyApps()); }, 420);
+      }, 520);
+    } catch (x) { item.classList.remove("splitting"); err.textContent = x.message; off.disabled = false; armed = false; off.textContent = "Disconnect"; off.classList.remove("armed"); }
+  });
+  return item;
+}
+function emptyApps() {
+  return h("div", { class: "noapps" }, h("span", { class: "morb lone", style: "--s:92px", "aria-hidden": "true" },
+      h("span", { class: "mh l ghost" }), h("span", { class: "mh r dark" }, h("i", { class: "mk" }))),
+    h("b", { text: "Nothing connected yet" }), h("span", { text: "Add Relay to Claude, ChatGPT or any MCP app with the address below." }));
+}
+function connectHint() {
+  const url = location.origin + "/mcp";
+  const btn = h("button", { class: "copyurl press", type: "button", title: "Copy" }, h("span", { class: "u", text: url }), h("span", { class: "c", text: "Copy" }));
+  btn.addEventListener("click", () => copy(url, btn.querySelector(".c"), "Copy"));
+  return h("div", { class: "addapp" }, h("span", { class: "k", text: "Connect another app" }), btn,
+    h("span", { class: "s", text: "Paste it as a custom connector, press Connect, then Allow." }));
 }
 
 function runsOn(a) {
