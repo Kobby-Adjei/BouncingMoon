@@ -696,6 +696,7 @@ main{position:relative;z-index:1;min-height:100vh;display:flex;justify-content:c
 .newname{display:grid;grid-template-rows:0fr;width:100%;transition:grid-template-rows .45s var(--glide),margin .45s var(--glide)}
 .newname>div{overflow:hidden;display:flex;justify-content:center;padding:6px 8px 4px}.newname.open{grid-template-rows:1fr;margin-top:2px}
 .newname:not(.open)>div{padding-block:0;visibility:hidden}
+.reach{margin:0;color:var(--ink2);font-size:13px;max-width:34ch}
 .warn{display:none;margin:2px 0 0;padding:10px 16px;border-radius:18px;background:var(--accent-soft);color:var(--ink);font-size:13.5px;line-height:1.4;max-width:34ch}
 .warn.on{display:block;animation:rise .4s var(--ease) both}
 @media (max-width:440px){main{padding-top:max(26px,env(safe-area-inset-top))}.orb{width:132px;height:132px;gap:5px;margin-bottom:20px}
@@ -786,7 +787,8 @@ async function consent(){let d;try{d=await api('GET','/oauth/request/'+BOOT.requ
  const warn=$('p',{class:'warn',role:'status'});
  const me=$('div',{class:'me'},$('span',{html:'<b></b>'}),$('span',{text:'·'}),$('button',{class:'tl',on:{click:()=>{store.clear();cred=null;right('','');rhalf.replaceChildren($('i',{class:'mk'}));signIn()}}},'Switch'));
  me.querySelector('b').textContent=d.you;
- show(group,box,warn,err,$('button',{class:'btn',id:'allow',on:{click:()=>allow(nn,err)}},'Allow'),me,$('button',{class:'tl',on:{click:deny}},'Cancel'));pick()}
+ const reach=$('p',{class:'reach',text:'Whoever you pick, '+d.app_label+' can message everyone on your hub.'});
+ show(group,box,reach,warn,err,$('button',{class:'btn',id:'allow',on:{click:()=>allow(nn,err)}},'Allow'),me,$('button',{class:'tl',on:{click:deny}},'Cancel'));pick()}
 async function allow(nn,err){const v=(document.querySelector('input[name=who]:checked')||{}).value;
  const body=v==='__new__'?{request:BOOT.request,new_agent:nn.value.trim()}:{request:BOOT.request,agent:v};
  const b=document.getElementById('allow');b.disabled=true;err.textContent='';

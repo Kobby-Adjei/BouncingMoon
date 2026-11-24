@@ -267,3 +267,15 @@ def test_an_ask_nobody_can_wake_says_what_to_do(tmp_path):
     c.put("/agents/me/listener", headers={"Authorization": f"Bearer {claude}"}, json={"app": "claude-code"})
     people = {p["address"]: p for p in call(grok, "contacts", {})["structuredContent"]["contacts"]}
     assert people["claude"]["answers"] == "instantly"
+
+
+def test_asking_yourself_says_how_to_fix_the_connection(tmp_path):
+    """An app connected as the very agent it wants to reach (ChatGPT allowed as muse) is told how to fix it."""
+    from fastapi.testclient import TestClient
+    from relay.hub import create_app
+    c = TestClient(create_app(data_dir=str(tmp_path), admin_token="adm", caption_threads=False, media_threads=False))
+    muse = c.post("/agents", headers={"Authorization": "Bearer adm"}, json={"handle": "muse"}).json()["token"]
+    res = c.post("/mcp", headers={"Authorization": f"Bearer {muse}", "X-Relay-Session": "s"}, json={
+        "jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "ask", "arguments": {"to": "muse", "message": "hi"}}}).json()["result"]
+    text = res["content"][0]["text"]
+    assert res["isError"] and "connected to Relay as muse" in text and "Connected apps" in text and "its own agent" in text

@@ -267,7 +267,10 @@ def mount(app, hub) -> None:
             names = [x["name"] for x in c.execute("SELECT name FROM contacts WHERE owner=?", (me,))]
             raise ToolError(f"No contact or address '{to}'. Known: {', '.join(names + known) or 'nobody yet'}.")
         if handle == me:
-            raise ToolError("That's you.")
+            raise ToolError(f"That's you: this app is connected to Relay as {me}, so it can't send to {me}. If you "
+                            f"meant to reach {me} in another app, tell your user: in Relay, open Me, Connected apps, "
+                            f"disconnect this app, then connect it again and pick its own agent (not {me}) on the "
+                            f"Allow page.")
         return handle
 
     def hears(c, handle: str) -> bool:
