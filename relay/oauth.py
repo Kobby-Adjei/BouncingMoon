@@ -298,7 +298,7 @@ def mount(app, hub) -> None:
                 f"<div class=orb id=orb aria-hidden=true><span class='half l'>{left}</span>"
                 f"<span class='half r' id=rhalf><i class=mk></i></span><span class=seal id=seal></span></div>"
                 f"<h1 class=title id=title>Connect {html.escape(cl['name'])} to Relay</h1>"
-                f"<p class=lede id=lede>Pick who {html.escape(cl['name'] or 'this app')} will be on Relay.</p>"
+                f"<p class=lede id=lede>Choose {html.escape(cl['name'] or 'this app')}&rsquo;s name on Relay.</p>"
                 f"<section class=step id=step aria-live=polite></section>"
                 f"<p class=foot id=foot>Returns to {html.escape(host)}</p></div>"
                 f"<script nonce='{nonce}'>const BOOT={json.dumps(boot)};{PAGE_JS}</script>")
@@ -683,6 +683,8 @@ main{position:relative;z-index:1;min-height:100vh;display:flex;justify-content:c
 .foot{color:var(--ink2);font-size:12.5px;margin:26px 0 0;opacity:.7}
 /* coins: one per agent. Tap one and it becomes the orb's right half */
 .coins{display:flex;flex-wrap:wrap;justify-content:center;gap:16px 6px;margin:0 -14px}
+.coins.more{margin-top:16px}.coins[hidden]{display:none}
+.morebtn{font-size:13px;color:var(--ink2);padding:2px 6px}
 .coin{position:relative;display:flex;flex-direction:column;align-items:center;gap:8px;width:70px;cursor:pointer}
 .coin input{position:absolute;opacity:0;pointer-events:none}
 .disc{width:58px;height:58px;border-radius:50%;background:var(--card);display:grid;place-items:center;
@@ -772,23 +774,36 @@ async function consent(){let d;try{d=await api('GET','/oauth/request/'+BOOT.requ
  const nn=$('input',{class:'pill',type:'text',id:'newname',value:d.suggest,'aria-label':'Name for the new agent',autocapitalize:'off',spellcheck:'false'});
  const box=$('div',{class:'newname'},$('div',{},nn));
  const coin=(value,on,disc,name)=>$('label',{class:'coin'+(on?' on':''),title:name},$('input',{type:'radio',name:'who',value,'aria-label':name,...(on?{checked:''}:{})}),disc,$('span',{class:'nm',text:name}));
- const coins=d.agents.map(a=>coin(a.handle,a.handle===d.preselect,$('span',{class:'disc'},mark(a.provider,a.handle)),a.handle));
- coins.push(coin('__new__',!d.preselect,$('span',{class:'disc new',html:G.add}),'New'));
- const group=$('div',{class:'coins',role:'radiogroup','aria-label':'Allow '+BOOT.app+' to use Relay as'},...coins);
+ // this app's own names first; other apps' agents only on request, so nobody picks Muse to "reach" Muse
+ const own=d.provider?d.agents.filter(a=>a.provider===d.provider):d.agents;
+ const others=d.agents.filter(a=>!own.includes(a));
+ const mk=a=>coin(a.handle,a.handle===d.preselect,$('span',{class:'disc'},mark(a.provider,a.handle)),a.handle);
+ const ownCoins=own.map(mk),otherCoins=others.map(mk);
+ const coins=[...ownCoins,coin('__new__',!d.preselect,$('span',{class:'disc new',html:G.add}),'New'),...otherCoins];
+ const extra=$('div',{class:'coins more'},...otherCoins);
+ const showOthers=others.some(a=>a.handle===d.preselect);
+ extra.hidden=!showOthers;
+ const moreBtn=others.length&&!showOthers?$('button',{class:'tl morebtn',on:{click:()=>{extra.hidden=false;moreBtn.remove()}}},'Use another agent\u2019s name'):null;
+ const group=$('div',{role:'radiogroup','aria-label':BOOT.app+'\u2019s name on Relay'},
+   $('div',{class:'coins'},...coins.slice(0,ownCoins.length+1)),extra);
  const pick=()=>{const c=coins.find(x=>x.querySelector('input').checked);coins.forEach(x=>x.classList.toggle('on',x===c));
   const v=c.querySelector('input').value,a=d.agents.find(x=>x.handle===v);box.classList.toggle('open',v==='__new__');
   if(v==='__new__')right('new');else right('agent',a.provider,a.handle);
   // picking another app's agent makes this app speak as it: say so, and how to reach it instead
   const other=a&&a.provider&&d.provider&&a.provider!==d.provider;
   warn.textContent=other?d.app_label+' will send and read messages as '+a.handle+'. To talk to '+a.handle+', pick '+((d.agents.find(x=>x.provider===d.provider)||{}).handle||'New')+', then ask '+a.handle+' from '+d.app_label+'.':'';
-  warn.classList.toggle('on',!!other)};
+  warn.classList.toggle('on',!!other);
+  const name=v==='__new__'?(nn.value.trim()||'the new name'):v;
+  const reachable=d.agents.map(x=>x.handle).filter(h=>h!==v);
+  reach.textContent=reachable.length?'As '+name+', '+d.app_label+' can message everyone here: '+reachable.slice(0,4).join(', ')+(reachable.length>4?', and more.':'.'):''};
  group.addEventListener('change',e=>{const c=e.target.closest('.coin');c.classList.remove('tap');void c.offsetWidth;c.classList.add('tap');pick()});
  const err=$('p',{class:'err',role:'alert'});
  const warn=$('p',{class:'warn',role:'status'});
  const me=$('div',{class:'me'},$('span',{html:'<b></b>'}),$('span',{text:'·'}),$('button',{class:'tl',on:{click:()=>{store.clear();cred=null;right('','');rhalf.replaceChildren($('i',{class:'mk'}));signIn()}}},'Switch'));
  me.querySelector('b').textContent=d.you;
- const reach=$('p',{class:'reach',text:'Whoever you pick, '+d.app_label+' can message everyone on your hub.'});
- show(group,box,reach,warn,err,$('button',{class:'btn',id:'allow',on:{click:()=>allow(nn,err)}},'Allow'),me,$('button',{class:'tl',on:{click:deny}},'Cancel'));pick()}
+ const reach=$('p',{class:'reach'});
+ nn.addEventListener('input',()=>pick());
+ show(group,moreBtn,box,reach,warn,err,$('button',{class:'btn',id:'allow',on:{click:()=>allow(nn,err)}},'Allow'),me,$('button',{class:'tl',on:{click:deny}},'Cancel'));pick()}
 async function allow(nn,err){const v=(document.querySelector('input[name=who]:checked')||{}).value;
  const body=v==='__new__'?{request:BOOT.request,new_agent:nn.value.trim()}:{request:BOOT.request,agent:v};
  const b=document.getElementById('allow');b.disabled=true;err.textContent='';
