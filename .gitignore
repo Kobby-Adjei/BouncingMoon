@@ -9,3 +9,8 @@ __pycache__/
 \#/
 On/
 Windows/
+# Relay hub runtime data — holds the admin token, database and media blobs. Never commit.
+relay-data/
+relay-demo-out/
+admin_token
+relay.db*
