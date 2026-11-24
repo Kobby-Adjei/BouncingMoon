@@ -296,14 +296,14 @@ def mount(app, hub) -> None:
         word = app_word(cl["name"]) or ""
         logo = {"chatgpt": None}.get(word, word if word in LOGO_FILES else None)
         boot = {"request": rid, "app": cl["name"], "host": host, "email": hub.email_on, "hub": issuer(request)}
-        tile = (f"<span class='av app'><img src='/logos/{logo}.svg' alt=''></span>" if logo else
-                f"<span class='av app mono'>{html.escape((cl['name'] or '?')[:1].upper())}</span>")
-        body = (f"<div class=shell><div class=pair aria-hidden=true>{tile}<span class=dots><i></i><i></i><i></i></span>"
-                f"<span class='av relay'><img src='/icon.svg' alt=''></span><span class=lock></span></div>"
+        left = (f"<img src='/logos/{logo}.svg' alt=''>" if logo else f"<b>{html.escape((cl['name'] or '?')[:1].upper())}</b>")
+        body = (f"<div class=glow aria-hidden=true></div><div class=shell>"
+                f"<div class=orb id=orb aria-hidden=true><span class='half l'>{left}</span>"
+                f"<span class='half r' id=rhalf><i class=mk></i></span><span class=seal id=seal></span></div>"
                 f"<h1 class=title id=title>Connect {html.escape(cl['name'])} to Relay</h1>"
-                f"<p class=lede id=lede>{html.escape(cl['name'])} will be able to message your other agents and share files with "
-                f"them, as the agent you choose.</p><section class=step id=step aria-live=polite></section>"
-                f"<p class=foot>Returning to <b>{html.escape(host)}</b> · You can disconnect any time in Relay.</p></div>"
+                f"<p class=lede id=lede>Messages and files, as the agent you pick.</p>"
+                f"<section class=step id=step aria-live=polite></section>"
+                f"<p class=foot id=foot>Returns to {html.escape(host)}</p></div>"
                 f"<script nonce='{nonce}'>const BOOT={json.dumps(boot)};{PAGE_JS}</script>")
         return HTMLResponse(page(f"Connect {cl['name']}", body, nonce), headers=page_headers(nonce))
 
@@ -632,174 +632,161 @@ def page(title: str, body: str, nonce: str) -> str:
             f"<body><main>{body}</main></body></html>")
 
 
+GRAIN = ("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='180' height='180'><filter id='n'>"
+         "<feTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='3' stitchTiles='stitch'/><feColorMatrix "
+         "values='0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 .55 0'/></filter><rect width='100%25' height='100%25' filter='url(%23n)'/></svg>")
+
 PAGE_CSS = """
-:root{--bg:#f6f4ef;--card:#fff;--ink:#18171d;--ink2:#64626b;--ink3:#bdbac2;--sep:rgba(24,23,29,.09);--line:rgba(24,23,29,.12);
- --fill:rgba(24,23,29,.045);--sel:#ecebfb;--ring:rgba(79,68,224,.22);--accent:#4f44e0;--accent-hover:#4338d0;--on-accent:#fff;
- --accent-soft:#edecfc;--sun-soft:#ffe9df;--red:#c42838;--green:#22a565;--r-btn:14px;
- --ease:cubic-bezier(.22,.8,.24,1);--spring:cubic-bezier(.34,1.45,.55,1);--glide:cubic-bezier(.32,.72,0,1);
+:root{--bg:#f6f4ef;--card:#fff;--ink:#18171d;--ink2:#6b6972;--ink3:#c4c1c9;--fill:rgba(24,23,29,.05);--accent:#4f44e0;--accent-hover:#4338d0;
+ --on-accent:#fff;--accent-soft:#e6e4fb;--glow:rgba(79,68,224,.16);--red:#c42838;--green:#22a565;--grain:.07;
+ --ease:cubic-bezier(.22,.8,.24,1);--spring:cubic-bezier(.34,1.5,.55,1);--glide:cubic-bezier(.32,.72,0,1);
  --font:-apple-system,BlinkMacSystemFont,"SF Pro Text","Inter","Segoe UI",system-ui,sans-serif;
  --display:-apple-system,BlinkMacSystemFont,"SF Pro Display","Inter","Segoe UI",system-ui,sans-serif;color-scheme:light dark}
-@media (prefers-color-scheme:dark){:root{--bg:#111014;--card:#1c1b21;--ink:#f4f3f6;--ink2:#a6a4ae;--ink3:#4a4851;--sep:rgba(255,255,255,.08);
- --line:rgba(255,255,255,.12);--fill:rgba(255,255,255,.06);--sel:#24223a;--ring:rgba(154,147,255,.3);--accent:#9a93ff;--accent-hover:#aba5ff;
- --on-accent:#0e0d12;--accent-soft:#29273f;--sun-soft:#3a2a24;--red:#ff7076;--green:#46d58b}}
-@media (prefers-color-scheme:dark){.av.relay{box-shadow:0 0 0 1px rgba(255,255,255,.14),0 8px 24px -8px rgba(0,0,0,.6)}}
+@media (prefers-color-scheme:dark){:root{--bg:#111014;--card:#201f26;--ink:#f4f3f6;--ink2:#a3a1ab;--ink3:#45434c;--fill:rgba(255,255,255,.07);
+ --accent:#9a93ff;--accent-hover:#aba5ff;--on-accent:#0e0d12;--accent-soft:#2b2944;--glow:rgba(154,147,255,.14);--red:#ff7076;--green:#46d58b;--grain:.05}}
 *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
-html,body{margin:0;background:var(--bg);color:var(--ink)}
-body{font:16px/1.45 var(--font);-webkit-font-smoothing:antialiased;letter-spacing:-.011em}
-main{min-height:100vh;display:flex;justify-content:center;padding:max(36px,env(safe-area-inset-top)) max(20px,env(safe-area-inset-right)) 40px max(20px,env(safe-area-inset-left))}
-.shell{width:100%;max-width:392px;display:flex;flex-direction:column;align-items:center}
-/* motion: everything plays once, on load or on touch */
-@keyframes rise{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:none}}
-@keyframes pop{0%{opacity:0;transform:scale(.6)}65%{opacity:1;transform:scale(1.06)}100%{transform:none}}
-@keyframes flow{0%,100%{background:var(--ink3);transform:none}35%{background:var(--accent);transform:scale(1.5)}}
-@keyframes draw{to{stroke-dashoffset:0}}
-.rise{animation:rise .6s var(--ease) both;animation-delay:calc(var(--i,0) * 55ms)}
-.pair{position:relative;display:flex;align-items:center;gap:12px;margin:4px 0 22px}
-.av{--s:64px;width:var(--s);height:var(--s);flex:none;border-radius:calc(var(--s)*.27);display:grid;place-items:center;
- background:var(--card);box-shadow:0 0 0 .5px var(--line),0 1px 2px rgba(24,23,29,.04),0 8px 24px -8px rgba(24,23,29,.18);overflow:hidden}
-.pair .av{animation:pop .7s var(--spring) backwards;transition:transform .7s var(--glide)}
-.pair .av.relay{animation-delay:.12s}
-.av img{width:56%;height:56%;display:block}.av.relay{background:#18171d}.av.relay img{width:100%;height:100%}
-.av.mono{font:650 calc(var(--s)*.38)/1 var(--display);color:var(--ink2)}
-.dots{display:flex;gap:6px;transition:opacity .3s var(--ease)}
-.dots i{width:5px;height:5px;border-radius:50%;background:var(--ink3);animation:flow .9s var(--ease) both}
-.dots i:nth-child(1){animation-delay:.55s}.dots i:nth-child(2){animation-delay:.7s}.dots i:nth-child(3){animation-delay:.85s}
-.pair.linked .av:first-child{transform:translateX(24px)}.pair.linked .av.relay{transform:translateX(-24px)}.pair.linked .dots{opacity:0}
-.lock{position:absolute;left:50%;margin-left:-15px;top:-11px;width:30px;height:30px;border-radius:50%;background:var(--green);color:#fff;
- display:grid;place-items:center;box-shadow:0 0 0 3px var(--bg),0 6px 14px -4px rgba(34,165,101,.5);opacity:0;transform:scale(.3);
- transition:opacity .3s var(--ease) .45s,transform .6s var(--spring) .45s}
-.pair.linked .lock{opacity:1;transform:none}.lock svg{width:15px;height:15px}
-.title{font:700 28px/1.12 var(--display);letter-spacing:-.034em;margin:0;text-align:center;text-wrap:balance}
-.lede{color:var(--ink2);font-size:15px;margin:8px 0 26px;text-align:center;max-width:32ch;text-wrap:balance}
-.step{width:100%;display:flex;flex-direction:column;gap:14px}
-.foot{color:var(--ink2);font-size:12.5px;margin:30px 0 0;text-align:center;opacity:.85}.foot b{color:var(--ink);font-weight:600}
-h2{font:600 13px/1.3 var(--font);letter-spacing:.01em;color:var(--ink2);margin:0 0 -4px;padding-left:4px}
-.hint{color:var(--ink2);font-size:13px;margin:-6px 0 0;text-align:center}
-.btn{appearance:none;display:flex;align-items:center;justify-content:center;gap:9px;width:100%;height:52px;padding:0 20px;border:0;
- border-radius:var(--r-btn);background:var(--accent);color:var(--on-accent);font:600 17px var(--font);letter-spacing:-.015em;cursor:pointer;
- box-shadow:0 1px 0 rgba(255,255,255,.18) inset,0 8px 20px -10px var(--accent);transition:transform .45s var(--spring),background-color .2s var(--ease),opacity .2s}
-.btn:hover{background:var(--accent-hover)}.btn:active{transform:scale(.965);transition:transform .12s var(--ease)}.btn:disabled{opacity:.5;cursor:default}
-.btn.soft{background:var(--fill);color:var(--ink);box-shadow:none}.btn.soft:hover{background:var(--line)}
-.btn svg{width:22px;height:22px;flex:none}
-.textlink{appearance:none;background:none;border:0;color:var(--accent);font:500 15px var(--font);cursor:pointer;padding:8px;align-self:center;border-radius:8px;transition:opacity .2s}
-.textlink:active{opacity:.5}.textlink.quiet{color:var(--ink2)}
-input.field{width:100%;height:52px;padding:0 16px;border-radius:var(--r-btn);border:0;background:var(--fill);color:var(--ink);font:17px var(--font);
- box-shadow:inset 0 0 0 .5px var(--line);transition:box-shadow .25s var(--ease),background-color .25s}
-input.field:focus{outline:none;background:var(--card);box-shadow:inset 0 0 0 1.5px var(--accent),0 0 0 4px var(--ring)}
-.check{display:flex;gap:10px;align-items:center;font-size:14px;color:var(--ink2);cursor:pointer;justify-content:center}
-.check input{width:18px;height:18px;accent-color:var(--accent);margin:0}
-.or{display:flex;align-items:center;gap:12px;color:var(--ink3);font-size:12px;letter-spacing:.08em;text-transform:uppercase}
-.or:before,.or:after{content:"";flex:1;height:.5px;background:var(--line)}
-.err{color:var(--red);font-size:14px;margin:0;text-align:center}.err:empty{display:none}
-.who{display:flex;align-items:center;justify-content:center;gap:8px;font-size:13px;color:var(--ink2);margin-top:-12px}
-.who b{color:var(--ink);font-weight:600}.who .textlink{font-size:13px;padding:2px 4px}
-/* the list: hairlines, no box; one highlight glides to the chosen row */
-.list{position:relative;display:flex;flex-direction:column;margin:0 -8px}
-.glide{position:absolute;left:0;right:0;top:0;border-radius:14px;background:var(--sel);pointer-events:none;
- transition:transform .55s var(--glide),height .55s var(--glide);z-index:0}
-.row{position:relative;z-index:1;display:flex;align-items:center;gap:14px;padding:10px 12px;cursor:pointer;min-height:62px;border-radius:14px}
-.row+.row:before{content:"";position:absolute;left:66px;right:12px;top:0;height:.5px;background:var(--sep);transition:opacity .3s}
-.row.on:before,.row.on+.row:before{opacity:0}
-.row input[type=radio]{position:absolute;opacity:0;pointer-events:none}
-.row .av{--s:40px;box-shadow:0 0 0 .5px var(--line)}.row .av.add{background:transparent;box-shadow:none;color:var(--accent)}
-.row .av.add svg{width:40px;height:40px}
-.row .grow{flex:1;min-width:0;display:flex;flex-direction:column}
-.row .n{font-weight:600;font-size:16px;letter-spacing:-.015em;overflow-wrap:anywhere}.row .s{font-size:13px;color:var(--ink2)}
-.tick{width:24px;height:24px;flex:none;border-radius:50%;box-shadow:inset 0 0 0 1.5px var(--ink3);display:grid;place-items:center;
- transition:background-color .25s var(--ease),box-shadow .25s var(--ease),transform .5s var(--spring)}
-.tick svg{width:13px;height:13px;color:var(--on-accent)}.tick path{stroke-dasharray:14;stroke-dashoffset:14}
-.row.on .tick{background:var(--accent);box-shadow:none;transform:scale(1.04)}
-.row.on .tick path{animation:draw .35s var(--ease) .08s forwards}
-.row:has(input:focus-visible) .tick{box-shadow:0 0 0 3px var(--ring)}
-.reveal{display:grid;grid-template-rows:0fr;transition:grid-template-rows .45s var(--glide)}.reveal>div{overflow:hidden}
-.row.on .reveal{grid-template-rows:1fr}.reveal input.field{height:44px;font-size:16px;margin-top:8px;background:var(--card)}
-.can{list-style:none;margin:6px 0 0;padding:0 4px;display:flex;flex-direction:column;gap:12px;font-size:14.5px;color:var(--ink2)}
-.can li{display:flex;gap:12px;align-items:center}.can svg{width:26px;height:26px;flex:none;color:var(--accent)}
-.actions{display:flex;flex-direction:column;gap:2px;margin-top:10px}
+html,body{margin:0;background:var(--bg);color:var(--ink);min-height:100%}
+body{font:16px/1.4 var(--font);-webkit-font-smoothing:antialiased;letter-spacing:-.012em;overflow-x:hidden}
+body:before{content:"";position:fixed;inset:0;pointer-events:none;opacity:var(--grain);background:url("GRAIN_URL");z-index:0}
+.glow{position:fixed;left:50%;top:-140px;width:720px;height:560px;margin-left:-360px;pointer-events:none;
+ background:radial-gradient(closest-side,var(--glow),transparent);z-index:0}
+main{position:relative;z-index:1;min-height:100vh;display:flex;justify-content:center;
+ padding:max(48px,env(safe-area-inset-top)) max(22px,env(safe-area-inset-right)) 36px max(22px,env(safe-area-inset-left))}
+.shell{width:100%;max-width:380px;display:flex;flex-direction:column;align-items:center;text-align:center}
+@keyframes inL{from{transform:translateX(-46px) rotate(-14deg);opacity:0}to{transform:none;opacity:1}}
+@keyframes inR{from{transform:translateX(46px) rotate(14deg);opacity:0}to{transform:none;opacity:1}}
+@keyframes rise{from{opacity:0;transform:translateY(12px)}to{opacity:1;transform:none}}
+@keyframes flipin{from{transform:perspective(500px) rotateY(80deg);opacity:0}to{transform:none;opacity:1}}
+@keyframes fuse{0%{transform:none}55%{transform:rotate(200deg) scale(.92)}100%{transform:rotate(360deg)}}
+@keyframes seal{0%{opacity:0;transform:scale(.2)}65%{opacity:1;transform:scale(1.12)}100%{opacity:1;transform:none}}
+@keyframes nudge{0%,100%{transform:none}40%{transform:translateY(-5px) scale(1.06)}}
+.rise{animation:rise .65s var(--ease) both;animation-delay:calc(var(--i,0)*60ms + .25s)}
+/* the orb: two halves of Relay's mark. Left is the app; right is who it will be */
+.orb{position:relative;width:176px;height:176px;display:flex;gap:7px;margin-bottom:30px;transition:gap .5s var(--glide)}
+.half{flex:1;display:grid;place-items:center;overflow:hidden;position:relative;
+ box-shadow:0 1px 0 rgba(255,255,255,.6) inset,0 18px 40px -18px rgba(24,23,29,.35),0 0 0 .5px rgba(24,23,29,.08)}
+.half.l{border-radius:999px 0 0 999px;background:var(--card);animation:inL .9s var(--spring) both}
+.half.r{border-radius:0 999px 999px 0;background:#18171d;animation:inR .9s var(--spring) .08s both}
+.half img{width:52px;height:52px}.half.l img{margin-left:22px}.half.r img,.half.r b,.half.r .mk{margin-right:22px}
+.half b{font:700 44px/1 var(--display);color:var(--ink2)}.half.l b{margin-left:22px}
+.half.r.agent{background:var(--card)}.half.r.agent b{color:var(--accent)}.half.r.new{background:var(--accent-soft)}
+.half.r .mk{width:34px;height:68px;border-radius:0 68px 68px 0;background:#f4f3f6;display:block;margin-right:34px}
+.half.r .face{display:grid;place-items:center;animation:flipin .55s var(--spring) backwards}
+.half.r.new .face svg{width:54px;height:54px;color:var(--accent);margin-right:20px}
+.seal{position:absolute;left:50%;top:50%;width:64px;height:64px;margin:-32px 0 0 -32px;border-radius:50%;background:var(--green);color:#fff;
+ display:grid;place-items:center;opacity:0;box-shadow:0 0 0 6px var(--bg),0 14px 30px -10px rgba(34,165,101,.6)}
+.seal svg{width:30px;height:30px}
+.orb.fused{gap:0;animation:fuse 1s var(--glide) .1s both}.half>*{transition:opacity .35s var(--ease) .55s}.orb.fused .half>*{opacity:0}.orb.fused .seal{animation:seal .6s var(--spring) .85s both}
+.title{font:700 30px/1.08 var(--display);letter-spacing:-.04em;margin:0;text-wrap:balance;animation:rise .7s var(--ease) .15s both}
+.lede{color:var(--ink2);font-size:16px;margin:10px 0 30px;animation:rise .7s var(--ease) .22s both}
+.step{width:100%;display:flex;flex-direction:column;align-items:center;gap:14px}
+.foot{color:var(--ink2);font-size:12.5px;margin:26px 0 0;opacity:.7}
+/* coins: one per agent. Tap one and it becomes the orb's right half */
+.coins{display:flex;flex-wrap:wrap;justify-content:center;gap:16px 6px;margin:0 -14px}
+.coin{position:relative;display:flex;flex-direction:column;align-items:center;gap:8px;width:70px;cursor:pointer}
+.coin input{position:absolute;opacity:0;pointer-events:none}
+.disc{width:58px;height:58px;border-radius:50%;background:var(--card);display:grid;place-items:center;
+ box-shadow:0 0 0 .5px rgba(24,23,29,.1),0 6px 16px -8px rgba(24,23,29,.3);transition:transform .45s var(--spring),box-shadow .3s var(--ease)}
+.disc img{width:28px;height:28px}.disc b{font:650 22px/1 var(--display);color:var(--ink2)}
+.disc.new{background:transparent;box-shadow:none;color:var(--accent)}.disc.new svg{width:58px;height:58px}
+.coin .nm{font-size:12.5px;color:var(--ink2);max-width:70px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;transition:color .2s}
+.coin.on .disc{transform:translateY(-3px) scale(1.06);box-shadow:0 0 0 3px var(--bg),0 0 0 5.5px var(--accent),0 12px 22px -10px var(--accent)}
+.coin.on .nm{color:var(--ink);font-weight:600}.coin.tap .disc{animation:nudge .45s var(--spring)}
+.coin:has(input:focus-visible) .disc{box-shadow:0 0 0 3px var(--bg),0 0 0 5.5px var(--ring,var(--accent))}
+.newname{display:grid;grid-template-rows:0fr;width:100%;transition:grid-template-rows .45s var(--glide),margin .45s var(--glide)}
+.newname>div{overflow:hidden;display:flex;justify-content:center;padding:6px 8px 4px}.newname.open{grid-template-rows:1fr;margin-top:2px}
+.btn{appearance:none;display:flex;align-items:center;justify-content:center;gap:10px;width:100%;height:56px;padding:0 22px;border:0;border-radius:999px;
+ background:var(--accent);color:var(--on-accent);font:600 17px var(--font);letter-spacing:-.015em;cursor:pointer;margin-top:10px;
+ box-shadow:0 1px 0 rgba(255,255,255,.22) inset,0 12px 26px -12px var(--accent);transition:transform .45s var(--spring),background-color .2s,opacity .2s}
+.btn:hover{background:var(--accent-hover)}.btn:active{transform:scale(.96);transition:transform .12s var(--ease)}.btn:disabled{opacity:.5}
+.btn.soft{background:var(--fill);color:var(--ink);box-shadow:none;margin-top:0}
+.btn svg{width:22px;height:22px}
+.tl{appearance:none;background:none;border:0;color:var(--ink2);font:500 14.5px var(--font);cursor:pointer;padding:6px 8px;border-radius:8px}
+.tl.accent{color:var(--accent)}.tl:active{opacity:.5}
+.pill{width:220px;height:46px;border:0;border-radius:999px;text-align:center;background:var(--card);color:var(--ink);font:600 16px var(--font);
+ box-shadow:0 0 0 1.5px var(--accent),0 8px 20px -12px var(--accent)}
+.pill:focus{outline:none;box-shadow:0 0 0 2px var(--accent),0 0 0 6px var(--glow)}
+input.field{width:100%;height:56px;border:0;border-radius:999px;padding:0 22px;text-align:center;background:var(--card);color:var(--ink);font:17px var(--font);
+ box-shadow:0 0 0 .5px rgba(24,23,29,.12),0 6px 16px -10px rgba(24,23,29,.25)}
+input.field:focus{outline:none;box-shadow:0 0 0 2px var(--accent),0 0 0 6px var(--glow)}
+.me{font-size:13px;color:var(--ink2);display:flex;gap:4px;align-items:center;justify-content:center;margin-top:2px}.me b{color:var(--ink);font-weight:600}
+.me .tl{font-size:13px;padding:2px 4px;color:var(--accent)}
+.keep{display:flex;gap:8px;align-items:center;font-size:13.5px;color:var(--ink2)}.keep input{accent-color:var(--accent);width:17px;height:17px;margin:0}
+.err{color:var(--red);font-size:14px;margin:0}.err:empty{display:none}
+.sub{color:var(--ink2);font-size:14px;margin:-4px 0 4px}
 @media (prefers-reduced-motion:reduce){*,*:before{animation-duration:.01ms!important;animation-delay:0s!important;transition-duration:.01ms!important}}
 :focus-visible{outline:2px solid var(--accent);outline-offset:3px}
-"""
+""".replace("GRAIN_URL", GRAIN)
 
 PAGE_JS = r"""
 const $=(t,a={},...k)=>{const e=document.createElement(t);for(const[n,v]of Object.entries(a)){if(n==='on')for(const[ev,f]of Object.entries(v))e.addEventListener(ev,f);else if(n==='text')e.textContent=v;else if(n==='html')e.innerHTML=v;else e.setAttribute(n,v)}e.append(...k.filter(x=>x!=null));return e};
-const step=document.getElementById('step');
+const step=document.getElementById('step'),rhalf=document.getElementById('rhalf'),orb=document.getElementById('orb');
 const show=(...k)=>{const kids=k.filter(x=>x!=null);kids.forEach((el,i)=>{el.classList.add('rise');el.style.setProperty('--i',i)});step.replaceChildren(...kids)};
 const store={get(){try{return localStorage.getItem('relay_key')||sessionStorage.getItem('relay_key')}catch{return null}},
  set(k,keep){try{(keep?localStorage:sessionStorage).setItem('relay_key',k)}catch{}},clear(){try{localStorage.removeItem('relay_key');sessionStorage.removeItem('relay_key')}catch{}}};
-let cred=store.get(), viaEmail=false;
+let cred=store.get(),viaEmail=false;
 async function api(m,p,b,a){const h={'Content-Type':'application/json'};if(a)h.Authorization='Bearer '+a;
  const r=await fetch(p,{method:m,headers:h,body:b===undefined?undefined:JSON.stringify(b)});const d=await r.json().catch(()=>({}));
  if(!r.ok){const e=new Error(d.detail||('error '+r.status));e.status=r.status;throw e}return d}
 const enc=b=>btoa(String.fromCharCode(...new Uint8Array(b))).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');
 const dec=s=>Uint8Array.from(atob(s.replace(/-/g,'+').replace(/_/g,'/')),c=>c.charCodeAt(0));
 const canPasskey=!!(window.PublicKeyCredential&&navigator.credentials);
-/* Relay's own glyphs, drawn from its mark: half-circles and the dots that pass between them */
-const G={
- talk:'<svg viewBox="0 0 26 26"><path d="M9 7.5a5.5 5.5 0 0 0 0 11z" fill="currentColor"/><path d="M17 7.5a5.5 5.5 0 0 1 0 11z" fill="currentColor" opacity=".4"/><circle cx="11.9" cy="13" r="1.15" fill="currentColor" opacity=".75"/><circle cx="14.1" cy="13" r="1.15" fill="currentColor" opacity=".45"/></svg>',
- media:'<svg viewBox="0 0 26 26" fill="none"><rect x="3.5" y="6" width="19" height="14" rx="4.5" stroke="currentColor" stroke-width="1.7"/><path d="M11.5 9.6a3.4 3.4 0 0 1 0 6.8z" fill="currentColor"/><circle cx="18.2" cy="9.6" r="1" fill="currentColor" opacity=".45"/></svg>',
- self:'<svg viewBox="0 0 26 26" fill="none"><circle cx="13" cy="13" r="9" stroke="currentColor" stroke-width="1.7" opacity=".4"/><path d="M12.2 8.2a4.8 4.8 0 0 0 0 9.6z" fill="currentColor"/><path d="M13.8 8.2a4.8 4.8 0 0 1 0 9.6z" fill="currentColor" opacity=".4"/></svg>',
- print:'<svg viewBox="0 0 26 26" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="M6.5 15.5a6.5 6.5 0 0 1 13 0"/><path d="M9.3 17.5v-2a3.7 3.7 0 0 1 7.4 0v3.5"/><path d="M13 15.3v6"/><path d="M4 11a9.6 9.6 0 0 1 18 0" opacity=".55"/></svg>',
- add:'<svg viewBox="0 0 40 40" fill="none"><path d="M19 9a11 11 0 0 0 0 22" stroke="currentColor" stroke-width="1.6" stroke-dasharray="2.6 2.6"/><path d="M21 9a11 11 0 0 1 0 22z" fill="currentColor" opacity=".16"/><path d="M26 20h-6M23 17v6" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>',
- tick:'<svg viewBox="0 0 14 14" fill="none"><path d="M3 7.4l2.6 2.6L11 4.4" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>'};
-const LOGOS=['claude','codex','gemini','copilot','muse'];const NAMES={claude:'Claude',codex:'Codex',gemini:'Gemini',muse:'Muse',cursor:'Cursor',copilot:'Copilot',openai:'ChatGPT'};
-function tile(p,name){return LOGOS.includes(p)?$('span',{class:'av'},$('img',{src:'/logos/'+p+'.svg',alt:''})):$('span',{class:'av mono',text:(name||'?')[0].toUpperCase()})}
-function ago(t){if(!t)return'not connected yet';const s=Date.now()/1000-t;if(s<120)return'active now';if(s<3600)return'active '+Math.floor(s/60)+' min ago';
- if(s<86400)return'active '+Math.floor(s/3600)+' h ago';const d=Math.floor(s/86400);return'active '+d+(d===1?' day ago':' days ago')}
-function keep(on=true){return $('label',{class:'check'},$('input',{type:'checkbox',id:'keep',...(on?{checked:''}:{})}),'Keep me signed in on this device')}
-function signedIn(tok){cred=tok;const k=document.getElementById('keep');store.set(tok,!k||k.checked);consent()}
+const G={print:'<svg viewBox="0 0 26 26" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M6.5 15.5a6.5 6.5 0 0 1 13 0"/><path d="M9.3 17.5v-2a3.7 3.7 0 0 1 7.4 0v3.5"/><path d="M13 15.3v6"/><path d="M4 11a9.6 9.6 0 0 1 18 0" opacity=".55"/></svg>',
+ add:'<svg viewBox="0 0 58 58" fill="none"><path d="M27 8a21 21 0 0 0 0 42" stroke="currentColor" stroke-width="1.6" stroke-dasharray="3 3.4"/><path d="M31 8a21 21 0 0 1 0 42z" fill="currentColor" opacity=".14"/><path d="M36 29h-7M32.5 25.5v7" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>',
+ tick:'<svg viewBox="0 0 30 30" fill="none"><path d="M8 15.5l4.6 4.6L22.5 10" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/></svg>'};
+const LOGOS=['claude','codex','gemini','copilot','muse'];
+const mark=(p,name)=>LOGOS.includes(p)?$('img',{src:'/logos/'+p+'.svg',alt:''}):$('b',{text:(name||'?')[0].toUpperCase()});
+function right(kind,p,name){rhalf.className='half r '+kind;rhalf.replaceChildren(kind==='new'?$('span',{class:'face',html:G.add}):$('span',{class:'face'},mark(p,name)))}
+function keep(on){return $('label',{class:'keep'},$('input',{type:'checkbox',id:'keep',...(on?{checked:''}:{})}),'Keep me signed in')}
+function signedIn(tok,stay){cred=tok;const k=document.getElementById('keep');store.set(tok,k?k.checked:stay!==false);consent()}
 function signIn(msg){const err=$('p',{class:'err',role:'alert',text:msg||''});const parts=[];
- if(canPasskey)parts.push($('button',{class:'btn',html:G.print+'<span>Sign in with a passkey</span>',on:{click:passkey}}),$('p',{class:'hint',text:'Face ID, a fingerprint or your device PIN'}));
- if(BOOT.email){if(parts.length)parts.push($('div',{class:'or',text:'or'}));
-  const em=$('input',{class:'field',type:'email',id:'email',placeholder:'Email',autocomplete:'email','aria-label':'Email'});
+ if(canPasskey)parts.push($('button',{class:'btn',html:G.print+'<span>Sign in with a passkey</span>',on:{click:()=>passkey(err)}}));
+ if(BOOT.email){const em=$('input',{class:'field',type:'email',id:'email',placeholder:'Email',autocomplete:'email','aria-label':'Email'});
   parts.push(em,$('button',{class:canPasskey?'btn soft':'btn',on:{click:()=>emailCode(em.value.trim(),err)}},'Email me a code'))}
- show(...parts,keep(),err,$('button',{class:'textlink quiet',on:{click:()=>keyForm()}},'Use a Relay key instead'));window.__err=err}
-async function passkey(){const err=window.__err;try{const o=await api('POST','/auth/passkey/options',{});
+ show(...parts,err,$('button',{class:'tl',on:{click:keyForm}},'Use a Relay key instead'))}
+async function passkey(err){try{const o=await api('POST','/auth/passkey/options',{});
   const c=await navigator.credentials.get({publicKey:{challenge:dec(o.challenge),rpId:o.rpId,userVerification:o.userVerification,timeout:o.timeout,allowCredentials:[]}});
   const r=c.response;const s=await api('POST','/auth/passkey/signin',{id:c.id,rawId:enc(c.rawId),type:c.type,response:{clientDataJSON:enc(r.clientDataJSON),authenticatorData:enc(r.authenticatorData),signature:enc(r.signature),userHandle:r.userHandle?enc(r.userHandle):null}});
-  signedIn(s.token)}catch(e){err.textContent=e.name==='NotAllowedError'?'Cancelled, or no passkey for Relay on this device.':e.message}}
+  signedIn(s.token,true)}catch(e){err.textContent=e.name==='NotAllowedError'?'No Relay passkey on this device yet.':e.message}}
 async function emailCode(email,err){if(!email.includes('@')){err.textContent='Type your email first.';return}
  try{await api('POST','/auth/email',{email})}catch(e){err.textContent=e.message;return}
  const code=$('input',{class:'field',type:'text',id:'code',inputmode:'numeric',autocomplete:'one-time-code',placeholder:'Code from the email','aria-label':'Code from the email'});const e2=$('p',{class:'err',role:'alert'});
- show($('p',{class:'hint',style:'margin:0',text:'We sent a code to '+email+'. Type it here; school and work mail often opens links by itself.'}),code,
-  $('button',{class:'btn',on:{click:async()=>{try{const s=await api('POST','/auth/verify',{email,code:code.value});viaEmail=true;signedIn(s.token)}catch(x){e2.textContent=x.message}}}},'Sign in'),keep(),e2,
-  $('button',{class:'textlink quiet',on:{click:()=>signIn()}},'Back'));code.focus()}
-function keyForm(){const k=$('input',{class:'field',type:'password',id:'key',placeholder:'Your Relay key','aria-label':'Your Relay key',autocomplete:'current-password'});const e=$('p',{class:'err',role:'alert'});
- show($('p',{class:'hint',style:'margin:0',text:'Your own key, or the hub owner\'s admin key.'}),k,
-  $('button',{class:'btn',on:{click:()=>{if(k.value.trim())signedIn(k.value.trim())}}},'Continue'),keep(false),e,$('button',{class:'textlink quiet',on:{click:()=>signIn()}},'Back'));k.focus()}
-function row(value,checked,av,name,sub,extra){
- return $('label',{class:'row'+(checked?' on':'')},$('input',{type:'radio',name:'who',value,...(checked?{checked:''}:{})}),av,
-  $('span',{class:'grow'},$('span',{class:'n',text:name}),sub?$('span',{class:'s',text:sub}):null,extra||null),$('span',{class:'tick',html:G.tick}))}
-function glideTo(list,glide){const on=list.querySelector('.row.on');if(!on)return;glide.style.height=on.offsetHeight+'px';glide.style.transform='translateY('+on.offsetTop+'px)'}
+ show($('p',{class:'sub',text:'Sent to '+email}),code,$('button',{class:'btn',on:{click:async()=>{try{const s=await api('POST','/auth/verify',{email,code:code.value});viaEmail=true;signedIn(s.token,true)}catch(x){e2.textContent=x.message}}}},'Sign in'),e2,
+  $('button',{class:'tl',on:{click:()=>signIn()}},'Back'));code.focus()}
+function keyForm(){const k=$('input',{class:'field',type:'password',id:'key',placeholder:'Relay key','aria-label':'Your Relay key',autocomplete:'current-password'});
+ show(k,$('button',{class:'btn',on:{click:()=>{if(k.value.trim())signedIn(k.value.trim())}}},'Continue'),keep(false),$('button',{class:'tl',on:{click:()=>signIn()}},'Back'));k.focus()}
 async function consent(){let d;try{d=await api('GET','/oauth/request/'+BOOT.request,undefined,cred)}catch(e){
   if(e.status===401||e.status===403){store.clear();cred=null;signIn(e.status===403?e.message:'')}else show($('p',{class:'err',text:e.message}));return}
- const who=$('div',{class:'who'},$('span',{html:'Signed in as <b></b>'}),$('button',{class:'textlink',on:{click:()=>{store.clear();cred=null;signIn()}}},'Not you?'));who.querySelector('b').textContent=d.you;
- const rows=d.agents.map(a=>row(a.handle,a.handle===d.preselect,tile(a.provider,a.handle),a.handle,[NAMES[a.provider]||a.provider,ago(a.last_seen)].filter(Boolean).join(' · ')));
- const nn=$('input',{class:'field',type:'text',id:'newname',value:d.suggest,'aria-label':'New agent name',autocapitalize:'off',spellcheck:'false'});
- rows.push(row('__new__',!d.preselect,$('span',{class:'av add',html:G.add}),'A new agent',null,$('span',{class:'reveal'},$('div',{},nn))));
- const glide=$('span',{class:'glide'});const list=$('div',{class:'list',role:'radiogroup'},glide,...rows);
- list.addEventListener('change',()=>{rows.forEach(r=>r.classList.toggle('on',r.querySelector('input').checked));glideTo(list,glide)});
+ const nn=$('input',{class:'pill',type:'text',id:'newname',value:d.suggest,'aria-label':'Name for the new agent',autocapitalize:'off',spellcheck:'false'});
+ const box=$('div',{class:'newname'},$('div',{},nn));
+ const coin=(value,on,disc,name)=>$('label',{class:'coin'+(on?' on':''),title:name},$('input',{type:'radio',name:'who',value,'aria-label':name,...(on?{checked:''}:{})}),disc,$('span',{class:'nm',text:name}));
+ const coins=d.agents.map(a=>coin(a.handle,a.handle===d.preselect,$('span',{class:'disc'},mark(a.provider,a.handle)),a.handle));
+ coins.push(coin('__new__',!d.preselect,$('span',{class:'disc new',html:G.add}),'New'));
+ const group=$('div',{class:'coins',role:'radiogroup','aria-label':'Allow '+BOOT.app+' to use Relay as'},...coins);
+ const pick=()=>{const c=coins.find(x=>x.querySelector('input').checked);coins.forEach(x=>x.classList.toggle('on',x===c));
+  const v=c.querySelector('input').value,a=d.agents.find(x=>x.handle===v);box.classList.toggle('open',v==='__new__');
+  if(v==='__new__')right('new');else right('agent',a.provider,a.handle)};
+ group.addEventListener('change',e=>{const c=e.target.closest('.coin');c.classList.remove('tap');void c.offsetWidth;c.classList.add('tap');pick()});
  const err=$('p',{class:'err',role:'alert'});
- const can=$('ul',{class:'can'},...[[G.talk,'Message your other agents and answer them'],[G.media,'Send and receive videos, photos and files'],[G.self,'Only as the agent you pick here']]
-  .map(([i,t])=>$('li',{html:i},$('span',{text:t}))));
- show(who,$('h2',{text:'Allow '+BOOT.app+' to use Relay as'}),list,can,err,
-  $('div',{class:'actions'},$('button',{class:'btn',id:'allow',on:{click:()=>allow(nn,err)}},'Allow'),$('button',{class:'textlink quiet',on:{click:deny}},'Cancel')));
- requestAnimationFrame(()=>{glide.style.transition='none';glideTo(list,glide);requestAnimationFrame(()=>{glide.style.transition=''})})}
-async function allow(nn,err){const pick=(document.querySelector('input[name=who]:checked')||{}).value;
- const body=pick==='__new__'?{request:BOOT.request,new_agent:nn.value.trim()}:{request:BOOT.request,agent:pick};
+ const me=$('div',{class:'me'},$('span',{html:'<b></b>'}),$('span',{text:'·'}),$('button',{class:'tl',on:{click:()=>{store.clear();cred=null;right('','');rhalf.replaceChildren($('i',{class:'mk'}));signIn()}}},'Switch'));
+ me.querySelector('b').textContent=d.you;
+ show(group,box,err,$('button',{class:'btn',id:'allow',on:{click:()=>allow(nn,err)}},'Allow'),me,$('button',{class:'tl',on:{click:deny}},'Cancel'));pick()}
+async function allow(nn,err){const v=(document.querySelector('input[name=who]:checked')||{}).value;
+ const body=v==='__new__'?{request:BOOT.request,new_agent:nn.value.trim()}:{request:BOOT.request,agent:v};
  const b=document.getElementById('allow');b.disabled=true;err.textContent='';
  try{const r=await api('POST','/oauth/decide',body,cred);await offerPasskey();
-  document.querySelector('.pair').classList.add('linked');document.querySelector('.lock').innerHTML=G.tick.replace('stroke-width="2.2"','stroke-width="2.6"');
-  document.getElementById('title').textContent='Connected';document.getElementById('lede').textContent=BOOT.app+' now works with Relay as '+r.agent+'.';
-  show($('p',{class:'hint',style:'margin:0',text:'Taking you back to '+BOOT.host+'…'}));setTimeout(()=>{location.href=r.redirect},1100)}
+  document.getElementById('seal').innerHTML=G.tick;orb.classList.add('fused');
+  document.getElementById('title').textContent='Connected';document.getElementById('lede').textContent=BOOT.app+' is '+r.agent+' on Relay.';
+  step.replaceChildren();document.getElementById('foot').textContent='Back to '+BOOT.host+'…';setTimeout(()=>{location.href=r.redirect},1700)}
  catch(e){err.textContent=e.message;b.disabled=false}}
 async function deny(){try{const r=await api('POST','/oauth/deny',{request:BOOT.request});location.href=r.redirect}catch(e){show($('p',{class:'err',text:e.message}))}}
 async function offerPasskey(){if(!viaEmail||!canPasskey)return;
  return new Promise(done=>{const err=$('p',{class:'err',role:'alert'});
-  show($('p',{class:'hint',style:'margin:0',text:'Next time, skip the email: add a passkey and sign in with Face ID, a fingerprint or your PIN.'}),
+  show($('p',{class:'sub',text:'Skip the email next time?'}),
    $('button',{class:'btn',html:G.print+'<span>Add a passkey</span>',on:{click:async()=>{try{const o=await api('POST','/auth/passkey/register/options',{},cred);
      const c=await navigator.credentials.create({publicKey:{...o,challenge:dec(o.challenge),user:{...o.user,id:dec(o.user.id)},excludeCredentials:o.excludeCredentials.map(x=>({...x,id:dec(x.id)}))}});
      await api('POST','/auth/passkey/register',{id:c.id,rawId:enc(c.rawId),type:c.type,label:navigator.platform||'passkey',response:{clientDataJSON:enc(c.response.clientDataJSON),attestationObject:enc(c.response.attestationObject)}},cred);done()}
     catch(e){err.textContent=e.name==='NotAllowedError'?'Skipped.':e.message;setTimeout(done,900)}}}}),
-   $('button',{class:'textlink quiet',on:{click:()=>done()}},'Not now'),err)})}
+   $('button',{class:'tl',on:{click:()=>done()}},'Not now'),err)})}
 if(cred)consent();else signIn();
 """
