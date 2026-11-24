@@ -4,7 +4,8 @@ Two ways to send the email; the first one set up wins:
   Resend   (RESEND_API_KEY, RELAY_EMAIL_FROM): the hub makes a 6-digit code, keeps only its hash for
            10 minutes, and sends it in an email with no link at all, so a mail scanner has nothing to
            open. Five wrong tries and the code is dead; one email per address per minute.
-  Supabase (SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY): magic links and codes, as below.
+  Supabase (SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY): magic links and codes, as below. With both set up,
+           Supabase also sends whatever Resend refuses (e.g. before a sending domain is verified).
 
 Agents authenticate with their own Relay keys. People don't have to: the owner attaches an
 email to a person, the person types it at /app, Supabase emails them a link, and the link
@@ -260,9 +261,7 @@ def mount(app, hub, supabase: Optional[Supabase], resend: Optional[Resend] = Non
         email = norm_email(body.email)
         with store.ro() as c:
             known = c.execute("SELECT 1 FROM people_emails WHERE email=?", (email,)).fetchone()
-        if known and resend:
-            send_code(email)
-        elif known:
+        if known and not (resend and send_code(email, fallback=supabase is not None)):   # Supabase sends
             origin = f"{request.url.scheme}://{request.url.netloc}"
             status, raw = supabase.send_link(email, origin + "/app")
             if not 200 <= status < 300:
@@ -274,7 +273,7 @@ def mount(app, hub, supabase: Optional[Supabase], resend: Optional[Resend] = Non
 
     @app.post("/auth/session")
     def auth_session(body: SessionIn):
-        if supabase is None or resend:
+        if supabase is None:
             raise HTTPException(404, "email sign-in isn't set up on this hub")
         return start_session(supabase.user(body.access_token.strip()))
 
@@ -285,10 +284,14 @@ def mount(app, hub, supabase: Optional[Supabase], resend: Optional[Resend] = Non
         if not (resend or supabase):
             raise HTTPException(404, "email sign-in isn't set up on this hub")
         bad = HTTPException(401, "That code didn't work. Check it, or ask for a new email.")
-        if resend:
-            if body.token_hash:
-                raise HTTPException(400, "Type the code from the email.")
-            return start_session(check_code(norm_email(body.email or ""), body.code or "", bad))
+        if resend and not body.token_hash:
+            email = norm_email(body.email or "")
+            with store.ro() as c:
+                ours = c.execute("SELECT 1 FROM email_codes WHERE email=?", (email,)).fetchone()
+            if ours or supabase is None:          # a code the hub sent; otherwise Supabase sent it (the fallback)
+                return start_session(check_code(email, body.code or "", bad))
+        if supabase is None:
+            raise HTTPException(400, "Type the code from the email.")
         if body.token_hash:
             payload, email = {"token_hash": body.token_hash.strip()}, None
             bad = HTTPException(401, "That sign-in link has expired or was already used. Ask for a new one.")
@@ -337,7 +340,8 @@ def mount(app, hub, supabase: Optional[Supabase], resend: Optional[Resend] = Non
     def code_hash(email: str, code: str) -> str:
         return hub.hash(f"email-code:{email}:{code}")
 
-    def send_code(email: str) -> None:
+    def send_code(email: str, fallback: bool = False) -> bool:
+        """Email a hub-made code. False when Resend refused and Supabase should send instead."""
         now = hub.now()
         with store.tx() as c:
             r = c.execute("SELECT sent FROM email_codes WHERE email=?", (email,)).fetchone()
@@ -351,8 +355,12 @@ def mount(app, hub, supabase: Optional[Supabase], resend: Optional[Resend] = Non
             with store.tx() as c:          # nothing was sent: no code to wait for, and no minute to wait
                 c.execute("DELETE FROM email_codes WHERE email=?", (email,))
             log(f"Resend refused to send a sign-in code to {mask_email(email)}: status={status} "
-                f"body={raw[:200].decode('utf-8', 'replace') if isinstance(raw, bytes) else str(raw)[:200]}")
+                f"body={raw[:200].decode('utf-8', 'replace') if isinstance(raw, bytes) else str(raw)[:200]}"
+                + ("; Supabase sends it instead" if fallback else ""))
+            if fallback:
+                return False
             raise HTTPException(*resend_refusal(status, raw))
+        return True
 
     def check_code(email: str, typed: str, bad: HTTPException) -> dict:
         code = re.sub(r"\s+", "", typed)
