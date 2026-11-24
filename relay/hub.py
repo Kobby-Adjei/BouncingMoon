@@ -388,7 +388,7 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
                youtube_key: Optional[str] = None, youtube_opener=None, youtube_threads: bool = True,
                supabase_url: Optional[str] = None, supabase_key: Optional[str] = None,
                supabase_send=None, resend_key: Optional[str] = None, email_from: Optional[str] = None,
-               resend_send=None, caption_transcriber=None, caption_threads: bool = True,
+               resend_send=None, vault_send=None, vault_resolve=None, caption_transcriber=None, caption_threads: bool = True,
                caption_public_url: Optional[str] = None, caption_tool_wait: Optional[float] = None,
                caption_idle_seconds: Optional[float] = None,
                session_idle_seconds: Optional[float] = None,
@@ -1553,12 +1553,19 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
     media_svc.on_upload = delivered
     media_svc.resume()
 
+    # ---------------------------------------------------------------- saved keys (used, never seen)
+    from . import vault as vault_mod
+    vault = vault_mod.Vault(store, _now, os.environ.get("RELAY_VAULT_KEY") or admin_token,
+                            send=vault_send, resolve=vault_resolve)
+    app.state.vault = vault
+
     # ---------------------------------------------------------------- contacts + connector
     from . import connector
     connector.mount(app, SimpleNamespace(
         extra_tools=extra_tools, store=store, auth=auth, post=post, inbox_for=inbox_for, ack_to=ack_to,
         take=take, check_session=check_session, CONVERSATION=CONVERSATION, media=media_svc, origin=origin, no_session=no_session, start_session=start_session,
-        mark_read=mark_read, msg_out=msg_out, with_context=with_context, now=_now, loads=_loads, handle_re=HANDLE_RE))
+        mark_read=mark_read, msg_out=msg_out, with_context=with_context, now=_now, loads=_loads, handle_re=HANDLE_RE,
+        vault=vault))
     from . import people
     sb_url = supabase_url or os.environ.get("SUPABASE_URL")
     sb_key = supabase_key or os.environ.get("SUPABASE_PUBLISHABLE_KEY")
@@ -1584,6 +1591,7 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
     oauth.mount(app, SimpleNamespace(store=store, auth=auth, now=_now, check_new_agent=check_new_agent,
                                      private_host=(lambda h: False) if allow_private else private_host,
                                      origin=origin, email_on=bool(supabase or resend), log=log, new_session=new_session))
+    vault_mod.mount(app, SimpleNamespace(auth=auth, store=store, post=post, SYSTEM=SYSTEM), vault)
     return app
 
 
