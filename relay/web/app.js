@@ -473,38 +473,68 @@ async function passkeyAdd(key) {
     response: { clientDataJSON: b64u(c.response.clientDataJSON), attestationObject: b64u(c.response.attestationObject) } }, key);
 }
 const passkeyErr = (x) => x && x.name === "NotAllowedError" ? "Cancelled, or no passkey for Relay on this device." : (x && x.message) || "That didn't work.";
-// one screen: "sign in with your face next time"; `done` runs whatever happens
-function offerPasskey(title, lede, done, extra) {
-  const err = h("p", { class: "err", role: "alert" });
-  const add = h("button", { class: "btn press", type: "button" }, "Add a passkey");
-  add.addEventListener("click", async () => {
-    add.disabled = true; err.textContent = "";
-    try { await passkeyAdd(KEY); done(); } catch (x) { err.textContent = passkeyErr(x); add.disabled = false; }
-  });
-  welcomeView(h("div", { class: "brandline" }, bigTick(), h("h1", { class: "title", text: title }), h("p", { class: "lede", text: lede })),
-    h("div", { class: "stack tight" }, add, ...(extra || []), h("button", { class: "btn ghost press", type: "button", onclick: done }, "Not now"), err));
-  add.focus();
+// ------------------------------------------------------------------ sign in: two halves make a whole
+// The circle is Relay's mark: you on the left, Relay on the right. Signing in fuses them.
+const youGlyph = () => svg("0 0 40 40", [{ tag: "circle", cx: "20", cy: "13", r: "6.5", fill: "currentColor" },
+  { d: "M7.5 35a12.5 12.5 0 0 1 25 0z", fill: "currentColor", opacity: ".5" }], "you");
+const printGlyph = () => svg("0 0 26 26", [{ d: "M6.5 15.5a6.5 6.5 0 0 1 13 0", ...stroke }, { d: "M9.3 17.5v-2a3.7 3.7 0 0 1 7.4 0v3.5", ...stroke },
+  { d: "M13 15.3v6", ...stroke }, { d: "M4 11a9.6 9.6 0 0 1 18 0", ...stroke, opacity: ".55" }], "print");
+function paintYou(el, who) { el.replaceChildren(who ? h("b", { text: who[0].toUpperCase() }) : youGlyph()); }
+function orb(who) {
+  const left = h("span", { class: "half l" }); paintYou(left, who);
+  return h("span", { class: "orb", "aria-hidden": "true" }, left, h("span", { class: "half r" }, h("i", { class: "mk" })), h("span", { class: "seal" }));
 }
-
-// ------------------------------------------------------------------ sign in
+function fuse(then) {          // the halves close, turn once and a seal lands; then carry on
+  const o = app.querySelector(".welcome .orb");
+  if (!o || matchMedia("(prefers-reduced-motion: reduce)").matches) return then();
+  o.querySelector(".seal").replaceChildren(tick("sealtick")); o.classList.add("fused");
+  setTimeout(then, 1150);
+}
 function welcomeView(...kids) {
   bar.classList.add("hidden");
-  app.replaceChildren(h("div", { class: "welcome v-rise" }, h("div", { class: "welcome-in" }, ...kids)));
+  const el = h("div", { class: "welcome" }, h("div", { class: "glow", "aria-hidden": "true" }), h("div", { class: "welcome-in" }, ...kids));
+  [...el.querySelector(".welcome-in").children].forEach((c, i) => { c.classList.add("w-rise"); c.style.setProperty("--i", i); });
+  app.replaceChildren(el);
 }
-function brand(title = "Relay", lede) {
-  // no lede: the agents themselves say what this is
-  const crew = h("div", { class: "crew", "aria-hidden": "true" }, ...["claude", "codex", "muse", "gemini", "cursor"].map((p) => avatar(p, 34)));
-  return h("div", { class: "brandline" }, mark("mark hello"), h("h1", { class: "title", text: title }), lede ? h("p", { class: "lede", text: lede }) : crew);
+function brand(title = "Relay", lede, who) {
+  return h("div", { class: "brandline" }, orb(who), h("h1", { class: "title", text: title }), lede ? h("p", { class: "lede", text: lede }) : null);
+}
+const ways = (...links) => h("div", { class: "ways" },
+  ...links.filter(Boolean).flatMap((l, i) => i ? [h("span", { class: "sep", "aria-hidden": "true", text: "·" }), l] : [l]));
+const way = (text, fn, accent) => h("button", { class: "way" + (accent ? " accent" : ""), type: "button", onclick: fn }, text);
+
+function offerPasskey(title, lede, done, extra) {
+  const err = h("p", { class: "err", role: "alert" });
+  const add = h("button", { class: "btn press", type: "button" }, printGlyph(), h("span", { text: "Add a passkey" }));
+  add.addEventListener("click", async () => {
+    add.disabled = true; err.textContent = "";
+    try { await passkeyAdd(KEY); fuse(done); } catch (x) { err.textContent = passkeyErr(x); add.disabled = false; }
+  });
+  welcomeView(brand(title, lede, ME && ME.handle), h("div", { class: "stack tight" }, add, err),
+    ways(...(extra || []), way("Not now", done)));
 }
 
 function signin(message, mode) {
-  mode = mode || (AUTH.email ? "email" : "key");
+  mode = mode || (CAN_PASSKEY ? "start" : AUTH.email ? "email" : "key");
   if (mode === "email") return emailSignin(message);
-  const input = h("input", { class: "field", type: "password", placeholder: "Your Relay key", autocomplete: "current-password",
+  if (mode === "key") return keySignin(message);
+  const err = h("p", { class: "err", role: "alert", text: message || "" });
+  const b = h("button", { class: "btn press", type: "button" }, printGlyph(), h("span", { text: "Sign in with a passkey" }));
+  b.addEventListener("click", async () => {
+    b.disabled = true; err.textContent = "";
+    try { await signedIn(await passkeySignIn(), true); } catch (x) { err.textContent = passkeyErr(x); b.disabled = false; }
+  });
+  welcomeView(brand("Relay", "Face ID, a fingerprint or your PIN."), h("div", { class: "stack tight" }, b, err),
+    ways(AUTH.email ? way("Email me a code", () => signin(null, "email")) : null, way("Use a key", () => signin(null, "key"))),
+    h("p", { class: "first", text: "First time here? Use your admin key, once." }));
+}
+
+function keySignin(message) {
+  const input = h("input", { class: "field", type: "password", placeholder: "Relay key", autocomplete: "current-password",
                               spellcheck: "false", "aria-label": "Your Relay key" });
   const remember = h("input", { type: "checkbox", checked: store.remember() });
   const err = h("p", { class: "err", role: "alert", text: message || "" });
-  const btn = h("button", { class: "btn press", type: "submit" }, "Sign in");
+  const btn = h("button", { class: "btn press", type: "submit" }, "Continue");
   const form = h("form", { class: "stack tight", onsubmit: async (e) => {
     e.preventDefault();
     const k = input.value.trim(); if (!k) return;
@@ -513,60 +543,35 @@ function signin(message, mode) {
       const me = await api("GET", "/agents/me", undefined, k);
       store.remember(remember.checked);
       if (me.role === "admin") { KEY = k; ME = me; return claim(remember.checked); }   // first-time setup
-      KEY = k; ME = me; store.set(k, remember.checked); goTab(agents);
+      KEY = k; ME = me; store.set(k, remember.checked); fuse(() => goTab(agents));
     } catch (x) { err.textContent = x.status === 401 ? "That key isn't recognised." : x.message; btn.disabled = false; }
-  } },
-    input, btn, h("label", { class: "check" }, remember, "Keep me signed in"), err);
-  welcomeView(brand(), passkeyButton(remember, err), form,
-    h("div", { class: "stack tight center" },
-      h("p", { class: "hint", style: "margin:0", text: "First time? Use your admin token, once, to make the hub yours." }),
-      AUTH.email ? h("div", { class: "alt" }, h("button", { class: "link sm", type: "button", onclick: () => signin(null, "email") }, "Use email instead")) : null));
+  } }, input, btn, h("label", { class: "check" }, remember, "Keep me signed in"), err);
+  welcomeView(brand("Relay", "Your key, or the admin key the first time."), form,
+    ways(CAN_PASSKEY ? way("Use a passkey", () => signin(null, "start")) : null, AUTH.email ? way("Email me a code", () => signin(null, "email")) : null));
   input.focus();
 }
 
-function passkeyButton(remember, err) {
-  if (!CAN_PASSKEY) return null;
-  const b = h("button", { class: "btn press", type: "button" }, "Sign in with a passkey");
-  b.addEventListener("click", async () => {
-    b.disabled = true; err.textContent = "";
-    try { store.remember(remember.checked); await signedIn(await passkeySignIn(), true); }
-    catch (x) { err.textContent = passkeyErr(x); b.disabled = false; }
-  });
-  return h("div", { class: "stack tight" }, b, h("p", { class: "hint center", style: "margin:0", text: "Face ID, a fingerprint or your device PIN" }));
-}
-
 function emailSignin(message, prefill) {
-  const input = h("input", { class: "field", type: "email", placeholder: "you@example.com", autocomplete: "email", spellcheck: "false",
+  const input = h("input", { class: "field", type: "email", placeholder: "Email", autocomplete: "email", spellcheck: "false",
                               "aria-label": "Email", value: prefill || "" });
-  const remember = h("input", { type: "checkbox", checked: store.remember() });
   const err = h("p", { class: "err", role: "alert" });
-  const btn = h("button", { class: "btn press", type: "submit" }, "Email me a link");
+  const btn = h("button", { class: "btn press", type: "submit" }, "Email me a code");
   const form = h("form", { class: "stack tight", onsubmit: async (e) => {
     e.preventDefault();
     const email = input.value.trim(); if (!email || !email.includes("@")) { err.textContent = "Type your email first."; return; }
     btn.disabled = true; err.textContent = "";
-    store.remember(remember.checked);
     try { await api("POST", "/auth/email", { email }, null); checkEmail(email); }
     catch (x) { err.textContent = x.message; btn.disabled = false; }
-  } }, input, btn, h("label", { class: "check" }, remember, "Keep me signed in"), err);
-  welcomeView(brand(), message ? h("div", { class: "notice", role: "alert", text: message }) : null, passkeyButton(remember, err), form,
-    h("div", { class: "alt" }, h("button", { class: "link sm muted", type: "button", onclick: () => signin(null, "key") }, "Use a key instead")));
+  } }, input, btn, err);
+  welcomeView(brand("Relay", "We'll email you a code."), message ? h("div", { class: "notice", role: "alert", text: message }) : null, form,
+    ways(CAN_PASSKEY ? way("Use a passkey", () => signin(null, "start")) : null, way("Use a key", () => signin(null, "key"))));
   input.focus();
 }
 
-function envelope() {
-  const s = svg("0 0 112 92", [
-    { tag: "rect", x: "8", y: "18", width: "96", height: "66", rx: "12", class: "paper body" },
-    { d: "M20 18h72a12 12 0 0 1 12 12v42a12 12 0 0 1-12 12H20A12 12 0 0 1 8 72V30a12 12 0 0 1 12-12z", class: "edge body" },
-    { d: "M12 26l44 30 44-30", class: "edge body" },
-    { tag: "circle", cx: "88", cy: "22", r: "14", class: "seal" },
-  ], "envelope");
-  return s;
-}
 function checkEmail(email) {
   let left = 60;     // Supabase sends to one address at most once a minute
-  const resend = h("button", { class: "link sm", type: "button", disabled: true });
-  const note = h("p", { class: "hint center", style: "margin:0", role: "status" });
+  const resend = h("button", { class: "way", type: "button", disabled: true });
+  const note = h("p", { class: "first", role: "status" });
   const paint = () => { resend.textContent = left > 0 ? `Resend in ${left}s` : "Resend"; resend.disabled = left > 0; };
   const count = () => { clearInterval(timer); left = 60; paint(); timer = setInterval(() => { left--; paint(); if (left <= 0) { clearInterval(timer); timer = null; } }, 1000); };
   resend.addEventListener("click", async () => {
@@ -574,10 +579,9 @@ function checkEmail(email) {
     try { await api("POST", "/auth/email", { email }, null); note.textContent = "Sent again."; count(); }
     catch (x) { note.textContent = x.message; resend.disabled = false; }
   });
-  const addr = h("p", { class: "lede", style: "margin:0;color:var(--ink);font-weight:600;overflow-wrap:anywhere", text: email });
   // a code can't be used up by a mail scanner opening links before you do
-  const code = h("input", { class: "field", type: "text", inputmode: "numeric", autocomplete: "one-time-code", maxlength: "12",
-                             placeholder: "Code from the email", spellcheck: "false", "aria-label": "Code from the email" });
+  const code = h("input", { class: "field code", type: "text", inputmode: "numeric", autocomplete: "one-time-code", maxlength: "12",
+                             placeholder: "Code", spellcheck: "false", "aria-label": "Code from the email" });
   const go = h("button", { class: "btn press", type: "submit" }, "Sign in");
   const err = h("p", { class: "err", role: "alert" });
   const form = h("form", { class: "stack tight", onsubmit: async (e) => {
@@ -587,11 +591,9 @@ function checkEmail(email) {
     try { await signedIn(await api("POST", "/auth/verify", { email, code: v }, null)); }
     catch (x) { err.textContent = x.message; go.disabled = false; }
   } }, code, go, err);
-  welcomeView(h("div", { class: "brandline" }, envelope(), h("h1", { class: "title", text: "Check your email" }), addr,
-      h("p", { class: "lede", style: "margin:0", text: "Type the code from the email, or open its link on this device." })),
-    form,
-    h("div", { class: "stack tight center" }, h("div", { class: "alt" }, resend), note,
-      h("div", { class: "alt" }, h("button", { class: "link sm muted", type: "button", onclick: () => { clearInterval(timer); timer = null; signin(null, "key"); } }, "Use a key instead"))));
+  welcomeView(brand("Check your email", email), form,
+    ways(resend, way("Use a key", () => { clearInterval(timer); timer = null; signin(null, "key"); })), note);
+  code.focus();
   count();
 }
 
@@ -602,10 +604,9 @@ async function signedIn(r, byPasskey) {      // a hub session from /auth/session
   if (!byPasskey && CAN_PASSKEY && ME.role === "human") {
     let have = [];
     try { have = await api("GET", "/auth/passkeys"); } catch {}
-    if (!have.length) return offerPasskey("Signed in", "Next time, skip the email: sign in with Face ID, a fingerprint or your device PIN.",
-                                          () => goTab(agents));
+    if (!have.length) return offerPasskey(`Hi, ${ME.handle}`, "Skip the email next time: add a passkey.", () => goTab(agents));
   }
-  goTab(agents);
+  fuse(() => goTab(agents));
 }
 // Mail scanners open links (and run this page) before people do, so a link only signs in on a press.
 function finishLink(link) {
@@ -621,13 +622,13 @@ function finishLink(link) {
       err.textContent = x.message; go.disabled = false;
     }
   });
-  welcomeView(brand("Sign in to Relay"), h("div", { class: "stack tight" }, go, err));
+  welcomeView(brand("Relay", "One tap to finish signing in."), h("div", { class: "stack tight" }, go, err));
   go.focus();
 }
 
 // first sign-in with the admin token: make the hub yours, then forget the token
 function claim(remember) {
-  const name = h("input", { class: "field", type: "text", placeholder: "Your name, like kobby", autocomplete: "username",
+  const name = h("input", { class: "field", type: "text", placeholder: "Your name", autocomplete: "username",
                              spellcheck: "false", maxlength: "32", "aria-label": "Your name" });
   slug(name);
   const err = h("p", { class: "err", role: "alert" });
@@ -642,16 +643,18 @@ function claim(remember) {
       const s = await api("POST", "/auth/session/owner", {}, r.token);
       KEY = s.token; ME = await api("GET", "/agents/me", undefined, s.token);
       store.set(s.token, remember);
-      const c = h("button", { class: "btn quiet press", type: "button" }, "Copy a backup key");
+      const c = way("Copy a backup key", null);
       c.addEventListener("click", () => copy(r.token, c, "Copy a backup key"));
-      if (CAN_PASSKEY) return offerPasskey(`Welcome, ${r.handle}`, "This hub is yours. Add a passkey and you'll never need a key again: "
-        + "sign in and connect apps with Face ID, a fingerprint or your device PIN.", () => goTab(agents), [c]);
-      welcomeView(h("div", { class: "brandline" }, bigTick(), h("h1", { class: "title", text: `Welcome, ${r.handle}` }),
-          h("p", { class: "lede", text: "This hub is yours. Save your key somewhere safe." })),
-        h("div", { class: "stack tight" }, c, h("button", { class: "btn press", type: "button", onclick: () => goTab(agents) }, "Open Relay")));
+      if (CAN_PASSKEY) return offerPasskey(`Welcome, ${r.handle}`, "The hub is yours. Add a passkey and you won't need a key again.",
+        () => goTab(agents), [c]);
+      welcomeView(brand(`Welcome, ${r.handle}`, "The hub is yours. Keep your key somewhere safe.", r.handle),
+        h("div", { class: "stack tight" }, h("button", { class: "btn press", type: "button", onclick: () => fuse(() => goTab(agents)) }, "Open Relay")),
+        ways(c));
     } catch (x) { err.textContent = x.message; btn.disabled = false; }
   } }, name, btn, err);
   welcomeView(brand("Make it yours", "Pick the name you'll go by."), form);
+  const left = app.querySelector(".welcome .half.l");
+  name.addEventListener("input", () => paintYou(left, name.value.trim()));    // your initial takes your half
   name.focus();
 }
 
