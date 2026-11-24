@@ -381,6 +381,7 @@ class Media:
                  now: Callable[[], float] = time.time, log=print, idle_seconds: float = 300):
         self.store, self.private_host, self.threads = store, private_host, threads
         self.key = hashlib.sha256(b"relay-media-links:" + secret.encode()).digest()
+        self.old_keys: list = []
         self.transcriber = transcriber
         self.allow_private, self.max_upload, self.now, self.log, self.idle = allow_private, max_upload, now, log, idle_seconds
         self.public_url = (public_url or os.environ.get("RELAY_PUBLIC_URL") or
@@ -398,6 +399,11 @@ class Media:
                     c.execute(stmt)
             if "origin_artifact" not in {r["name"] for r in c.execute("PRAGMA table_info(media)")}:
                 c.execute("ALTER TABLE media ADD COLUMN origin_artifact TEXT")   # the hub file it was made from
+
+
+    def also_accept(self, secret: str) -> None:
+        """Keep honouring links signed with an older secret (they expire within days anyway)."""
+        self.old_keys.append(hashlib.sha256(b"relay-media-links:" + secret.encode()).digest())
 
     def url(self, path: str) -> str:
         return (self.public_url or "") + path
@@ -575,8 +581,11 @@ class Media:
         if len(parts) != 3 or not re.fullmatch(r"[0-9a-f]{16}", parts[0]) or not parts[1].isdigit():
             raise LookupError("not found")
         mid, exp = "m_" + parts[0], int(parts[1])
-        want = base64.urlsafe_b64encode(hmac.new(self.key, f"{mid}.{exp}".encode(), hashlib.sha256).digest()[:18]).decode()
-        if not hmac.compare_digest(want, parts[2]):
+        good = False
+        for key in [self.key, *self.old_keys]:       # links signed before the hub had its own secret still work
+            want = base64.urlsafe_b64encode(hmac.new(key, f"{mid}.{exp}".encode(), hashlib.sha256).digest()[:18]).decode()
+            good = hmac.compare_digest(want, parts[2]) or good
+        if not good:
             raise LookupError("not found")
         if exp < self.now():
             raise TimeoutError("expired")

@@ -406,6 +406,16 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
             with os.fdopen(fd, "w") as f:
                 f.write(admin_token)
         print(f"[relay] admin token stored in {path}")
+    # The hub's own secret, for what must outlive any change of admin token: saved keys, wake-up
+    # secrets and media links. Made once, in a 0600 file beside the data; never printed or served.
+    secret_path = os.path.join(data_dir, "hub_secret")
+    if os.path.exists(secret_path):
+        hub_secret = open(secret_path).read().strip()
+    else:
+        hub_secret = secrets.token_urlsafe(48)
+        fd = os.open(secret_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(fd, "w") as f:
+            f.write(hub_secret)
     lease = float(lease_seconds or os.environ.get("RELAY_LEASE_SECONDS", 300))
     max_att = int(max_attempts or os.environ.get("RELAY_MAX_ATTEMPTS", 3))
     max_upload = int(max_upload_mb or os.environ.get("RELAY_MAX_UPLOAD_MB", 4096)) * 2**20
@@ -440,11 +450,14 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
     app = FastAPI(title="Relay", version="0.1.0", lifespan=lifespan)
     app.state.store = store
     from .wake import Waker, WakeError
-    waker = Waker(store, admin_token, os.environ.get("RELAY_SECRET_KEY"), opener=wake_opener,
+    from .wake import _cipher
+    waker = Waker(store, admin_token, os.environ.get("RELAY_SECRET_KEY") or hub_secret, opener=wake_opener,
                   check_url=wake_check_url,
                   cooldown=wake_cooldown if wake_cooldown is not None else float(
                       os.environ.get("RELAY_WAKE_COOLDOWN", 20)))
     app.state.waker = waker
+    if not os.environ.get("RELAY_SECRET_KEY"):     # wake-up secrets locked with the admin token move to the hub's own
+        waker.rekey(_cipher(admin_token, None))
 
     # ---------------------------------------------------------------- auth
     def auth(authorization: str = Header(default="")) -> dict:
@@ -1512,10 +1525,12 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
 
     # ---------------------------------------------------------------- media (videos, audio, images, files)
     media_svc = media_mod.Media(
-        store, private_host, os.environ.get("RELAY_SECRET_KEY") or admin_token, transcriber=transcriber,
+        store, private_host, os.environ.get("RELAY_SECRET_KEY") or hub_secret, transcriber=transcriber,
         threads=caption_threads if media_threads is None else media_threads, allow_private=allow_private,
         public_url=caption_public_url, max_upload=max_upload)
     app.state.media = media_svc
+    if not os.environ.get("RELAY_SECRET_KEY"):
+        media_svc.also_accept(admin_token)          # links made before the hub had its own secret keep working
     media_mod.mount(app, SimpleNamespace(auth=auth), media_svc)
 
     def delivered(link: dict, mid: str) -> None:
@@ -1534,9 +1549,11 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
 
     # ---------------------------------------------------------------- saved keys (used, never seen)
     from . import vault as vault_mod
-    vault = vault_mod.Vault(store, _now, os.environ.get("RELAY_VAULT_KEY") or admin_token,
+    vault = vault_mod.Vault(store, _now, os.environ.get("RELAY_VAULT_KEY") or hub_secret,
                             send=vault_send, resolve=vault_resolve)
     app.state.vault = vault
+    if not os.environ.get("RELAY_VAULT_KEY"):
+        vault.rekey(admin_token)                    # saved keys sealed with the admin token move to the hub's own
 
     # ---------------------------------------------------------------- contacts + connector
     from . import connector

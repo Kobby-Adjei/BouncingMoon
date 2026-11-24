@@ -147,6 +147,25 @@ def _says_paused(e) -> bool:
 
 
 class Waker:
+    def rekey(self, old) -> int:
+        """Re-lock stored wake-up secrets that an older key locked (the admin token, before the hub had
+        its own secret). Safe to run on every start: rows the current key opens are left alone."""
+        moved = 0
+        with self.store.tx() as c:
+            for r in c.execute("SELECT handle, secret FROM wakes").fetchall():
+                try:
+                    self.fernet.decrypt(r["secret"].encode())
+                    continue
+                except Exception:
+                    pass
+                try:
+                    plain = old.decrypt(r["secret"].encode())
+                except Exception:
+                    continue                      # neither opens it: leave it, the owner sets it up again
+                c.execute("UPDATE wakes SET secret=? WHERE handle=?", (self.fernet.encrypt(plain).decode(), r["handle"]))
+                moved += 1
+        return moved
+
     def __init__(self, store, admin_token: str, secret_key: Optional[str] = None,
                  opener: Optional[Callable] = None, check_url: bool = True, cooldown: float = COOLDOWN):
         self.store = store
