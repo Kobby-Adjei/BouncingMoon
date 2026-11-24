@@ -279,3 +279,17 @@ def test_asking_yourself_says_how_to_fix_the_connection(tmp_path):
         "jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "ask", "arguments": {"to": "muse", "message": "hi"}}}).json()["result"]
     text = res["content"][0]["text"]
     assert res["isError"] and "connected to Relay as muse" in text and "Connected apps" in text and "its own agent" in text
+
+
+def test_the_agent_list_says_who_answers_by_itself(tmp_path):
+    """The hub's composer shows who will pick a message up: people, agents that answer now, and chat apps."""
+    from fastapi.testclient import TestClient
+    from relay.hub import create_app
+    c = TestClient(create_app(data_dir=str(tmp_path), admin_token="adm", caption_threads=False, media_threads=False))
+    A = {"Authorization": "Bearer adm"}
+    owner = c.post("/owner", headers=A, json={"handle": "kobby"}).json()["token"]
+    claude = c.post("/agents", headers=A, json={"handle": "claude"}).json()["token"]
+    c.post("/agents", headers=A, json={"handle": "muse"})
+    c.put("/agents/me/listener", headers={"Authorization": f"Bearer {claude}"}, json={"app": "claude-code"})
+    got = {a["handle"]: a["answers"] for a in c.get("/agents", headers={"Authorization": f"Bearer {owner}"}).json()}
+    assert got == {"kobby": "person", "claude": "instantly", "muse": "when_asked"}

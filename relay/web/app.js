@@ -1958,24 +1958,62 @@ async function thread(id, people) {
   }
   const list = h("div", { class: "chat" }, id ? h("div", { class: "empty", text: "Loading…" }) : h("div", { class: "sysmsg", text: "Say hello. With instant replies on, they answer right away." }));
   const canPost = ME.role !== "admin";
-  const input = h("textarea", { rows: "1", placeholder: `Message ${people.join(", ")}`, "aria-label": "Message" });
+  const input = h("textarea", { rows: "1", placeholder: "Message, or @ someone", "aria-label": "Message" });
   const send = h("button", { class: "btn send press", type: "submit", "aria-label": "Send" }, icon("send", "2.4"));
   let threadId = id, lastId = 0;
-  input.addEventListener("input", () => { input.style.height = "auto"; input.style.height = Math.min(input.scrollHeight, 140) + "px"; });
+  // @mentions: type @ to pick anyone on the hub; whoever is named joins the conversation. Above the box,
+  // who this goes to and who will actually answer: chat apps only read Relay when you ask them there.
+  const suggest = h("div", { class: "atpick", role: "listbox", "aria-label": "Bring someone in" });
+  const goes = h("div", { class: "goesto", "aria-live": "polite" });
+  const named = () => [...new Set([...input.value.matchAll(/@([a-z0-9._-]+)/g)].map((x) => x[1]).filter((x) => by[x] && x !== ME.handle))];
+  const answersDot = (a) => h("span", { class: "adot " + (a && a.answers === "instantly" ? "now" : a && a.answers === "person" ? "person" : "later") });
+  function paintGoes() {
+    const to = [...new Set([...people, ...named()])];
+    if (!to.length) { goes.replaceChildren(); return; }
+    const now = to.filter((x) => by[x] && by[x].answers === "instantly");
+    const later = to.filter((x) => !now.includes(x) && by[x] && by[x].answers !== "person");
+    goes.replaceChildren(h("span", { class: "k", text: "Goes to" }),
+      ...to.map((x) => h("span", { class: "who" }, answersDot(by[x]), h("span", { text: x }))),
+      h("span", { class: "note", text: now.length ? (later.length ? `${now.join(", ")} answers now; the others when you ask them in their apps.` : "They answer now.")
+        : later.length ? "They read it when you ask them in their apps. Type @ to bring in someone who answers now." : "" }));
+  }
+  function paintPick() {
+    const before = input.value.slice(0, input.selectionStart);
+    const m = before.match(/(?:^|\s)@([a-z0-9._-]*)$/);
+    if (!m) { suggest.replaceChildren(); suggest.classList.remove("open"); return; }
+    const q = m[1];
+    const list = Object.values(by).filter((a) => a.handle !== ME.handle && a.handle.startsWith(q))
+      .sort((x, y) => (y.answers === "instantly") - (x.answers === "instantly") || x.handle.localeCompare(y.handle)).slice(0, 8);
+    suggest.replaceChildren(...list.map((a) => h("button", { class: "atopt press", type: "button", role: "option", onmousedown: (e) => e.preventDefault(), onclick: () => {
+      const start = before.length - q.length - 1;
+      input.value = input.value.slice(0, start) + "@" + a.handle + " " + input.value.slice(input.selectionStart);
+      const at = start + a.handle.length + 2; input.setSelectionRange(at, at); input.focus(); paintPick(); paintGoes();
+    } }, avatar(a, 26), h("span", { class: "nm", text: a.handle }), answersDot(a),
+      h("span", { class: "hint", text: a.answers === "instantly" ? "answers now" : a.answers === "person" ? "person" : "when asked" }))));
+    suggest.classList.toggle("open", list.length > 0);
+  }
+  input.addEventListener("input", () => { input.style.height = "auto"; input.style.height = Math.min(input.scrollHeight, 140) + "px"; paintPick(); paintGoes(); });
+  input.addEventListener("click", paintPick);
   input.addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.shiftKey && !e.isComposing && matchMedia("(pointer: fine)").matches) { e.preventDefault(); input.form.requestSubmit(); } });
   const composer = canPost ? h("div", { class: "composer" }, h("form", { onsubmit: async (e) => {
     e.preventDefault();
     const text = input.value.trim(); if (!text) return;
     send.disabled = true;
+    const joined = named().filter((x) => !people.includes(x));
+    const to = [...people, ...joined];
     try {
-      const m = threadId ? await api("POST", "/messages", { reply_to: lastId || threadId, text, mentions: people })
-                         : await api("POST", "/messages", { channel: "direct", text, mentions: people });
+      const m = threadId ? await api("POST", "/messages", { reply_to: lastId || threadId, text, mentions: to })
+                         : await api("POST", "/messages", { channel: "direct", text, mentions: to });
+      if (joined.length) {                 // they're in the conversation now: the header and the next messages include them
+        people = to; top.querySelector(".title").textContent = people.join(", ");
+        faces.replaceChildren(...people.slice(0, 2).map((x) => avatar(by[x] || { handle: x }, WIDE ? 36 : 44, true)));
+      }
       if (!threadId && view.isConnected && route.startsWith("activity/to/")) setRoute(`activity/${m.thread}`, people);
       threadId = m.thread; input.value = ""; input.style.height = "auto"; refresh();
       if (listRefresh && listPane.dataset.tab === "activity") listRefresh();
     } catch (x) { alert(x.message); }
-    send.disabled = false; input.focus();
-  } }, input, send)) : null;
+    send.disabled = false; input.focus(); paintPick(); paintGoes();
+  } }, input, send), suggest, goes) : null;
   const by = {};
   const faces = h("span", { class: "stackav" });
   const top = head(people.join(", ") || "Conversation", canPost ? null : "Sign in as yourself to reply.", faces);
@@ -1983,6 +2021,7 @@ async function thread(id, people) {
   if (WIDE && view.isConnected) { top.classList.add("panehead"); detailPane.prepend(top); }   // a toolbar above the scrolling messages
   if (composer && view.isConnected) (WIDE ? detailPane : app).append(composer);    // phone: outside the sliding page, so "fixed" means the window
   try { for (const a of await api("GET", "/agents")) by[a.handle] = a; } catch {}
+  if (composer) paintGoes();
   faces.append(...people.slice(0, 2).map((x) => avatar(by[x] || { handle: x }, WIDE ? 36 : 44, true)));
   let shown = 0;
   async function refresh() {

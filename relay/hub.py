@@ -1150,10 +1150,21 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
         with store.ro() as c:
             emails = {r["handle"]: r["email"] for r in c.execute("SELECT handle, email FROM people_emails")
                       if sees_emails or r["handle"] == me["handle"]}      # everyone sees their own
+            try:
+                woken = {r["handle"] for r in c.execute("SELECT handle FROM wakes")}
+            except sqlite3.Error:
+                woken = set()
+
+            def answers(r) -> str:
+                """person, instantly (a wake-up or a listening helper) or when_asked (a chat app)."""
+                if r["role"] == "human":
+                    return "person"
+                listening = r["listener_seen"] and _now() - r["listener_seen"] < 150
+                return "instantly" if r["handle"] in woken or listening else "when_asked"
             return [{"handle": r["handle"], "caps": _loads(r["caps"], []), "role": r["role"],
                      "provider": r["provider"], "client": r["client"], "last_seen": r["last_seen"],
                      "owner": bool(r["owner"]), "listener": listener_out(r),
-                     "email": emails.get(r["handle"])}
+                     "email": emails.get(r["handle"]), "answers": answers(r)}
                     for r in c.execute("SELECT * FROM agents ORDER BY handle")]
 
     @app.get("/agents/me")
