@@ -54,8 +54,13 @@ def test_the_landing_demo_is_honest_and_light():
     assert "A demo · nothing is sent" in page and "nothing was sent" in js
     assert "loop" not in (page + js).lower() and "autoplay" not in (page + js).lower()
     assert not glob.glob(os.path.join(WEB, "*.mp4")) and "hero-run" not in page
-    # no promise the product doesn't keep: strangers are told it's invite-only, and no "No keys"
-    assert "Invite-only" in page and "No keys" not in page
+    # no promise the product doesn't keep: strangers are asked to ask for an invite, and no "No keys"
+    assert "Ask for an invite" in page and "No keys" not in page
+    # the brand team's never-say words stay out of the landing page
+    for words in ("working as one", "It just happens", "any MCP app", "instantly", "seamless", "open source", "any AI"):
+        assert words.lower() not in (page + js).lower(), words
+    # the demo's agent that answers by itself is one that can (Codex with the helper), not a chat app
+    assert 'from: "codex", text: "Watched it.' in js and 'from: "muse"' not in js
     for name in ("ChatGPT", "Grok", "Muse", "Claude"):
         assert name in page, name
 

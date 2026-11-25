@@ -1317,6 +1317,14 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
             q += f" AND {only}"; a += more
             q += " ORDER BY id DESC LIMIT ?" if latest else " ORDER BY id LIMIT ?"; a.append(limit)
             rows = [msg_out(r) for r in c.execute(q, a)]
+            files: dict = {}                            # the files each message carries, for the cards people see
+            if rows:
+                ids = [m["id"] for m in rows]
+                for r in c.execute(f"SELECT msg, media FROM message_media WHERE msg IN ({','.join('?' * len(ids))})"
+                                   " ORDER BY rowid", ids):
+                    files.setdefault(r["msg"], []).append(r["media"])
+        for m in rows:
+            m["media"] = [media_svc.brief(x) for x in files.get(m["id"], [])]
         return rows[::-1] if latest else rows
 
     @app.get("/inbox")

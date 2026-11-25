@@ -530,6 +530,23 @@ class Media:
                 "revoked": bool(r["revoked"]), "digest": d,
                 "has": {k: bool(r[k]) for k in ("playable", "poster", "sheet", "preview")}}
 
+    def brief(self, mid: str) -> dict:
+        """What a conversation in the web app shows for a file: a card with a picture, linking to its page.
+        Links are paths on this hub (the page loads them itself)."""
+        m = self.get(mid)
+        d = m["digest"]
+        out = {"id": mid, "kind": m["kind"] or "file", "name": m["name"], "status": m["status"], "size": m["size"],
+               "duration": d.get("duration"), "width": d.get("width"), "height": d.get("height"),
+               "shots": len(d["shots"]) + 1 if d.get("shots") is not None else None,
+               "transcribed": bool(d.get("transcript"))}
+        if m["revoked"]:
+            return {**out, "status": "removed"}
+        token = self.link(mid)[len(self.public_url or ""):]
+        out["page"] = token
+        if m["has"]["poster"]:
+            out["poster"] = token + "/poster"
+        return out
+
     def can_see(self, c, handle: str, mid: str) -> bool:
         """Its author, and anyone in a conversation it was shared in."""
         r = c.execute("SELECT created_by FROM media WHERE id=?", (mid,)).fetchone()
@@ -981,12 +998,12 @@ class Media:
 
 # --------------------------------------------------------------------------- pages and routes
 PAGE_CSS = """
-:root{--bg:#f6f4ef;--card:#fff;--ink:#18171d;--ink2:#6b6972;--ink3:#c4c1c9;--ghost:#a19ea8;--fill:rgba(24,23,29,.05);--accent:#4f44e0;
+:root{--rh:#18171d;--rm:#f4f3f6;--bg:#f6f4ef;--card:#fff;--ink:#18171d;--ink2:#6b6972;--ink3:#c4c1c9;--ghost:#a19ea8;--fill:rgba(24,23,29,.05);--accent:#4f44e0;
  --accent-hover:#4338d0;--on-accent:#fff;--accent-soft:#e6e4fb;--glow:rgba(79,68,224,.16);--red:#c42838;--green:#22a45d;--seal:#22a45d;--grain:.07;--white-half:#fff;--edge:rgba(24,23,29,.08);
  --ease:cubic-bezier(.22,.8,.24,1);--spring:cubic-bezier(.34,1.5,.55,1);--glide:cubic-bezier(.32,.72,0,1);
  --font:-apple-system,BlinkMacSystemFont,"SF Pro Text","Inter","Segoe UI",system-ui,sans-serif;
  --display:-apple-system,BlinkMacSystemFont,"SF Pro Display","Inter","Segoe UI",system-ui,sans-serif;color-scheme:light dark}
-@media (prefers-color-scheme:dark){:root{--bg:#111014;--card:#201f26;--ink:#f4f3f6;--ink2:#a3a1ab;--ink3:#45434c;--ghost:#6c6975;--fill:rgba(255,255,255,.07);
+@media (prefers-color-scheme:dark){:root{--rh:#f4f3f6;--rm:#18171d;--bg:#111014;--card:#201f26;--ink:#f4f3f6;--ink2:#a3a1ab;--ink3:#45434c;--ghost:#6c6975;--fill:rgba(255,255,255,.07);
  --accent:#9a93ff;--accent-hover:#aba5ff;--on-accent:#0e0d12;--accent-soft:#2b2944;--glow:rgba(154,147,255,.14);--red:#ff7076;--green:#46d58b;--grain:.05;--white-half:#f4f3f6;--edge:rgba(255,255,255,.16)}}
 *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
 html,body{margin:0;background:var(--bg);color:var(--ink);min-height:100%}
@@ -1009,14 +1026,14 @@ main{position:relative;z-index:1;min-height:100vh;display:flex;justify-content:c
 .brand{display:flex;align-items:center;gap:9px;margin:0 0 22px;color:var(--ink2);font:600 13.5px var(--font);letter-spacing:-.01em}
 .mini{display:flex;width:22px;height:22px;gap:1.5px}.mini i{flex:1}
 .mini i:first-child{border-radius:99px 0 0 99px;background:var(--white-half);box-shadow:0 0 0 .5px rgba(24,23,29,.14),0 3px 6px -3px rgba(24,23,29,.35)}
-.mini i:last-child{border-radius:0 99px 99px 0;background:#18171d;display:grid;place-items:center;box-shadow:0 0 0 .5px var(--edge)}
-.mini i:last-child:after{content:"";width:4px;height:8px;border-radius:0 8px 8px 0;background:#f4f3f6;margin-right:4px}
+.mini i:last-child{border-radius:0 99px 99px 0;background:var(--rh);display:grid;place-items:center;box-shadow:0 0 0 .5px var(--edge)}
+.mini i:last-child:after{content:"";width:4px;height:8px;border-radius:0 8px 8px 0;background:var(--rm);margin-right:4px}
 .orb{position:relative;width:92px;height:92px;display:flex;gap:6px;margin:0 0 26px;transition:gap .3s var(--glide)}
 .half{flex:1;display:grid;place-items:center;overflow:hidden;position:relative}
 .half.l{border-radius:999px 0 0 999px;border:1.5px dashed var(--ghost);border-right-style:solid;border-right-color:transparent;
  transition:background-color .3s var(--ease),border-color .3s var(--ease),box-shadow .3s var(--ease)}
-.half.r{border-radius:0 999px 999px 0;background:#18171d;box-shadow:0 1px 0 rgba(255,255,255,.08) inset,0 14px 30px -14px rgba(24,23,29,.5),0 0 0 .5px var(--edge)}
-.half.r .mk{display:block;width:18px;height:36px;border-radius:0 36px 36px 0;background:#f4f3f6;margin-right:18px;transition:opacity .2s var(--ease)}
+.half.r{border-radius:0 999px 999px 0;background:var(--rh);box-shadow:0 1px 0 rgba(255,255,255,.08) inset,0 14px 30px -14px rgba(24,23,29,.5),0 0 0 .5px var(--edge)}
+.half.r .mk{display:block;width:18px;height:36px;border-radius:0 36px 36px 0;background:var(--rm);margin-right:18px;transition:opacity .2s var(--ease)}
 .seal{position:absolute;left:50%;top:50%;width:46px;height:46px;margin:-23px 0 0 -23px;border-radius:50%;background:var(--seal);color:#fff;
  display:grid;place-items:center;opacity:0;box-shadow:0 0 0 5px var(--bg),0 12px 26px -10px rgba(34,164,93,.6)}
 .seal svg{width:24px;height:24px}

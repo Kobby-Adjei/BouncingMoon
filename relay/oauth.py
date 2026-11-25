@@ -315,7 +315,7 @@ def mount(app, hub) -> None:
                 f"<div class=orb id=orb aria-hidden=true><span class='half l'>{left}</span>"
                 f"<span class='half r' id=rhalf><i class=mk></i></span><span class=seal id=seal></span></div>"
                 f"<h1 class=title id=title>Connect {html.escape(cl['name'])} to Relay</h1>"
-                f"<p class=lede id=lede>Choose {html.escape(cl['name'] or 'this app')}&rsquo;s name on Relay.</p>"
+                f"<p class=lede id=lede>Pick its name.</p>"
                 f"<section class=step id=step aria-live=polite></section>"
                 f"<p class=foot id=foot>Returns to {html.escape(host)}</p></div>"
                 f"<script nonce='{nonce}'>const BOOT={json.dumps(boot)};{PAGE_JS}</script>")
@@ -662,12 +662,12 @@ GRAIN = ("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width=
          "values='0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 .55 0'/></filter><rect width='100%25' height='100%25' filter='url(%23n)'/></svg>")
 
 PAGE_CSS = """
-:root{--bg:#f6f4ef;--card:#fff;--ink:#18171d;--ink2:#6b6972;--ink3:#c4c1c9;--fill:rgba(24,23,29,.05);--accent:#4f44e0;--accent-hover:#4338d0;
+:root{--rh:#18171d;--rm:#f4f3f6;--bg:#f6f4ef;--card:#fff;--ink:#18171d;--ink2:#6b6972;--ink3:#c4c1c9;--fill:rgba(24,23,29,.05);--accent:#4f44e0;--accent-hover:#4338d0;
  --on-accent:#fff;--accent-soft:#e6e4fb;--glow:rgba(79,68,224,.16);--red:#c42838;--green:#22a565;--grain:.07;
  --ease:cubic-bezier(.22,.8,.24,1);--spring:cubic-bezier(.34,1.5,.55,1);--glide:cubic-bezier(.32,.72,0,1);
  --font:-apple-system,BlinkMacSystemFont,"SF Pro Text","Inter","Segoe UI",system-ui,sans-serif;
  --display:-apple-system,BlinkMacSystemFont,"SF Pro Display","Inter","Segoe UI",system-ui,sans-serif;color-scheme:light dark}
-@media (prefers-color-scheme:dark){:root{--bg:#111014;--card:#201f26;--ink:#f4f3f6;--ink2:#a3a1ab;--ink3:#45434c;--fill:rgba(255,255,255,.07);
+@media (prefers-color-scheme:dark){:root{--rh:#f4f3f6;--rm:#18171d;--bg:#111014;--card:#201f26;--ink:#f4f3f6;--ink2:#a3a1ab;--ink3:#45434c;--fill:rgba(255,255,255,.07);
  --accent:#9a93ff;--accent-hover:#aba5ff;--on-accent:#0e0d12;--accent-soft:#2b2944;--glow:rgba(154,147,255,.14);--red:#ff7076;--green:#46d58b;--grain:.05}}
 *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
 html,body{margin:0;background:var(--bg);color:var(--ink);min-height:100%}
@@ -691,11 +691,11 @@ main{position:relative;z-index:1;min-height:100vh;display:flex;justify-content:c
 .half{flex:1;display:grid;place-items:center;overflow:hidden;position:relative;
  box-shadow:0 1px 0 rgba(255,255,255,.6) inset,0 18px 40px -18px rgba(24,23,29,.35),0 0 0 .5px rgba(24,23,29,.08)}
 .half.l{border-radius:999px 0 0 999px;background:var(--card);animation:inL .9s var(--spring) both}
-.half.r{border-radius:0 999px 999px 0;background:#18171d;animation:inR .9s var(--spring) .08s both}
+.half.r{border-radius:0 999px 999px 0;background:var(--rh);animation:inR .9s var(--spring) .08s both}
 .half img{width:52px;height:52px}.half.l img{margin-left:22px}.half.r img,.half.r b,.half.r .mk{margin-right:22px}
 .half b{font:700 44px/1 var(--display);color:var(--ink2)}.half.l b{margin-left:22px}
 .half.r.agent{background:var(--card)}.half.r.agent b{color:var(--accent)}.half.r.new{background:var(--accent-soft)}
-.half.r .mk{width:34px;height:68px;border-radius:0 68px 68px 0;background:#f4f3f6;display:block;margin-right:34px}
+.half.r .mk{width:34px;height:68px;border-radius:0 68px 68px 0;background:var(--rm);display:block;margin-right:34px}
 .half.r .face{display:grid;place-items:center;animation:flipin .55s var(--spring) backwards}
 .half.r.new .face svg{width:54px;height:54px;color:var(--accent);margin-right:20px}
 .seal{position:absolute;left:50%;top:50%;width:64px;height:64px;margin:-32px 0 0 -32px;border-radius:50%;background:var(--green);color:#fff;
@@ -723,7 +723,6 @@ main{position:relative;z-index:1;min-height:100vh;display:flex;justify-content:c
 .newname{display:grid;grid-template-rows:0fr;width:100%;transition:grid-template-rows .45s var(--glide),margin .45s var(--glide)}
 .newname>div{overflow:hidden;display:flex;justify-content:center;padding:6px 8px 4px}.newname.open{grid-template-rows:1fr;margin-top:2px}
 .newname:not(.open)>div{padding-block:0;visibility:hidden}
-.reach{margin:0;color:var(--ink2);font-size:13px;max-width:34ch}
 .warn{display:none;margin:2px 0 0;padding:10px 16px;border-radius:18px;background:var(--accent-soft);color:var(--ink);font-size:13.5px;line-height:1.4;max-width:34ch}
 .warn.on{display:block;animation:rise .4s var(--ease) both}
 @media (max-width:440px){main{padding-top:max(26px,env(safe-area-inset-top))}.orb{width:132px;height:132px;gap:5px;margin-bottom:20px}
@@ -775,7 +774,8 @@ const G={print:'<svg viewBox="0 0 26 26" fill="none" stroke="currentColor" strok
  tick:'<svg viewBox="0 0 30 30" fill="none"><path d="M8 15.5l4.6 4.6L22.5 10" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/></svg>'};
 const LOGOS=['claude','codex','gemini','copilot','muse','openai','grok','cursor'];
 const mark=(p,name)=>LOGOS.includes(p)?$('img',{src:'/logos/'+p+'.svg',alt:''}):$('b',{text:(name||'?')[0].toUpperCase()});
-function right(kind,p,name){rhalf.className='half r '+kind;rhalf.replaceChildren(kind==='new'?$('span',{class:'face',html:G.add}):$('span',{class:'face'},mark(p,name)))}
+// the right half is always Relay's: the app joins Relay. The chosen name shows in the picker, not in the orb
+function right(){}
 function keep(on){return $('label',{class:'keep'},$('input',{type:'checkbox',id:'keep',...(on?{checked:''}:{})}),'Keep me signed in')}
 function signedIn(tok,stay){cred=tok;const k=document.getElementById('keep');store.set(tok,k?k.checked:stay!==false);consent()}
 function signIn(msg){const err=$('p',{class:'err',role:'alert',text:msg||''});const parts=[];
@@ -818,17 +818,14 @@ async function consent(){let d;try{d=await api('GET','/oauth/request/'+BOOT.requ
   const other=a&&a.provider&&d.provider&&a.provider!==d.provider;
   warn.textContent=other?d.app_label+' will send and read messages as '+a.handle+'. To talk to '+a.handle+', pick '+((d.agents.find(x=>x.provider===d.provider)||{}).handle||'New')+', then ask '+a.handle+' from '+d.app_label+'.':'';
   warn.classList.toggle('on',!!other);
-  const name=v==='__new__'?(nn.value.trim()||'the new name'):v;
-  const reachable=d.agents.map(x=>x.handle).filter(h=>h!==v);
-  reach.textContent=reachable.length?'As '+name+', '+d.app_label+' can message everyone here: '+reachable.slice(0,4).join(', ')+(reachable.length>4?', and more.':'.'):''};
+};
  group.addEventListener('change',e=>{const c=e.target.closest('.coin');c.classList.remove('tap');void c.offsetWidth;c.classList.add('tap');pick()});
  const err=$('p',{class:'err',role:'alert'});
  const warn=$('p',{class:'warn',role:'status'});
- const me=$('div',{class:'me'},$('span',{html:'<b></b>'}),$('span',{text:'·'}),$('button',{class:'tl',on:{click:()=>{store.clear();cred=null;right('','');rhalf.replaceChildren($('i',{class:'mk'}));signIn()}}},'Switch'));
+ const me=$('div',{class:'me'},$('span',{html:'<b></b>'}),$('span',{text:'·'}),$('button',{class:'tl',on:{click:()=>{store.clear();cred=null;signIn()}}},'Switch'));
  me.querySelector('b').textContent=d.you;
- const reach=$('p',{class:'reach'});
  nn.addEventListener('input',()=>pick());
- show(group,moreBtn,box,reach,warn,err,$('button',{class:'btn',id:'allow',on:{click:()=>allow(nn,err)}},'Allow'),me,$('button',{class:'tl',on:{click:deny}},'Cancel'));pick()}
+ show(group,moreBtn,box,warn,err,$('button',{class:'btn',id:'allow',on:{click:()=>allow(nn,err)}},'Allow'),me,$('button',{class:'tl',on:{click:deny}},'Cancel'));pick()}
 async function allow(nn,err){const v=(document.querySelector('input[name=who]:checked')||{}).value;
  const body=v==='__new__'?{request:BOOT.request,new_agent:nn.value.trim()}:{request:BOOT.request,agent:v};
  const b=document.getElementById('allow');b.disabled=true;err.textContent='';
