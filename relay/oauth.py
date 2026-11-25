@@ -567,7 +567,7 @@ def mount(app, hub) -> None:
         return {"challenge": new_challenge("create", handle), "rp": {"id": rp, "name": "Relay"},
                 "user": {"id": W.b64u(handle.encode()), "name": handle, "displayName": handle},
                 "pubKeyCredParams": [{"type": "public-key", "alg": a} for a in W.ALGS],
-                "authenticatorSelection": {"residentKey": "required", "userVerification": "preferred"},
+                "authenticatorSelection": {"residentKey": "required", "userVerification": "required"},
                 "excludeCredentials": [{"type": "public-key", "id": x} for x in have],
                 "timeout": CHALLENGE_SECONDS * 1000, "attestation": "none"}
 
@@ -593,7 +593,7 @@ def mount(app, hub) -> None:
     @app.post("/auth/passkey/options", include_in_schema=False)
     def passkey_options(request: Request):
         iss, rp = site(request)
-        return {"challenge": new_challenge("get", None), "rpId": rp, "userVerification": "preferred",
+        return {"challenge": new_challenge("get", None), "rpId": rp, "userVerification": "required",
                 "timeout": CHALLENGE_SECONDS * 1000}
 
     @app.post("/auth/passkey/signin", include_in_schema=False)
@@ -635,8 +635,12 @@ def mount(app, hub) -> None:
     def delete_passkey(cred_id: str, me: dict = Depends(auth)):
         handle = person_of(me)
         with store.tx() as c:
-            if not c.execute("DELETE FROM passkeys WHERE cred_id=? AND handle=?", (cred_id, handle)).rowcount:
+            mine = [r["cred_id"] for r in c.execute("SELECT cred_id FROM passkeys WHERE handle=?", (handle,))]
+            if cred_id not in mine:
                 raise HTTPException(404, "no such passkey")
+            if len(mine) == 1 and not hub.email_on:      # with no email sign-in, it's the only way back in
+                raise HTTPException(409, "This is your only way to sign in. Add another passkey first.")
+            c.execute("DELETE FROM passkeys WHERE cred_id=? AND handle=?", (cred_id, handle))
         return {"removed": cred_id}
 
 

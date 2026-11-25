@@ -156,6 +156,8 @@ def check_flags(ad: dict, rp_id: str) -> None:
         raise PasskeyError("made for another site")
     if not ad["flags"] & 0x01:                         # UP: someone was there
         raise PasskeyError("no one was present")
+    if not ad["flags"] & 0x04:                         # UV: and it was them (Face ID, a fingerprint, the PIN)
+        raise PasskeyError("the device didn't check who it was")
 
 
 def registration(body: dict, challenge: str, origin: str, rp_id: str) -> dict:

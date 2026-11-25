@@ -232,9 +232,9 @@ class Authenticator:
         return {"id": W.b64u(self.cred), "response": {"clientDataJSON": W.b64u(cd),
                 "attestationObject": W.b64u(self.cbor({"fmt": "none", "attStmt": {}, "authData": ad}))}}
 
-    def get(self, opts, origin, user):
+    def get(self, opts, origin, user, flags=0x05):
         self.count += 1
-        ad = hashlib.sha256(opts["rpId"].encode()).digest() + bytes([0x05]) + struct.pack(">I", self.count)
+        ad = hashlib.sha256(opts["rpId"].encode()).digest() + bytes([flags]) + struct.pack(">I", self.count)
         cd = json.dumps({"type": "webauthn.get", "challenge": opts["challenge"], "origin": origin}).encode()
         sig = self.key.sign(ad + hashlib.sha256(cd).digest(), ec.ECDSA(hashes.SHA256()))
         return {"id": W.b64u(self.cred), "response": {"clientDataJSON": W.b64u(cd), "authenticatorData": W.b64u(ad),
@@ -340,3 +340,24 @@ def test_an_app_cant_break_out_of_the_allow_page_with_its_name(hub):
     assert "<meta http-equiv=refresh" not in body and "evil.example\">" not in body
     boot = json.loads(re.search(r"const BOOT=(\{.*?\});", body).group(1))
     assert boot["app"] == evil                                 # the name itself is kept, as plain text
+
+
+def test_a_passkey_must_check_who_it_is_and_the_last_one_cant_be_removed(hub):
+    c, owner = hub
+    phone, laptop = Authenticator(), Authenticator()
+    H = {"Authorization": f"Bearer {owner}"}
+    assert c.post("/auth/passkey/options").json()["userVerification"] == "required"
+    for dev in (phone, laptop):
+        opts = c.post("/auth/passkey/register/options", headers=H).json()
+        assert opts["authenticatorSelection"]["userVerification"] == "required"
+        c.post("/auth/passkey/register", headers=H, json={**dev.create(opts, "http://testserver"), "label": "iPhone"})
+    # a tap with no Face ID, fingerprint or PIN behind it isn't enough
+    o = c.post("/auth/passkey/options").json()
+    assert c.post("/auth/passkey/signin", json=phone.get(o, "http://testserver", "kobby", flags=0x01)).status_code == 401
+    keys = c.get("/auth/passkeys", headers=H).json()
+    assert [k["name"] for k in keys] == ["iPhone", "iPhone"]
+    assert c.delete(f"/auth/passkeys/{keys[0]['id']}", headers=H).status_code == 200
+    # with no email sign-in on this hub, the last passkey is the only way back in: it stays
+    last = c.delete(f"/auth/passkeys/{keys[1]['id']}", headers=H)
+    assert last.status_code == 409 and "only way" in last.json()["detail"]
+    assert len(c.get("/auth/passkeys", headers=H).json()) == 1

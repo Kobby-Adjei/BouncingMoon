@@ -325,7 +325,7 @@ function known(r) {
   if (top === "agents") return !y || !!x && (y === "wake" || ONE_TIME.has(y));
   if (top === "activity") return !x || (x === "new" && !y) || (x === "to" && !!y) || (/^\d+$/.test(x) && !y);
   if (top === "add") return isOwner() && (!y || (y === "withkey" && !!x));
-  if (top === "me") return (!x || (x === "apps" && !y) || (x === "keys" && (!y || y === "new" || /^k_[0-9a-f]{12}$/.test(y))))
+  if (top === "me") return (!x || ((x === "apps" || x === "passkeys") && !y) || (x === "keys" && (!y || y === "new" || /^k_[0-9a-f]{12}$/.test(y))))
     && !!ME && ME.role !== "admin";
   if (top === "approve") return !!ME && ME.role === "human" && /^c_[0-9a-f]{16}$/.test(x || "") && !y;
   if (top === "ask") return isOwner() && /^ir_[0-9a-f]{12}$/.test(x || "") && !y;
@@ -362,6 +362,7 @@ function screenFor(r) {
     return a.style === "allow" && p[2] !== "withkey" ? [allowGuide, a] : [addName, a];
   }
   if (p[0] === "me" && p[1] === "apps") return [appsScreen];
+  if (p[0] === "me" && p[1] === "passkeys") return [passkeysScreen];
   if (p[0] === "me" && p[1] === "keys") return !p[2] ? [keysScreen] : p[2] === "new" ? [keyNew] : [keyDetail, p[2]];
   if (p[0] === "approve") return [approveScreen, p[1]];
   if (p[0] === "ask") return [askScreen, p[1]];
@@ -484,8 +485,14 @@ async function passkeyAdd(key) {
   const o = await api("POST", "/auth/passkey/register/options", {}, key);
   const c = await navigator.credentials.create({ publicKey: { ...o, challenge: unb64u(o.challenge), user: { ...o.user, id: unb64u(o.user.id) },
     excludeCredentials: o.excludeCredentials.map((x) => ({ ...x, id: unb64u(x.id) })) } });
-  return api("POST", "/auth/passkey/register", { id: c.id, type: c.type, label: navigator.platform || "passkey",
+  return api("POST", "/auth/passkey/register", { id: c.id, type: c.type, label: deviceName(),
     response: { clientDataJSON: b64u(c.response.clientDataJSON), attestationObject: b64u(c.response.attestationObject) } }, key);
+}
+function deviceName() {        // what the list calls this passkey: the kind of device it lives on
+  const ua = navigator.userAgent || "";
+  for (const [rx, name] of [[/iPhone/, "iPhone"], [/iPad/, "iPad"], [/Android/, "Android"], [/CrOS/, "Chromebook"],
+    [/Macintosh|Mac OS/, "Mac"], [/Windows/, "Windows"], [/Linux/, "Linux"]]) if (rx.test(ua)) return name;
+  return "Passkey";
 }
 const passkeyErr = (x) => x && x.name === "NotAllowedError" ? "Cancelled, or no passkey for Relay on this device." : (x && x.message) || "That didn't work.";
 // ------------------------------------------------------------------ sign in: two halves make a whole
@@ -1157,6 +1164,8 @@ async function meScreen() {
       ME.owner ? h("span", { class: "pill-tag", text: "Owner" }) : null),
     h("div", { class: "stack" }, h("button", { class: "door press", type: "button", onclick: () => nav("me/apps") },
         miniOrb("claude", "relay", 40), h("span", { class: "grow" }, h("b", { text: "Connected apps" })), chev()),
+      h("button", { class: "door press", type: "button", onclick: () => nav("me/passkeys") },
+        passOrb(40), h("span", { class: "grow" }, h("b", { text: "Passkeys" })), chev()),
       h("button", { class: "door press", type: "button", onclick: () => nav("me/keys") },
         keyOrb("", 40), h("span", { class: "grow" }, h("b", { text: "Keys" })), chev()),
       ME.owner ? h("button", { class: "door press", type: "button", onclick: (e) => saveBackup(e.currentTarget) },
@@ -1290,6 +1299,54 @@ function since(t) {           // when something happened, in words
   if (s < 3600) return `${Math.floor(s / 60)} min ago`;
   if (s < 86400) return `${Math.floor(s / 3600)} h ago`;
   return new Date(t * 1000).toLocaleDateString(undefined, { month: "short", day: "numeric" });
+}
+
+// ------------------------------------------------------------------ passkeys: your devices, each one a way back in
+function passOrb(size) {          // you (a fingerprint) and Relay
+  return h("span", { class: "morb", style: `--s:${size}px`, "aria-hidden": "true" },
+    h("span", { class: "mh l" }, printGlyph()), h("span", { class: "mh r dark" }, h("i", { class: "mk" })));
+}
+async function passkeysScreen() {
+  const tk = ticket();
+  const err = h("p", { class: "err", role: "alert" });
+  const add = CAN_PASSKEY ? h("button", { class: "btn small press", type: "button" }, icon("plus", "2.4"), "Add") : null;
+  const list = h("div", { class: "pairs" });
+  const view = screen("passkeys", tk, head("Passkeys", "One per device you sign in on.", add), list, err);
+  async function load() {
+    let keys = [];
+    try { keys = await api("GET", "/auth/passkeys"); } catch (x) { err.textContent = x.message; return; }
+    if (!view.isConnected) return;
+    if (!keys.length) return list.replaceChildren(h("div", { class: "noapps" }, passOrb(92), h("b", { text: "No passkeys yet" })));
+    list.replaceChildren(...keys.map((k, i) => passRow(k, i, keys.length)));
+  }
+  function passRow(k, i, count) {
+    const off = h("button", { class: "unpair press", type: "button" }, "Remove");
+    const rowErr = h("p", { class: "err" });
+    const item = h("div", { class: "pair", style: `--i:${i}` }, passOrb(60),
+      h("div", { class: "grow" }, h("b", { text: k.name || "Passkey" }),
+        h("span", { class: "when", text: `Added ${since(k.created)}` + (k.last_used ? ` · used ${since(k.last_used)}` : "") })), off, rowErr);
+    let armed = false;
+    off.addEventListener("click", async () => {
+      if (!armed) {                     // first tap arms it; the second one removes
+        armed = true; off.textContent = count === 1 ? "Your only one?" : "Remove?"; off.classList.add("armed");
+        setTimeout(() => { if (armed && off.isConnected) { armed = false; off.textContent = "Remove"; off.classList.remove("armed"); } }, 3500);
+        return;
+      }
+      off.disabled = true; rowErr.textContent = "";
+      try {
+        await api("DELETE", `/auth/passkeys/${encodeURIComponent(k.id)}`);
+        item.classList.add("splitting");
+        setTimeout(() => { item.classList.add("gone"); setTimeout(load, 420); }, 380);
+      } catch (x) { rowErr.textContent = x.message; off.disabled = false; armed = false; off.textContent = "Remove"; off.classList.remove("armed"); }
+    });
+    return item;
+  }
+  if (add) add.addEventListener("click", async () => {
+    add.disabled = true; err.textContent = "";
+    try { await passkeyAdd(KEY); await load(); } catch (x) { err.textContent = passkeyErr(x); }
+    add.disabled = false;
+  });
+  await load();
 }
 
 async function keysScreen() {
