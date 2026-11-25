@@ -66,7 +66,18 @@ class InviteAsk(BaseModel):
     name: str
     contact: str
     note: Optional[str] = None
+    apps: list[str] = Field(default_factory=list, max_length=12)   # the AI apps they use, as the form offers them
     website: Optional[str] = None       # left empty by people; bots fill every field they see
+
+
+class FriendAsk(BaseModel):
+    name: str = Field(max_length=60)
+    contact: str = Field(max_length=120)
+    note: Optional[str] = Field(default=None, max_length=300)
+
+
+APP_CHOICES = {"claude", "chatgpt", "grok", "muse", "claude-code", "codex", "gemini", "cursor", "other"}
+FRIEND_INVITES = 3                       # each person may put this many friends forward; the owner still decides
 
 
 ASKS_PER_HOUR, ASKS_WAITING = 3, 200     # per address, and in all
@@ -453,6 +464,10 @@ def mount(app, hub, supabase: Optional[Supabase], resend: Optional[Resend] = Non
     with store.tx() as c:
         c.execute("CREATE TABLE IF NOT EXISTS invite_requests(id TEXT PRIMARY KEY, name TEXT NOT NULL, contact TEXT NOT NULL,"
                   " note TEXT, origin TEXT, created REAL NOT NULL, status TEXT NOT NULL DEFAULT 'waiting', handled REAL)")
+        cols = {r["name"] for r in c.execute("PRAGMA table_info(invite_requests)")}
+        for col in ("apps TEXT", "by TEXT"):       # which AI apps they use; the person who put them forward
+            if col.split()[0] not in cols:
+                c.execute(f"ALTER TABLE invite_requests ADD COLUMN {col}")
 
     @app.post("/invite-requests")
     def ask_for_invite(body: InviteAsk, request: Request):
@@ -469,16 +484,67 @@ def mount(app, hub, supabase: Optional[Supabase], resend: Optional[Resend] = Non
                 raise HTTPException(429, "You've asked already. The owner will get back to you.")
             if c.execute("SELECT COUNT(*) n FROM invite_requests WHERE status='waiting'").fetchone()["n"] >= ASKS_WAITING:
                 raise HTTPException(429, "Lots of people asked today. Try again tomorrow.")
-            c.execute("INSERT INTO invite_requests(id,name,contact,note,origin,created) VALUES (?,?,?,?,?,?)",
-                      ("ir_" + secrets.token_hex(6), name, contact, note, origin, now))
+            apps = sorted({a for a in body.apps if a in APP_CHOICES})
+            c.execute("INSERT INTO invite_requests(id,name,contact,note,origin,created,apps) VALUES (?,?,?,?,?,?,?)",
+                      ("ir_" + secrets.token_hex(6), name, contact, note, origin, now, json.dumps(apps)))
+        return {"asked": True}
+
+    @app.get("/invite-requests/friends")
+    def friends(me: dict = Depends(auth)):
+        """How many friends this person may still put forward, and what happened to the ones they did."""
+        if me["role"] != "human":
+            raise HTTPException(403, "Only people invite friends.")
+        with store.ro() as c:
+            rows = c.execute("SELECT name, status FROM invite_requests WHERE by=? ORDER BY created", (me["handle"],)).fetchall()
+        return {"left": max(0, FRIEND_INVITES - len(rows)), "asked": [{"name": r["name"], "status": r["status"]} for r in rows]}
+
+    @app.post("/invite-requests/friend")
+    def invite_friend(body: FriendAsk, me: dict = Depends(auth)):
+        """A person puts a friend forward. It lands with the owner like any ask, saying who it's from."""
+        if me["role"] != "human":
+            raise HTTPException(403, "Only people invite friends.")
+        name, contact = body.name.strip(), body.contact.strip()
+        if not name or len(contact) < 3:
+            raise HTTPException(400, "Add their name and how to reach them.")
+        with store.tx() as c:
+            if c.execute("SELECT COUNT(*) n FROM invite_requests WHERE by=?", (me["handle"],)).fetchone()["n"] >= FRIEND_INVITES:
+                raise HTTPException(429, f"You've put {FRIEND_INVITES} friends forward already.")
+            c.execute("INSERT INTO invite_requests(id,name,contact,note,origin,created,apps,by) VALUES (?,?,?,?,?,?,?,?)",
+                      ("ir_" + secrets.token_hex(6), name, contact, (body.note or "").strip() or None,
+                       hub.hash("friend:" + me["handle"]), hub.now(), "[]", me["handle"]))
         return {"asked": True}
 
     @app.get("/invite-requests")
     def invite_requests(me: dict = Depends(auth)):
         need_owner(me)
         with store.ro() as c:
-            return [{"id": r["id"], "name": r["name"], "contact": r["contact"], "note": r["note"], "created": r["created"]}
+            return [{"id": r["id"], "name": r["name"], "contact": r["contact"], "note": r["note"], "created": r["created"],
+                     "apps": json.loads(r["apps"] or "[]"), "by": r["by"]}
                     for r in c.execute("SELECT * FROM invite_requests WHERE status='waiting' ORDER BY created DESC LIMIT 100")]
+
+    @app.get("/stats")
+    def stats(me: dict = Depends(auth)):
+        """How it's going, for the hub's owner: counted on this hub, never sent anywhere."""
+        need_owner(me)
+        week = hub.now() - 7 * 86400
+        with store.ro() as c:
+            one = lambda q, *a: c.execute(q, a).fetchone()[0]
+            asked = [json.loads(r["apps"] or "[]") for r in c.execute("SELECT apps FROM invite_requests WHERE by IS NULL")]
+            wanted = {}
+            for apps in asked:
+                for a in apps:
+                    wanted[a] = wanted.get(a, 0) + 1
+            return {
+                "asked": len(asked), "waiting": one("SELECT COUNT(*) FROM invite_requests WHERE status='waiting'"),
+                "friends_put_forward": one("SELECT COUNT(*) FROM invite_requests WHERE by IS NOT NULL"),
+                "invited": one("SELECT COUNT(*) FROM invites WHERE role='human' AND revoked IS NULL"),
+                "people": one("SELECT COUNT(*) FROM agents WHERE role='human' AND owner=0"),
+                "apps_connected": one("SELECT COUNT(*) FROM agents WHERE role='agent' AND last_seen IS NOT NULL"),
+                "agent_conversations": one(
+                    "SELECT COUNT(*) FROM (SELECT m.thread FROM messages m JOIN agents a ON a.handle=m.sender AND a.role='agent'"
+                    " GROUP BY m.thread HAVING COUNT(DISTINCT m.sender) >= 2)"),
+                "active_week": one("SELECT COUNT(*) FROM agents WHERE last_seen>?", week),
+                "wanted": sorted(wanted.items(), key=lambda x: -x[1])}
 
     def handle_ask(rid: str, me: dict, status: str) -> dict:
         need_owner(me)
