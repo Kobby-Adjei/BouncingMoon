@@ -457,9 +457,56 @@ function drawMe() {
     avatar({ handle: ME.handle, role: "human" }, WIDE ? 36 : 32)) : "");
 }
 // on a desktop, the detail pane when nothing is open
-function pickHint(tab) {
+// A big screen's right half is never a dead "pick one": Activity opens what matters (something waiting for
+// your OK, else the newest conversation) the first time; otherwise it's an overview you can act on.
+const autoOpened = new Set();
+async function pickHint(tab) {
   const tk = ticket();
-  screen("pick", tk, blank(tab === "activity" ? "Pick a conversation" : "Pick an agent"));
+  if (tab === "activity" && !autoOpened.has("activity")) {
+    autoOpened.add("activity");
+    try {
+      const asks = ME.role === "human" ? await api("GET", "/approvals").catch(() => []) : [];
+      if (asks.length) return nav(`approve/${asks[0].id}`, { replace: true });
+      const msgs = await api("GET", "/messages?latest=true&limit=100");
+      const count = {};
+      for (const m of msgs) count[m.thread] = (count[m.thread] || 0) + 1;
+      const last = [...msgs].reverse().find((m) => !(count[m.thread] === 1 && /^🔑 Asking /u.test(m.text || "")));
+      if (last) {
+        const people = [...new Set(msgs.filter((m) => m.thread === last.thread).flatMap((m) => [m.from, ...(m.mentions || [])]))]
+          .filter((x) => x !== ME.handle && x !== "relay");
+        return nav(`activity/${last.thread}`, { replace: true, data: people });
+      }
+    } catch {}
+  }
+  overview(tk);
+}
+async function overview(tk) {
+  let ags = [], asks = [], wants = [];
+  try {
+    [ags, asks, wants] = await Promise.all([api("GET", "/agents"), ME.role === "human" ? api("GET", "/approvals").catch(() => []) : [],
+      isOwner() ? api("GET", "/invite-requests").catch(() => []) : []]);
+  } catch {}
+  const mine = ags.filter((a) => a.role === "agent");
+  const now = mine.filter((a) => a.answers === "instantly").length, later = mine.length - now;
+  const waiting = asks.length + wants.length;
+  const next = asks.length ? `approve/${asks[0].id}` : wants.length ? `ask/${wants[0].id}` : null;
+  const chip = (dot, text, go) => h(go ? "button" : "span", { class: "ochip" + (go ? " press go" : ""), type: go ? "button" : null, onclick: go || null },
+    dot ? h("span", { class: "adot " + dot }) : null, h("span", { text }));
+  const url = location.origin + "/mcp";
+  const pill = h("button", { class: "copyurl press", type: "button", title: "Copy" }, h("span", { class: "u", text: url }), h("span", { class: "c", text: "Copy" }));
+  pill.addEventListener("click", () => copy(url, pill.querySelector(".c"), "Copy"));
+  screen("pick", tk, h("div", { class: "overview" },
+    h("div", { class: "orbit", "aria-hidden": "true" }, h("span", { class: "ghost g1" }), h("span", { class: "ghost g2" }),
+      h("span", { class: "ghost g3" }), h("span", { class: "ghost g4" }), h("span", { class: "core" }, mark())),
+    h("h1", { class: "title", text: waiting ? `${waiting} waiting for you` : "All quiet" }),
+    h("div", { class: "ochips" },
+      now ? chip("now", `${now} answer${now === 1 ? "s" : ""} now`) : null,
+      later ? chip("later", `${later} when asked`) : null,
+      next ? chip(null, "Review", () => nav(next)) : null),
+    h("div", { class: "oacts" },
+      h("button", { class: "btn small press" + (next ? " ghost" : ""), type: "button", onclick: () => nav("activity/new") }, "Message"),
+      isOwner() ? h("button", { class: "btn small ghost press", type: "button", onclick: () => nav("add") }, icon("plus", "2.4"), "Add") : null),
+    h("div", { class: "oaddr" }, h("span", { class: "k", text: "Your Relay address" }), pill)));
 }
 
 function signOut(message) { KEY = null; ME = null; store.clear(); trail.length = 0; clearInterval(timer); timer = null; signin(message); }
