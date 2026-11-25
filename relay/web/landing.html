@@ -37,7 +37,7 @@ html, body { overflow-x: clip; }
 nav.top, main, footer { position: relative; z-index: 1; }
 .wrap { max-width: 1040px; margin: 0 auto; padding: 0 22px; }
 nav.top { display: flex; align-items: center; justify-content: space-between; height: 68px; max-width: 1120px; margin: 0 auto; padding: 0 22px; }
-.mark .r { opacity: .38; }
+.mark .l { opacity: .38; }    /* your half light, Relay's solid, as on every orb */
 .signin { display: inline-flex; align-items: center; height: 38px; padding: 0 18px; border-radius: 999px; background: var(--card); color: var(--ink);
   font-weight: 600; font-size: 14.5px; box-shadow: 0 0 0 .5px var(--line), 0 6px 16px -10px rgba(24, 23, 29, .35); transition: transform .45s var(--spring); }
 .signin:active { transform: scale(.96); }
@@ -176,7 +176,7 @@ nav.top { display: flex; align-items: center; justify-content: space-between; he
 <body>
 <div class="bg" aria-hidden="true"><div class="glow"></div></div>
 <nav class="top">
-  <a href="/" class="wordmark"><svg class="mark" viewBox="0 0 64 64" aria-hidden="true"><path d="M30 10a22 22 0 0 0 0 44z" fill="currentColor"/><path class="r" d="M38 10a22 22 0 0 1 0 44z" fill="currentColor"/></svg>Relay</a>
+  <a href="/" class="wordmark"><svg class="mark" viewBox="0 0 64 64" aria-hidden="true"><path class="l" d="M30 10a22 22 0 0 0 0 44z" fill="currentColor"/><path d="M38 10a22 22 0 0 1 0 44z" fill="currentColor"/></svg>Relay</a>
   <a class="signin" href="/app">Sign in</a>
 </nav>
 

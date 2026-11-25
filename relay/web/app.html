@@ -115,8 +115,9 @@
 .appchips.quiet .appchip { cursor: default; background: var(--fill); box-shadow: none; }
 /* how it's going: six numbers, counted on this hub */
 .goingcard { margin-bottom: 18px; }
-.going { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
-.gtile { background: var(--card); border-radius: 18px; padding: 12px 12px 10px; display: grid; gap: 2px; box-shadow: 0 0 0 .5px var(--line); }
+/* numbers on the paper itself: no boxes, one line of label each */
+.going { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 18px 12px; padding: 4px 4px 0; }
+.gtile { display: grid; gap: 2px; }
 .gtile b { font: 750 24px/1.1 var(--display); letter-spacing: -.03em; }
 .gtile span { font-size: 12.5px; color: var(--ink2); line-height: 1.3; }
 .wanted { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; margin: 10px 2px 0; font-size: 13px; color: var(--ink2); }
@@ -165,6 +166,18 @@
   background: var(--fill); color: var(--ink); font: 600 13.5px var(--font); cursor: pointer; }
 .saychip .c { padding: 4px 10px; border-radius: 999px; background: var(--accent); color: #fff; font-size: 12px; }
 .firstbtn { margin-top: 6px; }
+.topseg button { position: relative; }
+.segbadge { position: absolute; top: -5px; right: 6px; min-width: 18px; height: 18px; padding: 0 5px; border-radius: 999px; background: var(--sun);
+  color: var(--on-sun); font: 700 11px/18px var(--font); text-align: center; box-shadow: 0 0 0 2px var(--bg); animation: pop .5s var(--spring) both; }
+.segbadge[hidden] { display: none; }
+/* an approval in plain words first: what it says, what it carries, that the key stays hidden, when it expires */
+.plainask { display: grid; gap: 10px; padding: 16px 18px; border-radius: 20px; background: var(--fill); }
+.plainask p { margin: 0; } .plainask .says { display: grid; gap: 2px; font-size: 16px; }
+.plainask .k { font-size: 12.5px; font-weight: 600; color: var(--ink2); }
+.plainask q { quotes: "“" "”"; font-weight: 500; overflow-wrap: anywhere; } .plainask a { color: var(--accent); overflow-wrap: anywhere; }
+.plainask .trust { font-size: 13.5px; color: var(--ink2); } .plainask .expires { font-size: 13px; font-weight: 600; color: var(--sun-ink, var(--ink)); }
+.addgroup { margin: 0 0 26px; } .addgroup .label { margin: 0 0 2px; font-size: 15px; font-weight: 650; color: var(--ink); } .addgroup .hint { margin: 0 0 14px; }
+.doorsub { display: block; font-size: 13px; color: var(--ink2); margin-top: 1px; }
 @media (prefers-reduced-motion: reduce) { .asknudge, .asknudge .zz::after, .hellobox.in, .jump { animation: none !important; } }
 .hellobox:empty { display: none; }
 .hellobox.in { animation: pop .5s var(--spring) both; }
@@ -296,8 +309,10 @@
 .morb .mh b { font: 700 calc(var(--s) * .27)/1 var(--display); color: var(--ink2); }
 .morb .mk { width: calc(var(--s) * .19); height: calc(var(--s) * .38); border-radius: 0 999px 999px 0; background: var(--rm); display: block; }
 .morb .mh.ghost { background: transparent; box-shadow: inset 0 0 0 1.5px var(--ink3); border-right: 0; }
-.door { appearance: none; border: 0; width: 100%; display: flex; align-items: center; gap: 14px; padding: 14px 16px; border-radius: 20px;
-  background: var(--card); color: var(--ink); text-align: left; cursor: pointer; box-shadow: 0 1px 2px rgba(24, 23, 29, .04), 0 10px 26px -16px rgba(24, 23, 29, .3); }
+.door { appearance: none; border: 0; width: 100%; display: flex; align-items: center; gap: 14px; padding: 10px 12px; border-radius: 16px;
+  background: transparent; color: var(--ink); text-align: left; cursor: pointer; transition: background-color .2s var(--ease); }
+.door:hover { background: var(--fill); }
+.doors { display: grid; gap: 2px; margin: 0 -12px; }      /* a list of places to go, not a stack of cards */
 .door .grow { flex: 1; min-width: 0; display: flex; flex-direction: column; text-align: left; } .door b { font-size: 16px; font-weight: 600; } .door .grow span { font-size: 13px; color: var(--ink2); }
 .pairs { display: flex; flex-direction: column; gap: 26px; margin: 10px 0 40px; }
 .pair { display: flex; align-items: center; gap: 16px; animation: rise .6s var(--ease) both; animation-delay: calc(var(--i, 0) * 70ms);
@@ -469,6 +484,9 @@ pre.block.muted { color: var(--ink2); }
   .railadd svg { width: 18px; height: 18px; }
   .railadd .lbl { display: none; }
   .railadd:hover { background: var(--accent-hover); }
+  /* always there, so it stays quiet: the screen's own main button is the one that's solid */
+  .railadd { background: var(--accent-soft); color: var(--accent); box-shadow: none !important; }
+  .railadd:hover { background: color-mix(in srgb, var(--accent) 16%, var(--accent-soft)); }
   .railitem { display: grid; justify-items: center; gap: 3px; width: 68px; padding: 2px 0 8px; border: 0; background: none; color: var(--ink2);
     font-size: 11px; font-weight: 500; letter-spacing: 0; cursor: pointer; }
   .railitem .ic { width: 44px; height: 30px; border-radius: 999px; display: grid; place-items: center; transition: background-color .2s var(--ease), color .2s var(--ease); }
@@ -588,7 +606,7 @@ pre.block.muted { color: var(--ink2); }
   .detail .quick .q:first-child { background: var(--accent); color: var(--on-accent); }
   .detail .quick .q:first-child:hover { background: var(--accent-hover); }
   .detail .quick .q svg { width: 16px; height: 16px; }
-  .detail[data-page=me] .page > .stack > .btn.danger { width: auto; justify-self: start; padding: 0 16px; height: 34px; font-size: 13px; }
+  .detail[data-page=me] .page > .stack > .btn.signout { width: auto; justify-self: start; padding: 0 16px; height: 34px; font-size: 13px; }
   .detail .label { font-size: 12px; }
 
   /* a conversation: toolbar, messages, and the reply box pinned to the bottom of the pane */

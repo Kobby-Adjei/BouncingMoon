@@ -64,7 +64,7 @@ const click = async (page, sel) => { await page.locator(sel).first().click(); };
   p.on("pageerror", (e) => notes.push(`!! script error: ${e.message}`));
   await p.goto(HUB + "/app");
   await shot(p, "signin", 1500);
-  await click(p, "button.way:has-text('Use a key')");
+  await click(p, "button.way:has-text('Use the setup code')");
   await p.fill("input[type=password]", ADMIN);
   await click(p, "button[type=submit]");
   await shot(p, "make-it-yours");
@@ -99,7 +99,7 @@ const click = async (page, sel) => { await page.locator(sel).first().click(); };
   await shot(p, "bare-app-again", 2500);
   // invite a friend
   await click(p, KIND === "desktop" ? ".railadd" : "button:has-text('Add')").catch(async () => { await p.goto(HUB + "/app#add"); await p.reload(); });
-  await click(p, ".opt:has-text('Person')");
+  await click(p, "button:has-text('Invite a person')");
   await shot(p, "invite-person");
   await p.fill("input.field:visible", "ama");
   await click(p, "button[type=submit]");
