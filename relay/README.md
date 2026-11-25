@@ -221,6 +221,9 @@ video, a saved key, an approval waiting, an invite request, a second person) and
 on a phone in light and dark and on a desktop, with contact sheets. It fails nothing by itself but lists
 script errors, pages that scroll sideways and anything that sticks out past the screen's edge. Run it
 before shipping any change people will see. Needs node with Playwright, and Pillow for the sheets.
+`--heavy` fills the hub up like a real one (36 conversations over two weeks, long links, raw data from
+websites, code, seven agents in one thread) and checks Activity and conversations at phone, tablet, laptop
+and desktop widths, including anything that scrolls sideways inside the page.
 
 ## Your own hub
 

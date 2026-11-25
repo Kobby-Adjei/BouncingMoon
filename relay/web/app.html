@@ -77,6 +77,29 @@
   white-space: pre-wrap; overflow-wrap: anywhere; justify-self: start; }
 .msg.mine .bub { background: var(--accent); color: var(--on-accent); justify-self: end; }
 .msg .bub .at { font-weight: 650; }
+/* code and raw data: a quiet block that wraps; long messages fold */
+.msg .bub .mcode { margin: 8px 0 2px; padding: 10px 12px; border-radius: 12px; font: 500 12.5px/1.5 var(--mono); white-space: pre-wrap;
+  word-break: break-all; background: color-mix(in srgb, var(--ink) 6%, transparent); max-width: 100%; }
+.msg .bub .mcode:first-child { margin-top: 0; }
+.msg.mine .bub .mcode { background: color-mix(in srgb, var(--on-accent) 14%, transparent); }
+.msg .bub .mlink { color: inherit; text-decoration: underline; text-decoration-color: color-mix(in srgb, currentColor 40%, transparent);
+  text-underline-offset: 2px; word-break: break-all; }
+.msg .bub.folded { max-height: 240px; overflow: hidden; -webkit-mask-image: linear-gradient(#000 70%, transparent); mask-image: linear-gradient(#000 70%, transparent); }
+.msg .more { justify-self: start; margin: 4px 0 0 8px; border: 0; background: none; padding: 4px 6px; color: var(--accent); font: 600 13px var(--font); cursor: pointer; }
+.msg.mine .more { justify-self: end; margin: 4px 8px 0 0; }
+/* Activity on a busy hub: sections, one-line titles */
+.secthead { font: 650 12px var(--font); letter-spacing: .04em; text-transform: uppercase; color: var(--ink2); padding: 18px 16px 6px; }
+.group.conv > .secthead:first-child { padding-top: 4px; }
+.secthead + .cell::before { display: none; }
+.one { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.title.clamp2 { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; }
+.title.longtitle { font-size: 24px; line-height: 1.15; }
+/* a row never grows wider than the list: its text gives way (ellipsis), not the page */
+.group.conv { grid-template-columns: minmax(0, 1fr); min-width: 0; }
+.conv .cell { min-width: 0; max-width: 100%; }
+.conv .cell .grow, .conv .cell .spread { min-width: 0; } .conv .cell .grow { flex: 1 1 auto; }
+.conv .cell .spread > .t { flex: 1 1 auto; } .conv .cell .when { flex: none; }
+.conv .cell .preview { overflow-wrap: anywhere; }
 /* a file in a conversation: the picture, what it is, already watched */
 .filecard { display: flex; gap: 11px; align-items: center; margin-top: 8px; padding: 6px 12px 6px 6px; border-radius: 16px; color: inherit;
   text-decoration: none; white-space: normal; background: color-mix(in srgb, var(--card) 70%, transparent); max-width: 320px; }
@@ -105,7 +128,7 @@
 .composer .send svg { width: 20px; height: 20px; }
 /* @mentions: who to bring in, and who this goes to */
 .composer { display: flex; flex-direction: column-reverse; }
-.atpick { display: none; max-width: 680px; width: 100%; margin: 0 auto 8px; padding: 0 16px; gap: 6px; overflow-x: auto; scrollbar-width: none; }
+.atpick { display: none; max-width: 680px; width: 100%; margin: 0 auto 8px; padding: 0 16px; gap: 6px; flex-wrap: wrap; }   /* wraps: no sideways swiping to find someone */
 .atpick.open { display: flex; animation: rise .25s var(--ease) both; }
 .atopt { flex: none; display: inline-flex; align-items: center; gap: 7px; border: 0; background: var(--card); color: var(--ink); border-radius: 999px;
   padding: 5px 12px 5px 5px; font: 600 14px var(--font); cursor: pointer; box-shadow: 0 0 0 .5px var(--line), 0 6px 16px -10px rgba(24, 23, 29, .35); }
@@ -336,9 +359,9 @@ pre.block.muted { color: var(--ink2); }
 }
 
 /* ---------------------------------------------------------------- desktop and tablet: a real app shell.
-   Below 680px none of this applies and the phone layout above is the whole story. */
+   Below 960px none of this applies and the phone layout above is the whole story. */
 .rail, .listpane, .detail { display: none; }
-@media (min-width: 680px) {
+@media (min-width: 960px) {
   :root { --barh: 52px; --rail: 76px; --list: clamp(260px, 32vw, 300px); }
   body:has(.shell) { overflow: hidden; font-size: 14px; }
   .bar { background: var(--bg); backdrop-filter: none; -webkit-backdrop-filter: none; }
@@ -378,7 +401,7 @@ pre.block.muted { color: var(--ink2); }
   .listpane .title { font-size: 15px; font-weight: 650; letter-spacing: -.015em; }
   .listpane .head .btn.small { height: 28px; padding: 0 12px 0 9px; font-size: 13px; gap: 4px; border-radius: 999px; }
   .listpane .head .btn.small svg { width: 15px; height: 15px; }
-  .listpane .group { margin: 0; display: grid; gap: 2px; }
+  .listpane .group { margin: 0; display: grid; grid-template-columns: minmax(0, 1fr); gap: 2px; }   /* a long title never widens the list */
   .listpane .cell { border-radius: 16px; min-height: 56px; padding: 8px 10px; gap: 12px; }
   .listpane .cell + .cell::before { left: 64px; right: 0; }
   .listpane .cell .t { font-size: 14px; font-weight: 600; }

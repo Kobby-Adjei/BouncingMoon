@@ -224,10 +224,10 @@ function head(title, lede, right) {
 function heroHead(pic, title, lede) {
   return h("div", { class: "hero" }, pic, h("h1", { class: "title", text: title }), lede ? h("p", { class: "lede", text: lede }) : null);
 }
-// Two layouts share every screen. A phone shows one screen at a time, as it always has. From 680px up the
+// Two layouts share every screen. A phone shows one screen at a time, as it always has. From 960px up the
 // app is a shell: a rail on the left, the list (agents or activity) beside it, and whatever is open in the
 // detail pane on the right. Where you are lives in the URL hash, so Back, Forward and reload all work.
-const wideQ = matchMedia("(min-width: 680px)");
+const wideQ = matchMedia("(min-width: 960px)");   // three columns only where three columns fit
 let WIDE = wideQ.matches;
 let shell = null, rail = null, listPane = null, detailPane = null, listRefresh = null;
 let route = "agents", depth = 0, booted = false, dir = "fade", traversing = false;
@@ -427,7 +427,7 @@ addEventListener("popstate", (e) => {
   render(r);
   dir = "fade";
 });
-// a phone turned sideways or a window resized across 680px: draw the same place in the other layout
+// a window resized across 960px: draw the same place in the other layout
 wideQ.addEventListener("change", () => {
   WIDE = wideQ.matches;
   if (!ME || !booted || !app.querySelector(".page")) return;
@@ -2074,11 +2074,14 @@ async function activity() {
         h("div", { class: "grow" }, h("div", { class: "t", text: `${r.agent} wants to ${VERB[r.method] || r.method}` }),
           h("div", { class: "s", text: `Needs your OK · ${r.key} · ${hostOf(r.url)}` })),
         h("span", { class: "btn small", text: "Review" })));
-      const rows = oks.concat(wants.map((w) => h("button", { class: "cell jobcell press", type: "button", "data-key": `ask/${w.id}`, onclick: () => nav(`ask/${w.id}`) },
+      const needs = oks.concat(wants.map((w) => h("button", { class: "cell jobcell press", type: "button", "data-key": `ask/${w.id}`, onclick: () => nav(`ask/${w.id}`) },
         h("span", { class: "stackav" }, avatar("person", 44)),
-        h("div", { class: "grow" }, h("div", { class: "t", text: `${w.name} would like an invite` }), h("div", { class: "s", text: w.contact })),
+        h("div", { class: "grow" }, h("div", { class: "t one", text: `${w.name} would like an invite` }), h("div", { class: "s one", text: w.contact })),
         h("span", { class: "btn small", text: "Review" }))));
-      const sorted = [...threads.values()].sort((x, y) => y.msgs[y.msgs.length - 1].id - x.msgs[x.msgs.length - 1].id)
+      // what needs you first, then the conversations newest first, under Today · Yesterday · This week · Earlier
+      const rows = needs.length ? [secthead("Needs you"), ...needs] : [];
+      let section = null;
+      const sorted = [...threads.values()].sort((x, y) => y.msgs[y.msgs.length - 1].time - x.msgs[x.msgs.length - 1].time)
         // an agent's "asking you to OK" note on its own is the Review row above, said twice: show it once
         .filter((t) => !(t.msgs.length === 1 && /^🔑 Asking /u.test(t.msgs[0].text || "")));
       for (const t of sorted) {
@@ -2087,11 +2090,14 @@ async function activity() {
         // "claude: …" under a title that already says claude is the name twice
         const who = last.from === ME.handle ? "You: " : last.from === "relay" || (others.length === 1 && others[0] === last.from) ? "" : `${last.from}: `;
         const faces = (others.length ? others : ["relay"]).slice(0, 2).map((x) => avatar(by[x] || { handle: x }, others.length > 1 ? 38 : 46));
+        const sec = dayGroup(last.time);
+        if (sec !== section) { rows.push(secthead(sec)); section = sec; }
         rows.push(h("button", { class: "cell press", type: "button", "data-key": `activity/${t.id}`, onclick: () => nav(`activity/${t.id}`, { data: others }) },
           h("span", { class: "stackav" }, ...faces),
           h("div", { class: "grow" },
-            h("div", { class: "spread", style: "gap:8px" }, h("div", { class: "t", text: others.join(", ") || "Relay" }), h("span", { class: "when tnum", text: clock(last.time) })),
-            h("div", { class: "s preview", text: who + plain(last.text) }))));
+            h("div", { class: "spread", style: "gap:8px" }, h("div", { class: "t one", text: names(others) || "Relay", title: others.join(", ") }),
+              h("span", { class: "when tnum", text: whenShort(last.time) })),
+            h("div", { class: "s preview", text: who + gist(last.text) }))));
       }
       if (rows.length) {
         if (!list.isConnected) view.querySelector(".blank").replaceWith(list);
@@ -2120,8 +2126,58 @@ async function newMessage() {
   screen("new", tk, head("New message", "Who to?"), ags.length ? grid : blank("No one to message yet", "Add an agent first."));
 }
 
+// ------------------------------------------------------------------ reading a busy hub at a glance
+const secthead = (text) => h("div", { class: "secthead", role: "heading", "aria-level": "2", text });
+function dayGroup(t) {
+  const d = new Date(t * 1000), now = new Date(), day = 86400000;
+  const start = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+  return d >= start ? "Today" : d >= start - day ? "Yesterday" : d >= start - 6 * day ? "This week" : "Earlier";
+}
+function whenShort(t) {          // 3:28 PM today · Yesterday · Mon this week · Nov 12 before
+  const g = dayGroup(t), d = new Date(t * 1000);
+  return g === "Today" ? clock(t) : g === "Yesterday" ? "Yesterday" : g === "This week"
+    ? d.toLocaleDateString(undefined, { weekday: "short" }) : d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+}
+// "claude, codex +4": a title is one line, however many are in the conversation
+const names = (list) => list.length <= 2 ? list.join(", ") : `${list.slice(0, 2).join(", ")} +${list.length - 2}`;
+const shortUrl = (u) => { try { const x = new URL(u); const tail = x.pathname.split("/").filter(Boolean).pop() || "";
+  return x.hostname.replace(/^www\./, "") + (tail ? "/…/" + (tail.length > 18 ? tail.slice(0, 17) + "…" : tail) : ""); } catch { return u; } };
+// a preview in words: the first line, links as their site, raw data and code named rather than shown
+function gist(text) {
+  const t = plain(text).trim();
+  if (t.startsWith("```")) return "Code";
+  if (/^[{[]/.test(t)) return "Data";
+  const first = t.split("\n").find((l) => l.trim()) || "";
+  return first.replace(/https?:\/\/\S+/g, shortUrl).replace(/[{[].{40,}$/, "data") || "File";
+}
+
 // the hub's notes start with an emoji (🔑 📎 ✋); the app speaks in its own icons, so drop them
 const plain = (text) => String(text || "").replace(/^(?:\u{1F511}|\u{1F4CE}|\u{270B}|\u{1F4F9}|\u{1F5BC})\uFE0F?\s*/u, "");
+// A message as people read it: code and raw data in tidy blocks that wrap (never a sideways scroll), links
+// as their site, @names a little heavier.
+function richText(text) {
+  const out = [];
+  for (const part of String(text || "").split(/(```[\s\S]*?```)/)) {
+    if (!part) continue;
+    if (part.length >= 6 && part.startsWith("```") && part.endsWith("```")) {
+      out.push(h("pre", { class: "mcode", text: part.slice(3, -3).replace(/^[a-z0-9+-]*\n/i, "").replace(/\n$/, "") }));
+      continue;
+    }
+    let head = part, data = null;
+    const m = part.match(/^([\s\S]*?)([{[][\s\S]{40,})$/);         // "…: HTTP 200\n{…}" or a message that is only data
+    if (m) { try { data = JSON.stringify(JSON.parse(m[2].trim()), null, 2); head = m[1]; } catch {} }
+    head = head.replace(/\s*[·:]\s*$/, "").replace(/\s+$/, "");
+    if (head) out.push(...linked(head));
+    if (data) out.push(h("pre", { class: "mcode", text: data }));
+  }
+  return out;
+}
+function linked(text) {
+  return text.split(/(https?:\/\/[^\s<>"]+|@[a-z0-9][a-z0-9_.-]*)/).filter(Boolean).map((p) =>
+    p.startsWith("@") ? h("span", { class: "at", text: p })
+      : /^https?:\/\//.test(p) ? h("a", { class: "mlink", href: p, target: "_blank", rel: "noopener noreferrer", title: p, text: shortUrl(p) })
+      : document.createTextNode(p));
+}
 // "@claude" in a bubble reads as a name: a little heavier, like the landing page's demo
 function withAts(text) {
   return String(text || "").split(/(@[a-z0-9][a-z0-9_.-]*)/).filter(Boolean)
@@ -2197,7 +2253,7 @@ async function thread(id, people) {
       input.value = input.value.slice(0, start) + "@" + a.handle + " " + input.value.slice(input.selectionStart);
       const at = start + a.handle.length + 2; input.setSelectionRange(at, at); input.focus(); paintPick(); paintGoes();
     } }, avatar(a, 26), h("span", { class: "nm", text: a.handle }), answersDot(a),
-      h("span", { class: "hint", text: a.answers === "instantly" ? "answers now" : a.answers === "person" ? "person" : "when asked" }))));
+      a.answers === "instantly" ? h("span", { class: "hint", text: "answers now" }) : null)));   // only what's worth knowing: the rest wrap two to a row
     suggest.classList.toggle("open", list.length > 0);
   }
   input.addEventListener("input", () => { input.style.height = "auto"; input.style.height = Math.min(input.scrollHeight, 140) + "px"; paintPick(); paintGoes(); });
@@ -2224,7 +2280,10 @@ async function thread(id, people) {
   } }, input, send), suggest, goes) : null;
   const by = {};
   const faces = h("span", { class: "stackav" });
-  const top = head(people.join(", ") || "Conversation", canPost ? null : "Sign in as yourself to reply.", faces);
+  const title = names(people) || "Conversation";
+  const top = head(title, canPost ? null : "Sign in as yourself to reply.", faces);
+  const h1 = top.querySelector(".title");          // a long title gets two lines at most, a size down
+  if (h1) { h1.classList.add("clamp2"); if (title.length > 22) h1.classList.add("longtitle"); h1.title = people.join(", "); }
   const view = screen("thread", tk, top, list);
   if (WIDE && view.isConnected) { top.classList.add("panehead"); detailPane.prepend(top); }   // a toolbar above the scrolling messages
   if (composer && view.isConnected) (WIDE ? detailPane : app).append(composer);    // phone: outside the sliding page, so "fixed" means the window
@@ -2232,6 +2291,7 @@ async function thread(id, people) {
   if (composer) paintGoes();
   faces.append(...people.slice(0, 2).map((x) => avatar(by[x] || { handle: x }, WIDE ? 36 : 44, true)));
   let shown = "";
+  const opened = new Set();             // long messages already unfolded stay open when the view repaints
   async function refresh() {
     if (!threadId) return;
     try {
@@ -2247,9 +2307,15 @@ async function thread(id, people) {
         const mine = m.from === ME.handle, run = prev === m.from; prev = m.from;
         const who = run ? null : h("div", { class: "who", text: `${mine ? "You" : m.from} · ${clock(m.time)}` });
         const face = mine ? null : run ? h("span", { class: "ghostav" }) : avatar(by[m.from] || { handle: m.from, role: "agent" }, 32);
-        const bub = h("div", { class: "bub" }, ...withAts(plain(m.text)));
+        const text = plain(m.text);
+        const bub = h("div", { class: "bub" }, ...richText(text));
         if (m.media && m.media.length) bub.append(...m.media.map(fileCard));
-        return h("div", { class: "msg" + (mine ? " mine" : ""), style: anim }, face, h("div", { class: "body" }, who, bub));
+        // a long message folds: the conversation stays readable, the whole thing is one tap away
+        const long = text.length > 700 || text.split("\n").length > 14;
+        const more = long && !opened.has(m.id) ? h("button", { class: "more press", type: "button", onclick: () => {
+          opened.add(m.id); bub.classList.remove("folded"); more.remove(); } }, "Show all") : null;
+        if (more) bub.classList.add("folded");
+        return h("div", { class: "msg" + (mine ? " mine" : ""), style: anim }, face, h("div", { class: "body" }, who, bub, more));
       }));
       const firstPaint = !shown;
       shown = sig;
