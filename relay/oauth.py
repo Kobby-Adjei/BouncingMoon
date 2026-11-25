@@ -466,6 +466,8 @@ def mount(app, hub) -> None:
                 if not c.execute("SELECT 1 FROM agents WHERE handle=?", (r["handle"],)).fetchone():
                     return oauth_error("invalid_grant", "that agent no longer exists")
                 c.execute("UPDATE oauth_codes SET used=? WHERE code_hash=?", (now(), r["code_hash"]))
+                # it just connected: it's here now, not "not connected yet"
+                c.execute("UPDATE agents SET last_seen=MAX(COALESCE(last_seen, 0), ?) WHERE handle=?", (now(), r["handle"]))
                 return js(issue(c, r["handle"], r["person"], cl["client_id"], r["scope"] or SCOPE))
             if grant == "refresh_token":
                 r = c.execute("SELECT * FROM oauth_tokens WHERE token_hash=? AND kind='refresh'",

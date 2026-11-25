@@ -47,6 +47,7 @@ function mark(cls = "mark") {      // the Relay mark: one half passing to the ot
 const stroke = { fill: "none", stroke: "currentColor", "stroke-width": "1.9", "stroke-linecap": "round", "stroke-linejoin": "round" };
 const ICONS = {
   plus: "M12 5v14M5 12h14",
+  share: "M12 3.5v11M8 7l4-3.5L16 7M7 11H6a2 2 0 0 0-2 2v6a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-6a2 2 0 0 0-2-2h-1",
   chat: "M4 6.5A2.5 2.5 0 0 1 6.5 4h11A2.5 2.5 0 0 1 20 6.5v8a2.5 2.5 0 0 1-2.5 2.5H10l-4.5 3.5V17H6.5A2.5 2.5 0 0 1 4 14.5z",
   bell: "M12 3a6 6 0 0 0-6 6v3.5L4.5 15h15L18 12.5V9a6 6 0 0 0-6-6zM9.5 18a2.5 2.5 0 0 0 5 0",
   send: "M12 19V5M6 11l6-6 6 6",
@@ -105,6 +106,7 @@ function presence(t) {
   return s < 120 ? "on" : s < 86400 ? "recent" : "off";
 }
 const isOwner = () => ME && (ME.owner || ME.role === "admin");
+const canAdd = () => isOwner() || (ME && ME.role === "human");       // a person connects their own apps
 const slug = (input) => input.addEventListener("input", () => { const v = input.value.toLowerCase().replace(/\s+/g, "-"); if (v !== input.value) input.value = v; });
 
 async function copy(text, btn, label = "Copy") {
@@ -122,6 +124,11 @@ function copyField(k, value, { secret = false } = {}) {
   return h("div", { class: "copyfield" },
     h("div", { class: "grow" }, h("div", { class: "k", text: k }),
       h("div", { class: "val", text: secret ? value.slice(0, 10) + "•".repeat(14) : value })), b);
+}
+// where the phone can share (Messages, WhatsApp, Mail…), one press hands the link over
+function shareBtn(text, url) {
+  if (!navigator.share) return null;
+  return h("button", { class: "btn press", type: "button", onclick: () => navigator.share({ text, url }).catch(() => {}) }, icon("share", "2.2"), "Share invite");
 }
 // a long message to paste: folded preview, one big copy button
 function copyBlock(text, label = "Copy") {
@@ -276,7 +283,7 @@ function railItem(tab, label) {
 function ensureShell() {
   if (shell && shell.isConnected) return;
   rail = h("nav", { class: "rail", "aria-label": "Relay" },
-    isOwner() ? h("button", { class: "railadd press", type: "button", title: "Add an agent or person", onclick: () => nav("add") },
+    canAdd() ? h("button", { class: "railadd press", type: "button", title: isOwner() ? "Add an agent or person" : "Connect an app", onclick: () => nav("add") },
       icon("plus", "2.4"), h("span", { class: "lbl", text: "Add" })) : null,
     railItem("agents", "Agents"), railItem("activity", "Activity"));
   listPane = h("section", { class: "listpane", "aria-label": "List" });
@@ -327,7 +334,8 @@ function known(r) {
   if (z !== undefined) return false;
   if (top === "agents") return !y || !!x && (y === "wake" || ONE_TIME.has(y));
   if (top === "activity") return !x || (x === "new" && !y) || (x === "to" && !!y) || (/^\d+$/.test(x) && !y);
-  if (top === "add") return isOwner() && (!y || (y === "withkey" && !!x));
+  if (top === "add") return isOwner() ? (!y || (y === "withkey" && !!x))
+    : !!ME && ME.role === "human" && !y && (!x || APPS.some((a) => a.id === x && a.style === "allow"));
   if (top === "me") return (!x || ((x === "apps" || x === "passkeys" || x === "delete" || x === "friend") && !y) || (x === "keys" && (!y || y === "new" || /^k_[0-9a-f]{12}$/.test(y))))
     && !!ME && ME.role !== "admin";
   if (top === "approve") return !!ME && ME.role === "human" && /^c_[0-9a-f]{16}$/.test(x || "") && !y;
@@ -446,7 +454,9 @@ function goTab(fn) {
     depth = (st && st.relay && st.depth) || 0;
     if (r && known(r)) return nav(r, { replace: true });
     history.replaceState({ relay: 1, depth }, "", location.pathname + location.search);   // a bare /app stays bare
-    route = tab; drawMe(); call(WIDE ? "detail" : "app", ...(WIDE ? [pickHint, tab] : [fn]));
+    route = tab; drawMe();
+    if (WIDE) ensureShell();                      // the list pane must exist before either half is drawn
+    call(WIDE ? "detail" : "app", ...(WIDE ? [pickHint, tab] : [fn]));
     if (WIDE) { listPane.dataset.tab = tab; call("list", fn); }
     return;
   }
@@ -471,9 +481,9 @@ async function pickHint(tab) {
       const asks = ME.role === "human" ? await api("GET", "/approvals").catch(() => []) : [];
       if (asks.length) return nav(`approve/${asks[0].id}`, { replace: true });
       const msgs = await api("GET", "/messages?latest=true&limit=100");
-      const count = {};
-      for (const m of msgs) count[m.thread] = (count[m.thread] || 0) + 1;
-      const last = [...msgs].reverse().find((m) => !(count[m.thread] === 1 && /^🔑 Asking /u.test(m.text || "")));
+      const count = {}, talk = {};
+      for (const m of msgs) { count[m.thread] = (count[m.thread] || 0) + 1; if (m.from !== "relay") talk[m.thread] = true; }
+      const last = [...msgs].reverse().find((m) => talk[m.thread] && !(count[m.thread] === 1 && /^🔑 Asking /u.test(m.text || "")));
       if (last) {
         const people = [...new Set(msgs.filter((m) => m.thread === last.thread).flatMap((m) => [m.from, ...(m.mentions || [])]))]
           .filter((x) => x !== ME.handle && x !== "relay");
@@ -530,7 +540,7 @@ async function overview(tk) {
   const next = asks.length ? `approve/${asks[0].id}` : wants.length ? `ask/${wants[0].id}` : null;
   // one thing to do at most, one quiet line, the address: nothing the sidebar or the list already offers
   const act = next ? h("button", { class: "btn small press", type: "button", onclick: () => nav(next) }, "Review")
-    : !mine.length && isOwner() ? h("button", { class: "btn small press", type: "button", onclick: () => nav("add") }, "Add your first app") : null;
+    : !mine.length && canAdd() ? h("button", { class: "btn small press", type: "button", onclick: () => nav("add") }, "Connect your first app") : null;
   const line = mine.length ? h("p", { class: "oline" },
     now ? h("span", null, h("span", { class: "adot now" }), `${now} answer${now === 1 ? "s" : ""} now`) : null,
     later ? h("span", null, h("span", { class: "adot later" }), `${later} when asked`) : null) : null;
@@ -540,7 +550,8 @@ async function overview(tk) {
   screen("pick", tk, h("div", { class: "overview" },
     mine.length ? sky(mine, waiting) : h("div", { class: "orbit", "aria-hidden": "true" }, h("span", { class: "ghost g1" }), h("span", { class: "ghost g2" }),
       h("span", { class: "ghost g3" }), h("span", { class: "ghost g4" }), h("span", { class: "core" }, mark())),
-    h("h1", { class: "title", text: waiting ? `${waiting} waiting for you` : mine.length ? "All quiet" : "Nothing here yet" }),
+    h("h1", { class: "title", text: waiting ? `${waiting} waiting for you` : mine.length ? "All quiet" : "Connect your first AI" }),
+    !mine.length && !waiting ? h("p", { class: "oline", text: "Claude, ChatGPT, Grok, Muse and more. It takes a minute." }) : null,
     line, act, h("div", { class: "oaddr" }, pill)));
 }
 
@@ -830,7 +841,7 @@ async function joinView(code) {
       const s = await api("POST", "/auth/session/owner", {}, r.token);
       KEY = s.token; ME = await api("GET", "/agents/me", undefined, s.token);
       store.set(s.token, true);
-      history.replaceState(null, "", "/app#me/apps");           // first stop: connect your own Claude
+      history.replaceState(null, "", "/app#add");               // first stop: connect your own AI, step by step
       const into = () => goTab(agents);
       const backup = way("Copy a backup key", null);
       backup.addEventListener("click", () => copy(r.token, backup, "Copy a backup key"));
@@ -887,7 +898,7 @@ function blank(title, sub, action) {
 async function agents() {
   const tk = ticket();
   const list = h("div", { class: "group people" }, h("div", { class: "empty", text: "Loading…" }));
-  const add = isOwner() && !WIDE ? h("button", { class: "btn small press", type: "button", onclick: () => nav("add") }, icon("plus", "2.4"), "Add") : null;
+  const add = canAdd() && !WIDE ? h("button", { class: "btn small press", type: "button", onclick: () => nav("add") }, icon("plus", "2.4"), "Add") : null;
   const view = screen("agents", { ...tk, tab: "agents" }, head("Agents", null, add), list);
   let first = true;
   async function refresh() {
@@ -906,10 +917,9 @@ async function agents() {
         markSelected();
       } else if (WIDE) {          // the empty picture goes in the big pane; the list just says so
         list.replaceChildren(h("div", { class: "empty", text: "No agents yet." }));
-        emptyHint(blank("No agents yet", isOwner() ? "Add one and it gets an address." : null,
-          isOwner() ? h("button", { class: "btn small press", type: "button", onclick: () => nav("add") }, icon("plus", "2.4"), "Add") : null));
+        emptyHint(firstApp());
       } else if (list.isConnected) {
-        list.replaceWith(blank("No agents yet", isOwner() ? "Add one and it gets an address." : null));
+        list.replaceWith(firstApp());
       }
       first = false;
     } catch (x) { if (x.status !== 401) list.replaceChildren(h("div", { class: "empty", text: x.message })); }
@@ -918,6 +928,11 @@ async function agents() {
   if (!view.isConnected) return;
   if (WIDE) listRefresh = refresh;
   every(view, refresh, 5000);
+}
+// nothing connected yet: one thing to do, said plainly, with the button right there
+function firstApp() {
+  return blank("Connect your first AI", "Claude, ChatGPT, Grok, Muse and more. It takes a minute, and nothing to install.",
+    canAdd() ? h("button", { class: "btn press firstbtn", type: "button", onclick: () => nav("add") }, icon("plus", "2.4"), "Connect an app") : null);
 }
 // on a desktop, swap the "Pick one" picture for a better one while nothing is open
 function emptyHint(el) {
@@ -982,8 +997,9 @@ function allowGuide(a) {
         : `If ${a.label} can't sign in, it can use a Relay key instead.` }),
       h("button", { class: "btn ghost small press", type: "button", onclick: () => nav(`add/${a.id}/withkey`) },
         a.via === "invite" ? "Set up instant replies" : "Use a key instead")));
+  const hello = h("div", { class: "hellobox" });
   const view = screen("allow", tk, h("div", { class: "hero" }, orb, h("h1", { class: "title", text: `Add Relay to ${a.label}` })),
-    h("div", { class: "stack" }, status, list, done, adv));
+    h("div", { class: "stack" }, status, list, hello, done, isOwner() ? adv : null));
   let seen = null;
   const t = every(view, async () => {
     try {
@@ -995,7 +1011,9 @@ function allowGuide(a) {
         if (listRefresh) listRefresh();
         orb.classList.add("sealed");
         const s2 = stickyStatus(`${fresh.app || a.label} is connected as ${fresh.agent}`, true); status.replaceWith(s2); status = s2;
-        done.classList.replace("ghost", "done");
+        hello.replaceChildren(h("button", { class: "btn press", type: "button", onclick: () => nav(`activity/to/${enc(fresh.agent)}`) },
+          `Say hello to ${fresh.agent}`));
+        hello.classList.add("in");
       }
     } catch {}
   }, 2500);
@@ -1003,11 +1021,11 @@ function allowGuide(a) {
 
 function addPick() {
   const grid = h("div", { class: "pick stagger" });
-  for (const a of APPS) {
+  for (const a of APPS.filter((x) => isOwner() || x.style === "allow")) {
     grid.append(h("button", { class: "opt press", type: "button", onclick: () => nav(`add/${a.id}`) },
       appAvatar(a, 52), h("span", { text: a.label }), h("span", { class: "sub", text: a.sub })));
   }
-  screen("add", ticket(), head("Add", "Where does it live?"), grid);
+  screen("add", ticket(), isOwner() ? head("Add", "Where does it live?") : head("Connect your AI", "Which app do you use? Pick one and follow three steps."), grid);
 }
 
 async function addName(a) {
@@ -1159,7 +1177,8 @@ function inviteGuide(a, inv) {
   const done = h("button", { class: "btn ghost press", type: "button", onclick: finish(handle) }, "Done");
   let status = stickyStatus(`Waiting for ${handle}…`);
   const body = person
-    ? h("div", { class: "stack tight" }, h("p", { class: "hint", style: "margin:0", text: "Send it privately: a message, not a group. It works once, for 3 days. They join with Face ID or a fingerprint, no password." }), copyField("Invite link", link))
+    ? h("div", { class: "stack tight" }, h("p", { class: "hint", style: "margin:0", text: "Send it privately: a message, not a group. It works once, for 3 days. They join with Face ID or a fingerprint, no password." }),
+        copyField("Invite link", link), shareBtn(`Join me on Relay: our AIs can pass work to each other.`, link))
     : h("div", { class: "stack tight" },
         h("p", { class: "hint", style: "margin:0", text: `Paste into a terminal on the computer where ${a.label} is signed in. It answers by itself after that, on your own plan. Works once, for 24 h.` }),
         installBlock(code, a.connect),
@@ -1372,7 +1391,7 @@ async function appsScreen() {
       api("GET", "/agents").then((all) => Object.fromEntries(all.map((a) => [a.handle, a]))).catch(() => ({}))]);
   } catch (x) { list.replaceChildren(h("p", { class: "err", text: x.message })); return; }
   if (!view.isConnected) return;
-  if (!conns.length) { view.querySelector(".addapp .k").textContent = "Your Relay address"; return list.replaceChildren(emptyApps()); }
+  if (!conns.length) return list.replaceChildren(emptyApps());
   list.replaceChildren(...conns.map((c, i) => pairItem(c, agentsBy[c.agent], i, list)));
 }
 function pairItem(c, agent, i, list) {
@@ -1411,7 +1430,8 @@ function connectHint() {
   const url = location.origin + "/mcp";
   const btn = h("button", { class: "copyurl press", type: "button", title: "Copy" }, h("span", { class: "u", text: url }), h("span", { class: "c", text: "Copy" }));
   btn.addEventListener("click", () => copy(url, btn.querySelector(".c"), "Copy"));
-  return h("div", { class: "addapp" }, h("span", { class: "k", text: "Connect another app" }), btn);
+  return h("div", { class: "addapp" }, canAdd() ? h("button", { class: "btn small press", type: "button", onclick: () => nav("add") }, icon("plus", "2.4"), "Connect an app") : null,
+    h("span", { class: "k", text: "Or paste your Relay address into any MCP app" }), btn);
 }
 
 // ------------------------------------------------------------------ keys: your agents use them, never see them
@@ -2275,6 +2295,23 @@ function fileCard(f) {
     : h("span", { class: "filecard" }, ...body);
 }
 
+// A chat app (Claude, ChatGPT, Grok, Muse) can't be woken: it reads Relay when its person asks it to.
+const appOf = (a) => PROVIDER_NAMES[providerOf(a)] || "its app";
+function helloNote(to) {
+  const later = to.filter((a) => a.answers === "when_asked"), now = to.filter((a) => a.answers === "instantly");
+  if (later.length) return [`Say hello. Then, in ${appOf(later[0])}, say `, h("b", { text: "Check Relay" }), ` and ${later[0].handle} answers here.`];
+  if (now.length) return [`Say hello. ${now[0].handle} answers right away.`];
+  return ["Say hello."];
+}
+function askNudge(asleep) {
+  const a = asleep[0];
+  const chip = h("button", { class: "saychip press", type: "button", title: "Copy" }, h("span", { text: "Check Relay" }), h("span", { class: "c", text: "Copy" }));
+  chip.addEventListener("click", () => copy("Check Relay", chip.querySelector(".c"), "Copy"));
+  return h("div", { class: "asknudge", role: "status" },
+    h("span", { class: "zz", "aria-hidden": "true" }, avatar(a, 28)),
+    h("span", { class: "grow" }, h("b", { text: asleep.length > 1 ? `${asleep.map((x) => x.handle).join(", ")} read Relay when you ask` : `${a.handle} reads Relay when you ask` }),
+      h("span", { class: "say" }, h("span", { text: `Open ${appOf(a)} and say` }), chip)));
+}
 async function thread(id, people) {
   const tk = ticket();
   if (!people) {        // opened from the address bar: who is in it comes from the messages
@@ -2311,8 +2348,8 @@ async function thread(id, people) {
     const later = to.filter((x) => !now.includes(x) && by[x] && by[x].answers !== "person");
     goes.replaceChildren(h("span", { class: "k", text: "Goes to" }),
       ...to.map((x) => h("span", { class: "who" }, answersDot(by[x]), h("span", { text: x }))),
-      h("span", { class: "note", text: now.length ? (later.length ? `${now.join(", ")} now · others when asked` : "Answers now")
-        : later.length ? "Replies when asked · @ for now" : "" }));
+      h("span", { class: "note", text: now.length ? (later.length ? `${now.join(", ")} answers now · others when you ask them` : "Answers now")
+        : later.length ? "Reads it when you ask" : "" }));
   }
   function paintPick() {
     const before = input.value.slice(0, input.selectionStart);
@@ -2362,6 +2399,8 @@ async function thread(id, people) {
   if (composer && view.isConnected) (WIDE ? detailPane : app).append(composer);    // phone: outside the sliding page, so "fixed" means the window
   try { for (const a of await api("GET", "/agents")) by[a.handle] = a; } catch {}
   if (composer) paintGoes();
+  const blankNote = list.querySelector(".sysmsg");
+  if (!id && blankNote) blankNote.replaceChildren(...helloNote(people.map((x) => by[x]).filter(Boolean)));
   faces.append(...people.slice(0, 2).map((x) => avatar(by[x] || { handle: x }, WIDE ? 36 : 44, true)));
   let shown = "";
   const opened = new Set();             // long messages already unfolded stay open when the view repaints
@@ -2390,6 +2429,10 @@ async function thread(id, people) {
         if (more) bub.classList.add("folded");
         return h("div", { class: "msg" + (mine ? " mine" : ""), style: anim }, face, h("div", { class: "body" }, who, bub, more));
       }));
+      // you spoke last, to a chat app: it won't see this until you ask it there. Say so, and what to say.
+      const last = msgs[msgs.length - 1];
+      const asleep = last && last.from === ME.handle ? people.map((x) => by[x]).filter((a) => a && a.answers === "when_asked") : [];
+      if (asleep.length) list.append(askNudge(asleep));
       const firstPaint = !shown;
       shown = sig;
       scrollEnd(view, !firstPaint);

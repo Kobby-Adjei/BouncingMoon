@@ -255,6 +255,11 @@ and desktop widths, including anything that scrolls sideways inside the page.
 `RELAY_AXE=<path to axe.min.js>` also runs axe-core's accessibility check on every phone screen and lists
 what it finds in `a11y.txt`. `node relay/tools/og.js` remakes the picture a shared link shows.
 
+`relay/tools/firstrun.sh [out-dir]` walks the first five minutes the way a brand-new person does, on a phone
+and a desktop, with a photo and the screen's words at every step: a fresh hub made yours, a passkey, Claude
+connected through the real Allow page, the first message and a reply, a friend invited, the friend joining
+with a passkey, connecting ChatGPT and saying hello. Passkeys use Chromium's virtual authenticator.
+
 ## Your own hub
 
 ```bash

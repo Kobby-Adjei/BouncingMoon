@@ -111,3 +111,17 @@ def test_a_shared_link_shows_relays_card_and_phones_can_add_it_to_the_home_scree
     j = m.json()
     assert j["name"] == "Relay" and j["start_url"] == "/app" and {i["sizes"] for i in j["icons"]} >= {"192x192", "512x512"}
     assert "manifest-src 'self'" in hub.get("/app").headers["content-security-policy"]
+
+
+def test_the_first_five_minutes_are_wired_up():
+    """The walk-through (tools/firstrun.sh) found these; the words and routes that fix them stay put."""
+    js = open(os.path.join(WEB, "app.js")).read()
+    # a computer opening a bare /app builds the three panes before drawing either half
+    assert "if (WIDE) ensureShell();" in js
+    # a friend lands on the step-by-step connect screen, and every person may connect their own apps
+    assert 'history.replaceState(null, "", "/app#add")' in js
+    assert 'ME.role === "human" && !y && (!x || APPS.some((a) => a.id === x && a.style === "allow"))' in js
+    # after connecting: say hello is one press; a chat app is said to read Relay when asked, with what to say
+    assert "Say hello to ${fresh.agent}" in js and '"Check Relay"' in js and "reads Relay when you ask" in js
+    # Activity never opens a lone "joined the hub" notice with a box to type into
+    assert "talk[m.thread] &&" in js
