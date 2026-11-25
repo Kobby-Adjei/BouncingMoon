@@ -446,7 +446,22 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
 
     def origin(request: Request) -> str:
         """This hub's own address, as apps should use it (behind Railway: https, from the proxy headers)."""
-        return public_url or f"{request.url.scheme}://{request.url.netloc}"
+        return public_url or own_origin(request)
+
+    def own_origin(request: Request) -> str:
+        """The address this request actually came in on. Passkeys and an app's sign-in are tied to it, so while
+        a hub moves to a new domain (RELAY_PUBLIC_URL), the old address keeps working for both."""
+        return f"{request.url.scheme}://{request.url.netloc}"
+
+    # Moving to a new domain: pages a person opens on the old address go to the new one. Apps keep using the
+    # old one (their sign-in, /mcp and the API answer there as before); /app hands a signed-in person over.
+    MOVED_PAGES = re.compile(r"^/(?:join|welcome|m/[^/]+(?:/.*)?|up/[^/]+)?$")
+
+    async def move_home(request: Request, call_next):
+        if public_url and request.method == "GET" and own_origin(request) != public_url and MOVED_PAGES.match(request.url.path):
+            target = public_url + request.url.path + (("?" + request.url.query) if request.url.query else "")
+            return Response(status_code=301, headers={"Location": target, "Cache-Control": "no-store"})
+        return await call_next(request)
     # a chat that answered and then went quiet this long is treated as gone: new messages for it in
     # a conversation someone else started go back to the identity (see release())
     session_idle = float(session_idle_seconds if session_idle_seconds is not None
@@ -470,6 +485,7 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
 
     from . import __version__
     app = FastAPI(title="Relay", version=__version__, lifespan=lifespan)
+    app.middleware("http")(move_home)
     app.state.store = store
     from .wake import Waker, WakeError
     from .wake import _cipher
@@ -1810,7 +1826,7 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
     from . import connector
     connector.mount(app, SimpleNamespace(
         store=store, auth=auth, post=post, inbox_for=inbox_for, ack_to=ack_to,
-        take=take, check_session=check_session, CONVERSATION=CONVERSATION, media=media_svc, origin=origin, no_session=no_session, start_session=start_session,
+        take=take, check_session=check_session, CONVERSATION=CONVERSATION, media=media_svc, origin=origin, here=own_origin, no_session=no_session, start_session=start_session,
         mark_read=mark_read, msg_out=msg_out, with_context=with_context, now=_now, loads=_loads, handle_re=HANDLE_RE,
         session_state=session_state,
         vault=vault))
@@ -1822,7 +1838,8 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
     resend = people.Resend(rs_key, email_from or os.environ.get("RELAY_EMAIL_FROM") or "Relay <onboarding@resend.dev>",
                            send=resend_send) if rs_key else None
     people.mount(app, SimpleNamespace(store=store, auth=auth, now=_now, hash=_hash, client_ip=client_ip,
-                                      check_new_agent=check_new_agent), supabase, resend)
+                                      check_new_agent=check_new_agent, public_url=public_url,
+                                      new_session=lambda h: new_session(h)), supabase, resend)
 
     # ---------------------------------------------------------------- connect apps with "Allow" (OAuth)
     def new_session(handle: str) -> dict:
@@ -1838,7 +1855,7 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
     from . import oauth
     oauth.mount(app, SimpleNamespace(store=store, auth=auth, now=_now, check_new_agent=check_new_agent, client_ip=client_ip,
                                      private_host=(lambda h: False) if allow_private else private_host,
-                                     origin=origin, email_on=bool(supabase or resend), log=log, new_session=new_session))
+                                     origin=origin, here=own_origin, email_on=bool(supabase or resend), log=log, new_session=new_session))
     vault_mod.mount(app, SimpleNamespace(auth=auth, store=store, post=post, SYSTEM=SYSTEM), vault)
     return app
 

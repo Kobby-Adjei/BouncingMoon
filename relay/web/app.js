@@ -2333,6 +2333,12 @@ async function thread(id, people) {
 // ------------------------------------------------------------------ start
 brandmini.append(mark(), h("span", { class: "word", text: "Relay" }));
 (async function start() {
+  // arriving from the old address with a one-time code: read it, and clear it from the address bar at once
+  let handoff = null;
+  if (location.hash.startsWith("#handoff=")) {
+    try { handoff = decodeURIComponent(location.hash.slice(9)); } catch {}
+    history.replaceState(null, "", "/app");
+  }
   const wantInvite = location.hash === "#invite";          // the landing page's "Ask for an invite"
   if (wantInvite) history.replaceState(null, "", "/app");
   // an invite link: take the code from the #fragment and clear it from the address bar at once
@@ -2352,9 +2358,25 @@ brandmini.append(mark(), h("span", { class: "word", text: "Relay" }));
       history.replaceState(null, "", "/app");
     }
   }
-  try { const c = await api("GET", "/auth/config", undefined, null); AUTH = { email: !!(c && c.email), claimed: !(c && c.claimed === false) }; } catch { AUTH = { email: false, claimed: true }; }
+  try { const c = await api("GET", "/auth/config", undefined, null); AUTH = { email: !!(c && c.email), claimed: !(c && c.claimed === false), home: (c && c.home) || null }; } catch { AUTH = { email: false, claimed: true }; }
+  // the hub moved to a new address: take the person with it, signed in (a one-time code), or just go there
+  if (AUTH.home && AUTH.home !== location.origin && /^https?:\/\//.test(AUTH.home)) {
+    const saved = store.get();
+    let code = null;
+    if (saved) { try { code = (await api("POST", "/auth/handoff", undefined, saved)).code; } catch {} }
+    location.replace(AUTH.home + "/app" + (code ? "#handoff=" + encodeURIComponent(code) : location.hash));
+    return;
+  }
   if (link && (link.token || link.hash)) return finishLink(link);
   await loadProviders();
+  if (handoff) {                          // signed in here now; a passkey made on the old address doesn't work here
+    try {
+      const r = await api("POST", "/auth/handoff/claim", { code: handoff }, null);
+      ME = await api("GET", "/agents/me", undefined, r.token); KEY = r.token; store.set(r.token, true);
+      if (CAN_PASSKEY) return offerPasskey(`Welcome back, ${ME.handle}`, "Relay has a new address. Add a passkey for it.", () => goTab(agents));
+      return fuse(() => goTab(agents));
+    } catch (x) { return signin(x.message); }
+  }
   if (joinCode !== null) return joinView(joinCode);
   if (link && link.error) return signin(link.error, AUTH.email ? "email" : "key");
   const saved = store.get();

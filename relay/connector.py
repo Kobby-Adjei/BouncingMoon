@@ -824,7 +824,7 @@ def mount(app, hub) -> None:
         try:
             me = auth(header)
         except HTTPException as e:   # tells an app where to sign in (MCP authorization, RFC 9728)
-            meta = hub.origin(request) + "/.well-known/oauth-protected-resource"
+            meta = (hub.here(request) if hasattr(hub, "here") else hub.origin(request)) + "/.well-known/oauth-protected-resource"
             raise HTTPException(e.status_code, e.detail, headers={
                 "WWW-Authenticate": f'Bearer realm="relay", resource_metadata="{meta}"'})
         if me["role"] == "admin":

@@ -42,7 +42,7 @@ import urllib.request
 from typing import Callable, Optional
 
 from fastapi import Depends, HTTPException, Request
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 EMAIL_RE = re.compile(r"^[^@\s]{1,64}@[^@\s]{1,190}\.[^@\s]{2,24}$")
 SESSION_DAYS = 30
@@ -221,6 +221,10 @@ def resend_refusal(status: int, body: bytes) -> tuple:
     return SEND_FAILED
 
 
+
+class HandoffIn(BaseModel):
+    code: str = Field(max_length=100)
+
 def mount(app, hub, supabase: Optional[Supabase], resend: Optional[Resend] = None) -> None:
     store, auth = hub.store, hub.auth
     wrong_codes: dict = {}          # email -> times of recent wrong codes (in memory; a restart forgets)
@@ -260,7 +264,33 @@ def mount(app, hub, supabase: Optional[Supabase], resend: Optional[Resend] = Non
         invite-only rather than asked for an admin key they don't have."""
         with store.ro() as c:
             claimed = bool(c.execute("SELECT 1 FROM agents WHERE owner=1 LIMIT 1").fetchone())
-        return {"email": bool(resend or supabase), "claimed": claimed}
+        return {"email": bool(resend or supabase), "claimed": claimed, "home": getattr(hub, "public_url", None)}
+
+    # ------------------------------------------------------------ moving to a new address
+    # A passkey belongs to the address it was made on, and a browser keeps a sign-in per address. When the hub
+    # moves, the app on the old address asks for a one-time code and opens the new address with it; the new
+    # address trades it for a sign-in there, and offers a passkey for itself. Codes work once, for 2 minutes.
+    with store.tx() as c:
+        c.execute("CREATE TABLE IF NOT EXISTS handoffs(code_hash TEXT PRIMARY KEY, handle TEXT NOT NULL, expires REAL NOT NULL)")
+
+    @app.post("/auth/handoff")
+    def handoff(me: dict = Depends(auth)):
+        if me["role"] != "human":
+            raise HTTPException(403, "Only a person signs in on the new address this way.")
+        code = "ho_" + secrets.token_urlsafe(24)
+        with store.tx() as c:
+            c.execute("DELETE FROM handoffs WHERE expires<?", (hub.now(),))
+            c.execute("INSERT INTO handoffs(code_hash,handle,expires) VALUES (?,?,?)", (hub.hash(code), me["handle"], hub.now() + 120))
+        return {"code": code, "home": getattr(hub, "public_url", None)}
+
+    @app.post("/auth/handoff/claim")
+    def handoff_claim(body: HandoffIn):
+        with store.tx() as c:
+            r = c.execute("SELECT handle FROM handoffs WHERE code_hash=? AND expires>?", (hub.hash(body.code), hub.now())).fetchone()
+            c.execute("DELETE FROM handoffs WHERE code_hash=?", (hub.hash(body.code),))
+        if not r:
+            raise HTTPException(400, "That link has expired. Open Relay on the old address and try again.")
+        return hub.new_session(r["handle"])
 
     @app.post("/auth/email")
     def auth_email(body: EmailIn, request: Request):

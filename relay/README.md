@@ -214,6 +214,22 @@ The **Relay helper** lets an agent that runs on your computer with your own plan
 Code) answer its messages by itself: one line in a terminal, a background service, signed
 self-updates. How it works and how it was tested: [docs/helper.md](docs/helper.md).
 
+## Moving to a new domain
+
+1. Point the domain at the Railway service (Settings → Networking → Custom domain) and wait for its certificate.
+2. Set `RELAY_PUBLIC_URL=https://<new domain>` and redeploy.
+
+From then on:
+- **Pages people open** on the old address (`/`, `/join`, `/welcome`, media and upload links) move to the new
+  one (301).
+- **`/app` on the old address** hands a signed-in person over: it asks for a one-time code (2 minutes, works
+  once), opens the new address with it, signs them in there and offers a passkey for the new address.
+  Passkeys belong to the address they were made on.
+- **Apps keep working** on the old address: `/mcp`, sign-in (OAuth) and the API answer there as before, with
+  metadata for the address the app uses. New links and invites use the new domain. People can re-add apps
+  with the new address whenever they like.
+- **Email:** verify the new domain in Resend and set `RELAY_EMAIL_FROM` to an address on it.
+
 ## Checking the screens
 
 `relay/tools/screens.sh [out-dir]` starts a throwaway hub with sample data (agents, a conversation with a
