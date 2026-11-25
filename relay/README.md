@@ -282,6 +282,16 @@ underneath, and stay bold with an iris dot until you open them (`unread` in `GET
 conversation marks it seen). After the first answer, if only one app is connected, one card suggests
 connecting a second. What a hub held before this update counts as seen.
 
+## Load test
+
+`python relay/tools/load.py` builds a throwaway hub with 20 people, 50 agents and 100,000 messages in 2,000
+conversations, then for a minute runs every person's app at its real pace, 25 helpers long-polling, 25
+chat apps reading and answering through /mcp, new conversations and searches, all at once, and reports
+the median, 95th and 99th percentile and slowest time for each kind of request, and any failures.
+`--pace 1` runs the apps three times faster than real. On 4 cores: no failures; medians 10-100 ms; the
+slowest one in twenty under 1 s. A hub starts on 100,000 messages (building its search and conversation
+indexes the first time) in about a second.
+
 ## Checking the screens
 
 `relay/tools/screens.sh [out-dir]` starts a throwaway hub with sample data (agents, a conversation with a

@@ -30,6 +30,7 @@ import re
 import secrets
 import sqlite3
 import tempfile
+import threading
 import time
 import urllib.parse
 import urllib.request
@@ -105,6 +106,10 @@ CREATE TABLE IF NOT EXISTS session_cursors(
   handle TEXT NOT NULL, session TEXT NOT NULL, last INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(handle, session));
 CREATE TABLE IF NOT EXISTS delivered(
   msg INTEGER NOT NULL, handle TEXT NOT NULL, session TEXT NOT NULL, PRIMARY KEY(msg, handle, session));
+-- routes and deliveries are looked up by who (and which chat) far more than by message: without these, every
+-- check grows with every message ever delivered
+CREATE INDEX IF NOT EXISTS routes_handle ON routes(handle, session);
+CREATE INDEX IF NOT EXISTS delivered_handle ON delivered(handle, session);
 CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT);
 """
 # Apps that send no id at all (Anthropic's hosted connector, used by claude.ai and Claude Desktop) are
@@ -184,6 +189,8 @@ class Store:
         os.makedirs(self.blobs, exist_ok=True)
         os.makedirs(self.tmp, exist_ok=True)
         self.db_path = os.path.join(data_dir, "relay.db")
+        self.changed = threading.Condition()   # notified after every write: a waiting inbox wakes at once
+        self.writes = 0                         # counts them, so a write between a look and a wait isn't missed
         c = self._connect()
         try:
             c.executescript(SCHEMA)
@@ -273,6 +280,9 @@ class Store:
             raise
         finally:
             c.close()
+        with self.changed:                 # anyone long-polling looks again now, not on its next tick
+            self.writes += 1
+            self.changed.notify_all()
 
     @contextmanager
     def ro(self):
@@ -853,8 +863,12 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
         q = ("SELECT m.* FROM messages m WHERE m.id>? AND m.sender!=? AND ("
              " EXISTS (SELECT 1 FROM json_each(m.mentions) WHERE value=?)"
              " OR (m.channel!=? AND m.channel IN (SELECT channel FROM subs WHERE agent=?))"
-             " OR m.thread IN (SELECT thread FROM follows WHERE agent=?))")
-        a: list = [last, h, h, DIRECT, h, h]
+             " OR m.thread IN (SELECT thread FROM follows WHERE agent=?))"
+             # the same messages, found through indexes: only conversations h is in (a mention makes h a member)
+             # and channels h follows, so a new chat's first look doesn't read the hub's whole history
+             " AND (m.thread IN (SELECT thread FROM members WHERE agent=? UNION SELECT thread FROM follows WHERE agent=?)"
+             " OR (m.channel!=? AND m.channel IN (SELECT channel FROM subs WHERE agent=?)))")
+        a: list = [last, h, h, DIRECT, h, h, h, h, DIRECT, h]
         if session:
             q += (" AND NOT EXISTS (SELECT 1 FROM routes r WHERE r.msg=m.id AND r.handle=? AND r.session!=?)"
                   " AND NOT EXISTS (SELECT 1 FROM delivered d WHERE d.msg=m.id AND d.handle=? AND d.session=?)"
@@ -1567,9 +1581,13 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
             m["media"] = [media_svc.brief(x) for x in files.get(m["id"], [])]
             m["read"] = read.get(m["id"], {})
         if thread and rows and me["role"] == "human":       # a person looking at a conversation has seen it
-            with store.tx() as c:
-                c.execute("INSERT INTO seen(handle,thread,last) VALUES (?,?,?) ON CONFLICT(handle,thread)"
-                          " DO UPDATE SET last=MAX(last, excluded.last)", (me["handle"], thread, max(m["id"] for m in rows)))
+            top = max(m["id"] for m in rows)
+            with store.ro() as c:
+                was = c.execute("SELECT last FROM seen WHERE handle=? AND thread=?", (me["handle"], thread)).fetchone()
+            if not was or was["last"] < top:                # only when it moved: polls don't take the write lock
+                with store.tx() as c:
+                    c.execute("INSERT INTO seen(handle,thread,last) VALUES (?,?,?) ON CONFLICT(handle,thread)"
+                              " DO UPDATE SET last=MAX(last, excluded.last)", (me["handle"], thread, top))
         return rows[::-1] if latest else rows
 
     @app.get("/threads")
@@ -1679,9 +1697,26 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
             only, more = visible(c, me["handle"])
             if store.fts:
                 match = " AND ".join(f'"{w}"*' for w in words)
-                rows = c.execute(f"SELECT m.id, m.thread, m.sender, m.time, snippet(msg_fts, 0, char(2), char(3), '…', 14) AS snip"
-                                 f" FROM msg_fts JOIN messages m ON m.id=msg_fts.rowid WHERE msg_fts MATCH ? AND {only}"
-                                 " ORDER BY m.id DESC LIMIT 300", [match] + more).fetchall()
+                # newest first straight from the index (cheap), then who may see them, then the marked words
+                # only for the lines that will be shown (snippets cost far more than finding)
+                ids = [r[0] for r in c.execute("SELECT rowid FROM msg_fts WHERE msg_fts MATCH ? ORDER BY rowid DESC LIMIT 2000", (match,))]
+                rows = []
+                if ids:
+                    cand = c.execute(f"SELECT m.id, m.thread, m.sender, m.time FROM messages m WHERE m.id IN ({','.join('?' * len(ids))})"
+                                     f" AND {only} ORDER BY m.id DESC", ids + more).fetchall()
+                    per, keep = {}, []
+                    for r in cand:
+                        n = per.get(r["thread"], 0)
+                        if n < 3 and (n or len(per) < limit):
+                            per[r["thread"]] = n + 1
+                            keep.append(r)
+                    snips = {}
+                    if keep:
+                        snips = {r[0]: r[1] for r in c.execute(
+                            f"SELECT rowid, snippet(msg_fts, 0, char(2), char(3), '…', 14) FROM msg_fts"
+                            f" WHERE msg_fts MATCH ? AND rowid IN ({','.join('?' * len(keep))})", [match] + [r["id"] for r in keep])}
+                    rows = [{"id": r["id"], "thread": r["thread"], "sender": r["sender"], "time": r["time"], "snip": snips.get(r["id"], "")}
+                            for r in keep]
             else:
                 rows = c.execute(f"SELECT m.id, m.thread, m.sender, m.time, m.text AS snip FROM messages m WHERE {only}"
                                  + "".join(" AND m.text LIKE ? ESCAPE '\\'" for _ in words) + " ORDER BY m.id DESC LIMIT 300",
@@ -1742,9 +1777,12 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
                 if box["messages"] and not wait:          # a reader gets each thread's earlier messages too
                     take(c, me["handle"], session, box["messages"])
                     with_context(c, box["messages"])
+            seen_writes = store.writes                    # after our own write, or we'd wake ourselves
             if box["messages"] or time.monotonic() >= deadline:
                 return box
-            time.sleep(0.5)
+            with store.changed:               # sleep until something is written (or 2 s pass), not a fixed tick
+                store.changed.wait_for(lambda: store.writes != seen_writes,
+                                       timeout=max(0.05, min(2.0, deadline - time.monotonic())))
 
     @app.post("/inbox/ack")
     def ack(body: AckIn, me: dict = Depends(auth), x_relay_session: str = Header(default="")):
