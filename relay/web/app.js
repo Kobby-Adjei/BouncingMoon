@@ -275,21 +275,46 @@ function screen(name, opts, ...kids) {
 const RAIL_ICONS = {
   agents: "M9 11a3.25 3.25 0 1 0 0-6.5A3.25 3.25 0 0 0 9 11zM3 19.5c.5-3.3 2.9-5.3 6-5.3s5.5 2 6 5.3M15.5 4.8a3.1 3.1 0 0 1 0 6M17.5 14.5c1.9.6 3.1 2.3 3.5 5",
   activity: ICONS.chat,
+  "me/keys": "M4 15.5a4 4 0 1 0 8 0a4 4 0 1 0-8 0M10.9 12.6L19.5 4M16.5 7l2.5 2.5M14 9.5l2 2",
 };
-function railItem(tab, label) {
+function railItem(tab, label, extra) {
   return h("button", { class: "railitem press", type: "button", "data-tab": tab, title: label, onclick: () => nav(tab) },
-    h("span", { class: "ic" }, svg("0 0 24 24", [{ d: RAIL_ICONS[tab], ...stroke }])), h("span", { class: "lbl", text: label }));
+    h("span", { class: "ic" }, svg("0 0 24 24", [{ d: RAIL_ICONS[tab], ...stroke }]), extra || null), h("span", { class: "lbl", text: label }));
 }
+// A desktop is an app, not a stretched phone: one sidebar with everything one click away (Relay, Add,
+// Agents, Activity with what's waiting for you, Keys) and you at the bottom. No top bar above it.
 function ensureShell() {
   if (shell && shell.isConnected) return;
+  const waiting = h("span", { class: "rbadge", hidden: "" });
+  const person = ME && ME.role === "human";
   rail = h("nav", { class: "rail", "aria-label": "Relay" },
+    h("div", { class: "railbrand" }, mark(), h("span", { class: "word", text: "Relay" })),
     canAdd() ? h("button", { class: "railadd press", type: "button", title: isOwner() ? "Add an agent or person" : "Connect an app", onclick: () => nav("add") },
-      icon("plus", "2.4"), h("span", { class: "lbl", text: "Add" })) : null,
-    railItem("agents", "Agents"), railItem("activity", "Activity"));
+      icon("plus", "2.4"), h("span", { class: "lbl", text: isOwner() ? "Add" : "Connect an app" })) : null,
+    railItem("agents", "Agents"), railItem("activity", "Activity", waiting), person ? railItem("me/keys", "Keys") : null,
+    h("div", { class: "railgap" }),
+    ME && ME.role !== "admin" ? h("button", { class: "railme press", type: "button", "data-tab": "me", title: ME.handle, onclick: () => nav("me") },
+      avatar({ handle: ME.handle, role: "human" }, 32),
+      h("span", { class: "lbl" }, h("b", { text: ME.handle }), h("span", { text: ME.owner ? "Owner" : "You" }))) : null);
   listPane = h("section", { class: "listpane", "aria-label": "List" });
   detailPane = h("section", { class: "detail", "aria-label": "Details" });
   shell = h("div", { class: "shell" }, rail, listPane, detailPane);
   app.replaceChildren(shell);
+  // what's waiting for you (an OK to give, someone asking to join), on Activity, kept fresh
+  const count = async () => {
+    const [asks, wants] = await Promise.all([person ? api("GET", "/approvals").catch(() => []) : [],
+      isOwner() ? api("GET", "/invite-requests").catch(() => []) : []]);
+    const n = asks.length + wants.length;
+    waiting.textContent = n > 9 ? "9+" : String(n); waiting.hidden = !n;
+    waiting.closest(".railitem").setAttribute("aria-label", n ? `Activity, ${n} waiting for you` : "Activity");
+  };
+  count(); every(shell, count, 15000);
+}
+// which sidebar item is lit: Keys and You when they're open, else the list beside it
+function markRail() {
+  if (!rail) return;
+  const cur = route.startsWith("me/keys") ? "me/keys" : route.split("/")[0] === "me" ? "me" : (listPane && listPane.dataset.tab) || "agents";
+  for (const b of rail.querySelectorAll("[data-tab]")) b.toggleAttribute("aria-current", b.dataset.tab === cur);
 }
 function backLabel() {
   return h("button", { class: "link sm press paneback", type: "button", onclick: goBack },
@@ -302,7 +327,7 @@ function paneScreen(name, tab, kids) {
   if (tab) {
     listPane.dataset.tab = tab;
     listPane.replaceChildren(view);
-    for (const b of rail.querySelectorAll(".railitem")) b.toggleAttribute("aria-current", b.dataset.tab === tab);
+    markRail();
   } else {
     const up = parentOf(route);
     if (up && up !== "agents" && up !== "activity") view.prepend(backLabel());
@@ -401,7 +426,7 @@ function render(r) {
       call("list", tab === "activity" ? activity : agents);
     }
     call("detail", ...screenFor(r));
-    markSelected();
+    markSelected(); markRail();
   } else {
     call("app", ...screenFor(r));
   }
@@ -466,7 +491,7 @@ back.addEventListener("click", goBack);
 for (const b of topseg.children) b.addEventListener("click", () => goTab(b.dataset.go === "activity" ? activity : agents));
 window.addEventListener("scroll", () => bar.classList.toggle("scrolled", window.scrollY > 8), { passive: true });
 function drawMe() {
-  barRight.replaceChildren(ME && ME.role !== "admin" ? h("button", { class: "mebtn press", type: "button", "aria-label": "You", title: ME.handle, onclick: () => nav("me") },
+  barRight.replaceChildren(ME && ME.role !== "admin" && !WIDE ? h("button", { class: "mebtn press", type: "button", "aria-label": "You", title: ME.handle, onclick: () => nav("me") },
     avatar({ handle: ME.handle, role: "human" }, WIDE ? 36 : 32)) : "");
 }
 // on a desktop, the detail pane when nothing is open

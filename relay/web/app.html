@@ -404,7 +404,7 @@ pre.block.muted { color: var(--ink2); }
    Below 960px none of this applies and the phone layout above is the whole story. */
 .rail, .listpane, .detail { display: none; }
 @media (min-width: 960px) {
-  :root { --barh: 52px; --rail: 76px; --list: clamp(260px, 32vw, 300px); }
+  :root { --barh: 52px; --rail: 76px; --list: clamp(260px, 32vw, 300px); --side: var(--bg2); }
   body:has(.shell) { overflow: hidden; font-size: 14px; }
   .bar { background: var(--bg); backdrop-filter: none; -webkit-backdrop-filter: none; }
   .bar-in { max-width: none; height: var(--barh); margin: 0; padding: 0 16px 0 24px; grid-template-columns: auto 1fr; }
@@ -416,12 +416,26 @@ pre.block.muted { color: var(--ink2); }
   .mebtn { display: grid; border-radius: 50%; transition: box-shadow .25s var(--ease); }
   .mebtn:hover { box-shadow: 0 0 0 3px var(--fill2); }
 
-  .shell { display: grid; grid-template-columns: var(--rail) var(--list) minmax(0, 1fr); height: calc(100vh - var(--barh));
-    height: calc(100dvh - var(--barh)); }
+  /* the sidebar carries Relay's name and you: no bar above the app */
+  body:has(.shell) #bar { display: none; }
+  .shell { display: grid; grid-template-columns: var(--rail) var(--list) minmax(0, 1fr); height: 100vh; height: 100dvh; }
   .rail, .listpane, .detail { display: flex; }
 
-  /* rail: icons with a small label underneath; the full rail comes at 1024px */
-  .rail { flex-direction: column; align-items: center; gap: 2px; padding: 12px 0 16px; }
+  /* rail: icons with a small label underneath; the full sidebar comes at 1024px */
+  .rail { flex-direction: column; align-items: center; gap: 2px; padding: 0 0 14px; background: var(--side); }   /* a shade apart, no hairline */
+  .railbrand { display: flex; align-items: center; gap: 9px; height: 52px; flex: none; font: 650 16px/1 var(--display); letter-spacing: -.02em; color: var(--ink); }
+  .railbrand .mark { width: 24px; height: 24px; }
+  .railbrand .word { display: none; }
+  .railgap { flex: 1; }
+  .railitem .ic { position: relative; }
+  .rbadge { position: absolute; top: -4px; right: 0; min-width: 18px; height: 18px; padding: 0 5px; border-radius: 999px;
+    background: var(--sun); color: var(--on-sun); font: 700 11px/18px var(--font); text-align: center; box-shadow: 0 0 0 2px var(--side);
+    animation: pop .5s var(--spring) both; }
+  .rbadge[hidden] { display: none; }
+  .railme { display: grid; place-items: center; width: 48px; height: 48px; padding: 0; border: 0; border-radius: 50%; background: none; cursor: pointer; color: var(--ink); }
+  .railme .lbl { display: none; }
+  .railme:hover .av, .railme[aria-current] .av { box-shadow: 0 0 0 3px var(--fill2); }
+  .railme .av { transition: box-shadow .2s var(--ease); }
   .railadd { width: 40px; height: 40px; margin-bottom: 14px; border: 0; border-radius: var(--r-btn); background: var(--accent); color: var(--on-accent);
     display: grid; place-items: center; cursor: pointer; font-weight: 600; font-size: 14px; }
   .railadd svg { width: 18px; height: 18px; }
@@ -506,7 +520,9 @@ pre.block.muted { color: var(--ink2); }
   /* nothing open */
   .detail[data-page=pick] > .page { display: grid; place-items: center; padding-bottom: 96px; }
   .detail[data-page=pick] .blank { padding: 0; }
-  .detail[data-page=pick] .blank .t { font-size: 15px; font-weight: 500; color: var(--ink2); }
+  .detail[data-page=pick] .blank { max-width: 420px; }
+  .detail[data-page=pick] .blank .t { font-size: 24px; font-weight: 700; letter-spacing: -.025em; margin-top: 8px; }
+  .detail .blank .firstbtn { justify-self: center; width: auto; padding: 0 20px; }
   /* the overview where "pick one" used to be: a heading, a quiet line, at most one button, the address */
   .overview { display: grid; justify-items: center; gap: 12px; text-align: center; max-width: 420px; }
   .overview .title { font-size: 24px; margin: 8px 0 0; }
@@ -577,21 +593,37 @@ pre.block.muted { color: var(--ink2); }
   .detail .profile > .title { font-size: 20px; }
 }
 @media (min-width: 1024px) {
-  :root { --rail: 216px; --list: 320px; }
+  :root { --rail: 200px; --list: 320px; }
   .bar-in { padding-left: 20px; }
   .rail { align-items: stretch; padding: 12px 10px 16px; gap: 1px; }
-  .railadd { display: inline-flex; align-self: flex-start; gap: 6px; width: auto; height: 32px; padding: 0 14px 0 10px; margin: 0 0 14px 2px; border-radius: 999px; }
+  .rail { padding: 0 12px 12px; }
+  .railbrand { padding: 0 8px; }
+  .railbrand .word { display: inline; }
+  .railadd { display: flex; justify-content: center; gap: 6px; width: auto; height: 36px; padding: 0 14px 0 10px; margin: 4px 0 18px; border-radius: 999px;
+    box-shadow: 0 8px 18px -10px var(--accent); }
   .railadd svg { width: 16px; height: 16px; }
   .railadd .lbl { display: inline; }
-  .railitem { display: flex; align-items: center; gap: 10px; width: auto; height: 32px; padding: 0 12px; border-radius: 999px; font-size: 14px;
+  .railitem { display: flex; align-items: center; gap: 11px; width: auto; height: 36px; padding: 0 12px; border-radius: 12px; font-size: 14px;
     transition: background-color .2s var(--ease), color .2s var(--ease); }
+  .railitem .ic { display: contents; }          /* icon, name, then the count at the far end */
+  .railitem .rbadge { position: static; order: 2; margin-left: auto; box-shadow: none; }
+  .railitem .lbl { order: 1; flex: 1; text-align: left; }
+  .railitem:has(.rbadge:not([hidden])) .lbl { flex: 0 1 auto; }
+  .railme { display: flex; align-items: center; gap: 10px; width: auto; height: auto; padding: 8px; border-radius: 14px; text-align: left; }
+  .railme .lbl { display: grid; min-width: 0; line-height: 1.25; }
+  .railme .lbl b { font-size: 14px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .railme .lbl span { font-size: 12px; color: var(--ink2); }
+  .railme:hover { background: var(--fill); }
+  .railme[aria-current] { background: var(--fill2); }
+  .railme:hover .lbl span, .railme[aria-current] .lbl span { color: var(--ink); }   /* grey on the lit shade is too faint to read */
+  .railme:hover .av, .railme[aria-current] .av { box-shadow: none; }
   .railitem .ic { width: auto; height: auto; background: none !important; }
   .railitem svg { width: 18px; height: 18px; }
   .railitem:hover { background: var(--fill); }
   .railitem[aria-current] { background: var(--fill2); }
   .railitem[aria-current] .ic { color: var(--accent); }
 }
-@media (min-width: 1280px) { :root { --list: 360px; } }
+@media (min-width: 1280px) { :root { --rail: 216px; --list: 360px; } }
 </style>
 </head>
 <body>

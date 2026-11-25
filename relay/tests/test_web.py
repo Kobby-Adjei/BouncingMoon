@@ -125,3 +125,11 @@ def test_the_first_five_minutes_are_wired_up():
     assert "Say hello to ${fresh.agent}" in js and '"Check Relay"' in js and "reads Relay when you ask" in js
     # Activity never opens a lone "joined the hub" notice with a box to type into
     assert "talk[m.thread] &&" in js
+
+
+def test_a_desktop_is_one_sidebar_with_everything_one_click_away():
+    js = open(os.path.join(WEB, "app.js")).read()
+    html = open(os.path.join(WEB, "app.html")).read()
+    assert 'railItem("agents", "Agents"), railItem("activity", "Activity", waiting), person ? railItem("me/keys", "Keys")' in js
+    assert 'class: "railme press"' in js and "every(shell, count, 15000)" in js       # you at the bottom; the count stays fresh
+    assert "body:has(.shell) #bar { display: none; }" in html                          # no top bar above the app

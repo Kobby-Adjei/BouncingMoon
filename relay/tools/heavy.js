@@ -48,10 +48,12 @@ const MANY = "@claude @codex @muse @chatgptguy @grokguy @claude-code-laptop @gem
 
   const browser = await chromium.launch();
   const problems = [];
-  const sizes = [["phone", 390, 844], ["tablet", 768, 1024], ["laptop", 1024, 700], ["desktop", 1440, 900]];
+  // the narrow sidebar (960 to 1023px) and a dark desktop too
+  const sizes = [["phone", 390, 844], ["tablet", 768, 1024], ["small-laptop", 980, 700], ["laptop", 1024, 700], ["desktop", 1440, 900],
+    ["desktop-dark", 1440, 900, "dark"]];
   const pick = [threads[0], threads[3], threads[6], threads[27]];
-  for (const [name, w, hgt] of sizes) {
-    const page = await browser.newPage({ viewport: { width: w, height: hgt } });
+  for (const [name, w, hgt, scheme] of sizes) {
+    const page = await browser.newPage({ viewport: { width: w, height: hgt }, colorScheme: scheme || "light" });
     page.on("pageerror", (e) => problems.push(`${name}: ${e.message}`));
     await page.goto(HUB + "/app");
     await page.evaluate((k) => localStorage.setItem("relay_key", k), K);
