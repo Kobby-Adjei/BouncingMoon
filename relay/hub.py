@@ -35,7 +35,7 @@ import urllib.parse
 import urllib.request
 import uuid
 from contextlib import asynccontextmanager, contextmanager
-from typing import Any, Optional
+from typing import Any, List, Optional
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
 from fastapi.responses import FileResponse, Response
@@ -374,6 +374,18 @@ class ListenerIn(BaseModel):
     woke: Optional[float] = None     # when it last woke that app (the helper's own clock)
 
 
+class PushKeysIn(BaseModel):
+    p256dh: str = Field(max_length=200)
+    auth: str = Field(max_length=100)
+
+
+class PushDeviceIn(BaseModel):
+    endpoint: str = Field(max_length=1000)
+    keys: Optional[PushKeysIn] = None
+    kinds: Optional[List[str]] = None
+    label: Optional[str] = Field(default=None, max_length=60)
+
+
 class DeleteIn(BaseModel):
     confirm: str = Field(max_length=64)          # the person's own name, typed: no accidents
 
@@ -433,7 +445,7 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
                supabase_url: Optional[str] = None, supabase_key: Optional[str] = None,
                supabase_send=None, resend_key: Optional[str] = None, email_from: Optional[str] = None,
                resend_send=None, vault_send=None, vault_resolve=None, caption_transcriber=None, caption_threads: bool = True,
-               caption_public_url: Optional[str] = None,
+               caption_public_url: Optional[str] = None, push_opener=None,
                session_idle_seconds: Optional[float] = None,
                session_sweep_seconds: Optional[float] = None,
                woken_idle_seconds: Optional[float] = None,
@@ -486,7 +498,11 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
     # old one (their sign-in, /mcp and the API answer there as before); /app hands a signed-in person over.
     MOVED_PAGES = re.compile(r"^/(?:join|welcome|privacy|terms|m/[^/]+(?:/.*)?|up/[^/]+)?$")
 
+    seen_https: dict = {"origin": None}          # the hub's own https address, as the last visitor reached it
+
     async def move_home(request: Request, call_next):
+        if request.url.scheme == "https":
+            seen_https["origin"] = own_origin(request)
         if public_url and request.method == "GET" and own_origin(request) != public_url and MOVED_PAGES.match(request.url.path):
             target = public_url + request.url.path + (("?" + request.url.query) if request.url.query else "")
             return Response(status_code=301, headers={"Location": target, "Cache-Control": "no-store"})
@@ -523,6 +539,15 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
                   cooldown=wake_cooldown if wake_cooldown is not None else float(
                       os.environ.get("RELAY_WAKE_COOLDOWN", 20)))
     app.state.waker = waker
+    # notifications on people's phones and computers (Web Push, signed with the hub's own key)
+    from . import push as push_mod
+
+    def push_contact() -> str:
+        """Who runs this hub, as the push services ask: the published contact, else the hub's address."""
+        mail = os.environ.get("RELAY_LEGAL_EMAIL")
+        return f"mailto:{mail}" if mail else (public_url or seen_https["origin"] or "https://localhost")
+    pusher = push_mod.Pusher(store, data_dir, push_contact, opener=push_opener)
+    app.state.pusher = pusher
     if not os.environ.get("RELAY_SECRET_KEY"):     # wake-up secrets locked with the admin token move to the hub's own
         waker.rekey(_cipher(admin_token, None))
 
@@ -747,6 +772,16 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
             c.execute("UPDATE messages SET thread=? WHERE id=?", (mid, mid))
         c.execute("INSERT INTO convs(thread,last,n) VALUES (?,?,1) ON CONFLICT(thread) DO UPDATE SET last=excluded.last, n=n+1",
                   (thread, mid))
+        if sender != SYSTEM and not text.startswith("\U0001F511"):     # an agent answered (a key note has its own)
+            row = c.execute("SELECT role FROM agents WHERE handle=?", (sender,)).fetchone()
+            if row and row["role"] == "agent":
+                people_in = {r["agent"] for r in c.execute(
+                    "SELECT m.agent FROM members m JOIN agents a ON a.handle=m.agent WHERE m.thread=? AND a.role='human'", (thread,))}
+                people_in |= {m for m in mentions if (c.execute("SELECT role FROM agents WHERE handle=?", (m,)).fetchone() or {"role": ""})["role"] == "human"}
+                line = next((l.strip() for l in text.splitlines() if l.strip()), "")
+                for person in people_in - {sender}:
+                    pusher.notify(person, "answers", f"{sender} answered", line[:200] or "A new message",
+                                  f"/app#activity/{thread}", tag=f"t{thread}")
         for m in {sender, *mentions} - {SYSTEM}:
             c.execute("INSERT OR IGNORE INTO members(thread,agent) VALUES (?,?)", (thread, m))
         if sender != SYSTEM:
@@ -929,7 +964,7 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
     # Authorization header, never in a URL or cookie.
     here = os.path.dirname(os.path.abspath(__file__))
     page_headers = {
-        "Content-Security-Policy": ("default-src 'none'; script-src 'self'; connect-src 'self'; "
+        "Content-Security-Policy": ("default-src 'none'; script-src 'self'; connect-src 'self'; worker-src 'self'; "
                                     "style-src 'self' 'unsafe-inline'; img-src 'self' data:; media-src 'self'; "
                                     "manifest-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"),
         "X-Content-Type-Options": "nosniff",
@@ -1030,6 +1065,64 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
 
     app.add_api_route("/privacy", lambda: legal_page("privacy.html"), methods=["GET"], include_in_schema=False)
     app.add_api_route("/terms", lambda: legal_page("terms.html"), methods=["GET"], include_in_schema=False)
+
+    # ---------------------------------------------------------------- notifications (Web Push)
+    def tell_owner(kind: str, title: str, body: str, url: str, tag: str) -> None:
+        with store.ro() as c:
+            owner = first_owner(c)
+        if owner:
+            pusher.notify(owner, kind, title, body, url, tag=tag)
+
+    def need_person(me: dict) -> str:
+        if me["role"] != "human":
+            raise HTTPException(403, "Notifications are for people. Sign in as yourself.")
+        return me["handle"]
+
+    @app.get("/push/key")
+    def push_key():
+        """The hub's public key, which a browser needs to subscribe (applicationServerKey)."""
+        return {"key": pusher.public}
+
+    @app.post("/push/devices")
+    def push_subscribe(body: PushDeviceIn, me: dict = Depends(auth)):
+        """This browser wants notifications: its push subscription and which kinds."""
+        h = need_person(me)
+        if not body.keys:
+            raise HTTPException(400, "send the subscription's keys (p256dh and auth)")
+        kinds = body.kinds if body.kinds is not None else list(push_mod.KINDS)
+        try:
+            return pusher.subscribe(h, body.endpoint, body.keys.p256dh, body.keys.auth, kinds, body.label)
+        except ValueError as e:
+            raise HTTPException(400, str(e)) from None
+
+    @app.post("/push/devices/find")
+    def push_device(body: PushDeviceIn, me: dict = Depends(auth)):
+        """Is this browser's subscription on the hub, and for which kinds? (The endpoint goes in the body.)"""
+        return pusher.device(need_person(me), body.endpoint) or {"endpoint": None, "kinds": []}
+
+    @app.put("/push/devices")
+    def push_kinds(body: PushDeviceIn, me: dict = Depends(auth)):
+        got = pusher.set_kinds(need_person(me), body.endpoint, body.kinds or [])
+        if not got:
+            raise HTTPException(404, "This device isn't set up for notifications.")
+        return got
+
+    @app.post("/push/devices/remove")
+    def push_unsubscribe(body: PushDeviceIn, me: dict = Depends(auth)):
+        return {"removed": pusher.unsubscribe(need_person(me), body.endpoint)}
+
+    @app.post("/push/test")
+    def push_test(me: dict = Depends(auth)):
+        """A notification to every device of yours, to see that it works."""
+        n = pusher.notify(need_person(me), "approvals", "Relay notifications are on",
+                          "This is what it looks like when something needs you.", "/app#activity", tag="test")
+        return {"sent": n}
+
+    @app.get("/sw.js", include_in_schema=False)
+    def service_worker():
+        """Shows notifications and opens the right screen when one is tapped. Served from the root so it
+        covers the whole app."""
+        return static("web/sw.js", "text/javascript")
 
     @app.get("/manifest.webmanifest", include_in_schema=False)
     def manifest():
@@ -1613,6 +1706,7 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
                                ("agent_keys", "handle"), ("routes", "handle"), ("thread_sessions", "handle"),
                                ("session_cursors", "handle"), ("delivered", "handle"), ("passkeys", "handle"),
                                ("oauth_tokens", "handle"), ("oauth_codes", "handle"), ("webauthn_challenges", "handle"),
+                               ("push_subs", "handle"), ("reads", "handle"), ("seen", "handle"),
                                ("agents", "handle")):
                 c.execute(f"DELETE FROM {table} WHERE {col} IN ({q})", hs)
             for table in ("oauth_tokens", "oauth_codes"):
@@ -1931,6 +2025,13 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
     vault = vault_mod.Vault(store, _now, os.environ.get("RELAY_VAULT_KEY") or hub_secret,
                             send=vault_send, resolve=vault_resolve)
     app.state.vault = vault
+    VERBS = {"GET": "read", "POST": "post", "PUT": "change", "PATCH": "change", "DELETE": "delete"}
+
+    def ok_needed(owner, cid, agent, method, url, key_name):
+        host = urllib.parse.urlsplit(url).hostname or url
+        pusher.notify(owner, "approvals", f"{agent} wants to {VERBS.get(method, method)}",
+                      f"With your {key_name} key, on {host}. Tap to review.", f"/app#approve/{cid}", tag=cid, urgent=True)
+    vault.on_waiting = ok_needed
     if not os.environ.get("RELAY_VAULT_KEY"):
         vault.rekey(admin_token)                    # saved keys sealed with the admin token move to the hub's own
 
@@ -1951,7 +2052,7 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
                            send=resend_send) if rs_key else None
     people.mount(app, SimpleNamespace(store=store, auth=auth, now=_now, hash=_hash, client_ip=client_ip,
                                       check_new_agent=check_new_agent, public_url=public_url,
-                                      new_session=lambda h: new_session(h)), supabase, resend)
+                                      new_session=lambda h: new_session(h), tell_owner=tell_owner), supabase, resend)
 
     # ---------------------------------------------------------------- connect apps with "Allow" (OAuth)
     def new_session(handle: str) -> dict:

@@ -253,6 +253,18 @@ takes you down. Lists of agents get a find box past eight. On the hub, `convs` (
 message and count) and `members` (who has been in it) are kept as messages arrive, so who-may-see-what
 never rereads every message; hubs from before build both once on start.
 
+## Notifications
+
+Me → Notifications turns them on for that device: an agent waiting for your OK on one of your keys, an
+agent answering you (at most one a minute per conversation), someone asking to join (the owner). Each
+kind has its own switch; "Send a test" shows what one looks like. It's standard Web Push with no outside
+service: the hub signs each send with its own key (`push_key.pem` in the data folder, made once, VAPID)
+and encrypts it for the one device it goes to (RFC 8291), so Apple, Google or Mozilla carry it without
+being able to read it. Only those push services are accepted as addresses to send to. A device the push
+service says is gone is forgotten; deleting an account forgets its devices. On iPhone and iPad, Apple
+allows notifications only for a web app on the Home Screen (iOS 16.4+), and the screen says how.
+`RELAY_LEGAL_EMAIL`, when set, is the contact the push services see; otherwise the hub's own address.
+
 ## Closing the loop
 
 Under your newest message: "Sent", then "Read by claude · 3:29" once its chat has picked it up (a helper

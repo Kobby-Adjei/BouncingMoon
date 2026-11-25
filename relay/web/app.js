@@ -369,7 +369,7 @@ function known(r) {
   if (top === "activity") return !x || (x === "new" && !y) || (x === "to" && !!y) || (/^\d+$/.test(x) && !y);
   if (top === "add") return isOwner() ? (!y || (y === "withkey" && !!x))
     : !!ME && ME.role === "human" && !y && (!x || APPS.some((a) => a.id === x && a.style === "allow"));
-  if (top === "me") return (!x || ((x === "apps" || x === "passkeys" || x === "delete" || x === "friend") && !y) || (x === "keys" && (!y || y === "new" || /^k_[0-9a-f]{12}$/.test(y))))
+  if (top === "me") return (!x || ((x === "apps" || x === "passkeys" || x === "delete" || x === "friend" || x === "notify") && !y) || (x === "keys" && (!y || y === "new" || /^k_[0-9a-f]{12}$/.test(y))))
     && !!ME && ME.role !== "admin";
   if (top === "approve") return !!ME && ME.role === "human" && /^c_[0-9a-f]{16}$/.test(x || "") && !y;
   if (top === "ask") return isOwner() && /^ir_[0-9a-f]{12}$/.test(x || "") && !y;
@@ -407,6 +407,7 @@ function screenFor(r) {
   }
   if (p[0] === "me" && p[1] === "apps") return [appsScreen];
   if (p[0] === "me" && p[1] === "passkeys") return [passkeysScreen];
+  if (p[0] === "me" && p[1] === "notify") return [notifyScreen];
   if (p[0] === "me" && p[1] === "delete") return [deleteScreen];
   if (p[0] === "me" && p[1] === "friend") return [friendScreen];
   if (p[0] === "me" && p[1] === "keys") return !p[2] ? [keysScreen] : p[2] === "new" ? [keyNew] : [keyDetail, p[2]];
@@ -496,6 +497,9 @@ function goTab(fn) {
   nav(tab);
 }
 back.addEventListener("click", goBack);
+if ("serviceWorker" in navigator) navigator.serviceWorker.addEventListener("message", (e) => {
+  if (e.data && e.data.relay === "open" && typeof e.data.url === "string" && e.data.url.startsWith(location.origin)) location.href = e.data.url;
+});
 for (const b of topseg.children) b.addEventListener("click", () => goTab(b.dataset.go === "activity" ? activity : agents));
 window.addEventListener("scroll", () => bar.classList.toggle("scrolled", window.scrollY > 8), { passive: true });
 function drawMe() {
@@ -1361,6 +1365,8 @@ async function meScreen() {
         miniOrb("claude", "relay", 40), h("span", { class: "grow" }, h("b", { text: "Connected apps" })), chev()),
       h("button", { class: "door press", type: "button", onclick: () => nav("me/passkeys") },
         passOrb(40), h("span", { class: "grow" }, h("b", { text: "Passkeys" })), chev()),
+      ME.role === "human" ? h("button", { class: "door press", type: "button", onclick: () => nav("me/notify") },
+        bellOrb(40), h("span", { class: "grow" }, h("b", { text: "Notifications" })), notifyHint(), chev()) : null,
       WIDE ? null : h("button", { class: "door press", type: "button", onclick: () => nav("me/keys") },
         keyOrb("", 40), h("span", { class: "grow" }, h("b", { text: "Keys" })), chev()),
       !ME.owner && ME.role === "human" ? friendDoor() : null,
@@ -1514,6 +1520,101 @@ function connectHint() {
   btn.addEventListener("click", () => copy(url, btn.querySelector(".c"), "Copy"));
   return h("div", { class: "addapp" }, canAdd() ? h("button", { class: "btn small press", type: "button", onclick: () => nav("add") }, icon("plus", "2.4"), "Connect an app") : null,
     h("span", { class: "k", text: "Or paste your Relay address into any MCP app" }), btn);
+}
+
+// ------------------------------------------------------------------ notifications: when something needs you
+// Web Push from the hub itself. Android and computers: Allow, done. iPhone and iPad only allow it for a web
+// app added to the Home Screen (iOS 16.4+), so there the screen says how, first.
+const PUSH_KINDS = [["approvals", "An agent wants to use one of your keys", "So it isn't left waiting a day"],
+  ["answers", "An agent answers you", "At most one a minute per conversation"],
+  ["invites", "Someone asks to join", null]];
+const pushable = () => "serviceWorker" in navigator && "PushManager" in window && "Notification" in window;
+const isIOS = () => /iPhone|iPad|iPod/.test(navigator.userAgent) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+const homeScreen = () => matchMedia("(display-mode: standalone)").matches || navigator.standalone === true;
+function bellOrb(size) {         // you, and Relay's half with a small bell: it can tap you on the shoulder
+  return h("span", { class: "morb", style: `--s:${size}px`, "aria-hidden": "true" }, h("span", { class: "mh l" }, youGlyph()),
+    h("span", { class: "mh r dark" }, svg("0 0 24 24", [{ d: ICONS.bell, ...stroke }])));
+}
+// after you've answered one: the next one can come to you instead of waiting a day for you to look
+function pushNudge() {
+  if (!pushable() || (window.Notification && Notification.permission === "granted")) return null;
+  return h("p", { class: "quiet" }, "Next time, get a notification. ",
+    h("button", { class: "inline press", type: "button", onclick: () => nav("me/notify") }, "Turn them on"));
+}
+async function pushSub() {
+  if (!pushable()) return null;
+  const reg = await navigator.serviceWorker.getRegistration("/");
+  return reg ? reg.pushManager.getSubscription() : null;
+}
+function notifyHint() {
+  const s = h("span", { class: "doorhint" });
+  pushSub().then((sub) => { s.textContent = sub && Notification.permission === "granted" ? "On" : "Off"; }).catch(() => {});
+  return s;
+}
+async function notifyScreen() {
+  const tk = ticket();
+  const head0 = heroHead(bellOrb(72), "Notifications", "When something needs you, Relay taps you on the shoulder, even when it isn't open.");
+  let sub = null, dev = null;
+  try { sub = await pushSub(); if (sub) dev = await api("POST", "/push/devices/find", { endpoint: sub.endpoint }); } catch {}
+  if (!fresh(tk)) return;
+  const err = h("p", { class: "err", role: "alert" });
+  const say = (t) => h("p", { class: "hint", style: "margin:0", text: t });
+  let body;
+  if (isIOS() && !homeScreen()) {
+    body = h("div", { class: "stack tight" },
+      h("ol", { class: "steps" },
+        h("li", null, h("div", null, "In Safari, tap ", h("b", { text: "Share" }), " (the square with an arrow).")),
+        h("li", null, h("div", null, "Tap ", h("b", { text: "Add to Home Screen" }), ", then ", h("b", { text: "Add" }), ".")),
+        h("li", null, h("div", null, "Open Relay from the new icon and come back here."))),
+      say("Apple only lets web apps send notifications once they're on the Home Screen."));
+  } else if (!pushable()) {
+    body = say("This browser can't show notifications from Relay. Chrome, Edge, Firefox and Safari can.");
+  } else if (Notification.permission === "denied") {
+    body = say("Notifications are blocked for Relay in this browser's settings. Allow them there, then come back.");
+  } else if (!sub || !dev || !dev.endpoint) {
+    const on = h("button", { class: "btn press", type: "button" }, "Turn on notifications");
+    on.addEventListener("click", async () => {
+      on.disabled = true; err.textContent = "";
+      try {
+        if (await Notification.requestPermission() !== "granted") throw new Error("Notifications weren't allowed.");
+        const reg = await navigator.serviceWorker.register("/sw.js", { scope: "/" });
+        await navigator.serviceWorker.ready;
+        const { key } = await api("GET", "/push/key", undefined, null);
+        const s2 = (await reg.pushManager.getSubscription()) || await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: unb64u(key) });
+        const j = s2.toJSON();
+        await api("POST", "/push/devices", { endpoint: j.endpoint, keys: j.keys, label: deviceName() });
+        nav("me/notify", { replace: true });
+      } catch (x) { err.textContent = x.message || "That didn't work."; on.disabled = false; }
+    });
+    body = h("div", { class: "stack tight" }, on, err, say("Only for what you choose below, on this device. Nothing else, no ads."));
+  } else {
+    const kinds = new Set(dev.kinds);
+    const rows = PUSH_KINDS.filter(([k]) => k !== "invites" || isOwner()).map(([k, label, sub2]) => {
+      const box = h("input", { type: "checkbox", role: "switch", checked: kinds.has(k), "aria-label": label });
+      box.addEventListener("change", async () => {
+        box.checked ? kinds.add(k) : kinds.delete(k);
+        try { await api("PUT", "/push/devices", { endpoint: sub.endpoint, kinds: [...kinds] }); }
+        catch (x) { err.textContent = x.message; box.checked = !box.checked; }
+      });
+      return h("label", { class: "cell switchrow" }, h("div", { class: "grow" }, h("div", { class: "t", text: label }),
+        sub2 ? h("div", { class: "s", text: sub2 }) : null), box, h("span", { class: "switch", "aria-hidden": "true" }));
+    });
+    const test = h("button", { class: "btn ghost press", type: "button" }, "Send a test");
+    test.addEventListener("click", async () => {
+      test.disabled = true;
+      try { await api("POST", "/push/test"); test.textContent = "Sent: look at your notifications"; }
+      catch (x) { err.textContent = x.message; }
+      setTimeout(() => { test.disabled = false; test.textContent = "Send a test"; }, 4000);
+    });
+    const off = way("Turn off on this device", async () => {
+      try { await api("POST", "/push/devices/remove", { endpoint: sub.endpoint }); await sub.unsubscribe(); } catch {}
+      nav("me/notify", { replace: true });
+    });
+    body = h("div", { class: "stack" }, statusLine("On for this device", true),
+      h("section", { class: "facts" }, h("h2", { class: "label", text: "Tell me when" }), h("div", { class: "group info" }, ...rows)),
+      test, err, h("div", { class: "ways" }, off));
+  }
+  screen("notify", tk, head0, body);
 }
 
 // ------------------------------------------------------------------ keys: your agents use them, never see them
@@ -1770,7 +1871,7 @@ async function approveScreen(cid) {
       const okCall = got.status === "done" && got.result_status < 400;
       orb.classList.add("sealed");
       status.replaceChildren(statusLine(okCall ? `Done. ${u ? u.hostname : "The website"} said yes` : got.error || `${u ? u.hostname : "The website"} said no (HTTP ${got.result_status})`, okCall),
-        h("p", { class: "quiet", text: `${r.agent} gets the answer in its chat.` }));
+        h("p", { class: "quiet", text: `${r.agent} gets the answer in its chat.` }), pushNudge());
     } else {
       status.replaceChildren(statusLine({ declined: "You said no. Nothing was sent.", expired: "This expired. Nothing was sent." }[got.status] || got.status),
         got.status === "declined" ? h("p", { class: "quiet", text: `${r.agent} has been told.` }) : null);
