@@ -98,3 +98,16 @@ def test_becoming_the_owner(hub):
     r2 = hub.post("/owner", headers=H(ADMIN), json={"handle": "kobby"}).json()
     assert hub.get("/agents/me", headers=H(r["token"])).status_code == 401
     assert hub.get("/agents/me", headers=H(r2["token"])).json()["owner"] is True
+
+
+def test_a_shared_link_shows_relays_card_and_phones_can_add_it_to_the_home_screen(hub):
+    page = hub.get("/").text
+    assert '<meta property="og:image" content="http://testserver/og.png">' in page
+    assert '<meta name="twitter:card" content="summary_large_image">' in page and "{{origin}}" not in page
+    img = hub.get("/og.png")
+    assert img.status_code == 200 and img.headers["content-type"] == "image/png" and img.content[:4] == b"\x89PNG"
+    m = hub.get("/manifest.webmanifest")
+    assert m.headers["content-type"].startswith("application/manifest+json")
+    j = m.json()
+    assert j["name"] == "Relay" and j["start_url"] == "/app" and {i["sizes"] for i in j["icons"]} >= {"192x192", "512x512"}
+    assert "manifest-src 'self'" in hub.get("/app").headers["content-security-policy"]

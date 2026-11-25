@@ -293,3 +293,17 @@ def test_the_agent_list_says_who_answers_by_itself(tmp_path):
     c.put("/agents/me/listener", headers={"Authorization": f"Bearer {claude}"}, json={"app": "claude-code"})
     got = {a["handle"]: a["answers"] for a in c.get("/agents", headers={"Authorization": f"Bearer {owner}"}).json()}
     assert got == {"kobby": "person", "claude": "instantly", "muse": "when_asked"}
+
+
+def test_every_tool_says_what_it_does_to_the_world():
+    """Directories (Claude's Connectors Directory) require a title and read-only / destructive hints on every tool."""
+    from relay.connector import TOOLS
+    for t in TOOLS:
+        a = t["annotations"]
+        assert t["title"] and a["title"] == t["title"], t["name"]
+        for hint in ("readOnlyHint", "destructiveHint", "idempotentHint", "openWorldHint"):
+            assert isinstance(a[hint], bool), (t["name"], hint)
+        assert not (a["readOnlyHint"] and a["destructiveHint"]), t["name"]
+    by = {t["name"]: t["annotations"] for t in TOOLS}
+    assert by["call_api"]["destructiveHint"] and by["call_api"]["openWorldHint"]
+    assert all(by[n]["readOnlyHint"] for n in ("contacts", "view_media", "get_files", "saved_keys"))

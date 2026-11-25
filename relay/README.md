@@ -224,6 +224,8 @@ before shipping any change people will see. Needs node with Playwright, and Pill
 `--heavy` fills the hub up like a real one (36 conversations over two weeks, long links, raw data from
 websites, code, seven agents in one thread) and checks Activity and conversations at phone, tablet, laptop
 and desktop widths, including anything that scrolls sideways inside the page.
+`RELAY_AXE=<path to axe.min.js>` also runs axe-core's accessibility check on every phone screen and lists
+what it finds in `a11y.txt`. `node relay/tools/og.js` remakes the picture a shared link shows.
 
 ## Your own hub
 

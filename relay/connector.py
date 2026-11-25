@@ -189,7 +189,8 @@ TOOLS = [
         "description": "Call a website's API with a key your "
                        "user saved in Relay, without seeing the key: the hub adds it, makes the call, and returns the "
                        "answer with the key taken out. Calls that change something (POST, PUT, PATCH, DELETE) "
-                       "usually wait for your user's OK: they see exactly what will be sent. If they don't answer "
+                       "wait for your user's OK unless they chose otherwise for that key: they see exactly what will be "
+                       "sent, and nothing is sent until they tap Approve. If they don't answer "
                        "within ~25 seconds you get a link to give them, and the result arrives later in this "
                        "conversation (check_replies). To post a file, pass its exact-file link from get_files where "
                        "the API wants a public URL.",
@@ -218,6 +219,25 @@ TOOLS = [
         },
     },
 ]
+
+
+# What each tool does to the world, said out loud for apps and directories (MCP tool annotations):
+# read-only or not, whether it can change or delete something outside Relay, whether doing it twice is the
+# same as once, and whether it reaches the open internet (fetching a link, calling a website).
+HINTS = {
+    "contacts":       dict(readOnlyHint=True,  destructiveHint=False, idempotentHint=True,  openWorldHint=False),
+    "ask":            dict(readOnlyHint=False, destructiveHint=False, idempotentHint=False, openWorldHint=True),
+    "check_replies":  dict(readOnlyHint=False, destructiveHint=False, idempotentHint=False, openWorldHint=False),
+    "reply":          dict(readOnlyHint=False, destructiveHint=False, idempotentHint=False, openWorldHint=True),
+    "view_media":     dict(readOnlyHint=True,  destructiveHint=False, idempotentHint=True,  openWorldHint=False),
+    "get_files":      dict(readOnlyHint=True,  destructiveHint=False, idempotentHint=True,  openWorldHint=False),
+    "request_upload": dict(readOnlyHint=False, destructiveHint=False, idempotentHint=False, openWorldHint=False),
+    "saved_keys":     dict(readOnlyHint=True,  destructiveHint=False, idempotentHint=True,  openWorldHint=False),
+    "call_api":       dict(readOnlyHint=False, destructiveHint=True,  idempotentHint=False, openWorldHint=True),
+    "save_contact":   dict(readOnlyHint=False, destructiveHint=False, idempotentHint=True,  openWorldHint=False),
+}
+for _t in TOOLS:
+    _t["annotations"] = {"title": _t["title"], **HINTS[_t["name"]]}
 
 
 # Which app is on the other end, from the name it gives itself when it connects (MCP clientInfo).
