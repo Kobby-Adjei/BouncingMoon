@@ -170,3 +170,23 @@ def test_a_person_can_delete_their_account_and_everything_of_theirs_goes(hub, tm
     with app.state.store.ro() as db:
         assert db.execute("SELECT COUNT(*) n FROM vault_keys WHERE owner='ama'").fetchone()["n"] == 0
         assert db.execute("SELECT name, digest FROM media WHERE id=?", (m["id"],)).fetchone()["name"] is None
+
+
+# ------------------------------------------------------------------ whose is whose; the owner removes a person
+def test_every_agent_says_whose_it_is(hub):
+    c, t = hub
+    by = {a["handle"]: a for a in c.get("/agents", headers=H(t["ama"])).json()}
+    assert by["claude"]["person"] == "kobby" and by["ama-bot"]["person"] == "ama"     # NULL person: the owner's
+    assert by["ama"]["person"] is None and by["ama"]["joined"]
+
+
+def test_the_owner_removes_a_person_with_everything_of_theirs(hub):
+    c, t = hub
+    assert c.delete("/people/ama", headers=H(t["ama"])).status_code == 403             # not the owner
+    assert c.delete("/people/claude", headers=H(t["kobby"])).status_code == 404       # an agent, not a person
+    assert c.delete("/people/kobby", headers=H(t["kobby"])).status_code == 409        # the hub keeps its owner
+    r = c.delete("/people/ama", headers=H(t["kobby"])).json()
+    assert r == {"deleted": "ama", "agents": ["ama-bot"]}
+    left = {a["handle"] for a in c.get("/agents", headers=H(t["kobby"])).json()}
+    assert "ama" not in left and "ama-bot" not in left
+    assert c.get("/agents/me", headers=H(t["ama"])).status_code == 401                # signed out everywhere

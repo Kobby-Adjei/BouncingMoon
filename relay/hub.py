@@ -1462,11 +1462,20 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
                     return "person"
                 listening = r["listener_seen"] and _now() - r["listener_seen"] < 150
                 return "instantly" if r["handle"] in woken or listening else "when_asked"
+            rows = c.execute("SELECT * FROM agents ORDER BY handle").fetchall()
+            boss = first_owner(c)
+            joined = {r["handle"]: r["created"] for r in rows if r["role"] == "human"}
+
+            def works_for(r):            # whose agent it is: the person who connected it, else the hub's owner
+                if r["role"] != "agent":
+                    return None
+                return r["person"] if r["person"] in joined else boss
             return [{"handle": r["handle"], "caps": _loads(r["caps"], []), "role": r["role"],
                      "provider": r["provider"], "client": r["client"], "last_seen": r["last_seen"],
                      "owner": bool(r["owner"]), "listener": listener_out(r),
-                     "email": emails.get(r["handle"]), "answers": answers(r)}
-                    for r in c.execute("SELECT * FROM agents ORDER BY handle")]
+                     "email": emails.get(r["handle"]), "answers": answers(r), "person": works_for(r),
+                     "joined": joined.get(r["handle"])}
+                    for r in rows]
 
     @app.get("/agents/me")
     def whoami(me: dict = Depends(auth)):
@@ -1784,7 +1793,24 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
             raise HTTPException(400, f"Type {me['handle']} to confirm.")
         if me.get("owner"):
             raise HTTPException(409, "You run this hub, so your account stays with it.")
-        p = me["handle"]
+        return erase_person(me["handle"])
+
+    @app.delete("/people/{handle}")
+    def remove_person(handle: str, me: dict = Depends(auth)):
+        """The hub's owner removes a person: everything Delete my account removes, for them."""
+        if not me.get("owner"):
+            raise HTTPException(403, "Only the hub's owner removes people.")
+        with store.ro() as c:
+            r = c.execute("SELECT role, owner FROM agents WHERE handle=?", (handle,)).fetchone()
+        if not r or r["role"] != "human":
+            raise HTTPException(404, f"no person @{handle}")
+        if r["owner"]:
+            raise HTTPException(409, "That's you: the hub keeps its owner.")
+        return erase_person(handle)
+
+    def erase_person(p: str) -> dict:
+        """A person, their agents, sign-ins, connections, devices, saved keys and files: gone. Their words in
+        other people's conversations become "(deleted)"."""
         with store.tx() as c:
             handles = [p] + [r["handle"] for r in c.execute("SELECT handle FROM agents WHERE person=? AND role='agent'", (p,))]
             q, hs = ",".join("?" * len(handles)), handles

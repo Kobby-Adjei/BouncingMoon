@@ -72,7 +72,7 @@ async function seed() {
     ["add-codex", "/app#add/codex", "K", false], ["add-person", "/app#add/person", "K", false],
     ["activity", "/app#activity", "K", true], ["thread", `/app#activity/${s.thread}`, "K", true], ["new-message", "/app#activity/new", "K", false],
     ["approve", s.approval ? `/app#approve/${s.approval}` : null, "K", true], ["invite-ask", s.ask ? `/app#ask/${s.ask}` : null, "K", false],
-    ["me", "/app#me", "K", true], ["apps", "/app#me/apps", "K", false], ["passkeys", "/app#me/passkeys", "K", false], ["notify", "/app#me/notify", "K", true],
+    ["me", "/app#me", "K", true], ["apps", "/app#me/apps", "K", false], ["passkeys", "/app#me/passkeys", "K", false], ["notify", "/app#me/notify", "K", true], ["people", "/app#me/people", "K", true], ["agents-friend", "/app#agents", "AMA", false],
     ["keys", "/app#me/keys", "K", true], ["key-new", "/app#me/keys/new", "K", false], ["key", `/app#me/keys/${s.key}`, "K", false],
     ["me-person", "/app#me", "AMA", false], ["friend", "/app#me/friend", "AMA", false], ["delete", "/app#me/delete", "AMA", false],
     ["allow", auth, "K", true], ["media-page", s.mediaPage, null, true], ["upload-page", upload, null, false],
