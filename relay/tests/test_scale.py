@@ -142,3 +142,38 @@ def test_what_was_there_before_the_update_isnt_all_new(hub):
     db = sqlite3.connect(str(path / "relay.db")); db.execute("DELETE FROM meta WHERE key='seen_floor'"); db.commit(); db.close()
     c2 = TestClient(create_app(data_dir=str(path), admin_token=ADMIN, caption_threads=False, media_threads=False))
     assert not any(x["unread"] for x in c2.get("/threads", headers=H(t["kobby"])).json())
+
+
+# ------------------------------------------------------------------ search
+def test_search_finds_what_was_said_who_was_there_and_marks_the_words(hub):
+    c, _, _, t = hub
+    a = say(c, t["kobby"], "@claude cut the launch video to 30 seconds", to=["claude"])
+    say(c, t["claude"], "Done: the launch cut is ready", reply_to=a["id"])
+    b = say(c, t["kobby"], "@codex check the invoices", to=["codex"])
+    got = c.get("/search?q=launch", headers=H(t["kobby"])).json()
+    assert [x["thread"] for x in got] == [a["thread"]]
+    hit = got[0]["hits"][0]
+    assert "\x02launch\x03" in hit["text"].lower() and hit["from"] == "claude"     # newest match first, word marked
+    assert got[0]["first"]["text"].startswith("@claude cut") and "said" in got[0]["why"]
+    assert [x["thread"] for x in c.get("/search?q=laun", headers=H(t["kobby"])).json()] == [a["thread"]]   # as you type
+    assert c.get("/search?q=launch invoices", headers=H(t["kobby"])).json() == []                         # every word
+    assert [x["thread"] for x in c.get("/search?q=codex", headers=H(t["kobby"])).json()] == [b["thread"]]  # who's in it
+    assert c.get("/search?q=a", headers=H(t["kobby"])).json() == []                                       # too short
+
+
+def test_search_never_shows_other_peoples_conversations(hub):
+    c, _, _, t = hub
+    say(c, t["kobby"], "@claude the secret launch plan", to=["claude"])
+    assert c.get("/search?q=secret", headers=H(t["ama"])).json() == []
+
+
+def test_search_reads_what_was_there_before_and_keeps_up_with_edits(hub):
+    c, app, path, t = hub
+    m = say(c, t["kobby"], "@claude old notes about pricing", to=["claude"])
+    db = sqlite3.connect(str(path / "relay.db"))
+    db.execute("DELETE FROM meta WHERE key='fts_built'"); db.execute("DROP TABLE msg_fts"); db.commit(); db.close()
+    c2 = TestClient(create_app(data_dir=str(path), admin_token=ADMIN, caption_threads=False, media_threads=False))
+    assert [x["thread"] for x in c2.get("/search?q=pricing", headers=H(t["kobby"])).json()] == [m["thread"]]
+    with app.state.store.tx() as d:                                 # "(deleted)" replaces a deleted account's words
+        d.execute("UPDATE messages SET text='(deleted)' WHERE id=?", (m["id"],))
+    assert c2.get("/search?q=pricing", headers=H(t["kobby"])).json() == []

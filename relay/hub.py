@@ -223,6 +223,24 @@ class Store:
                           " WHERE x.thread IS NOT NULL")
                 c.execute("INSERT INTO meta(key,value) VALUES ('convs_built', '1')")
             c.execute("INSERT OR IGNORE INTO meta(key,value) SELECT 'seen_floor', COALESCE(MAX(id), 0) FROM messages")
+            # search: a full-text index of every message, kept up to date by the database itself
+            self.fts = False
+            try:
+                c.execute("CREATE VIRTUAL TABLE IF NOT EXISTS msg_fts USING fts5(text, content='messages', content_rowid='id',"
+                          " tokenize='unicode61 remove_diacritics 2')")
+                c.execute("CREATE TRIGGER IF NOT EXISTS msg_fts_ai AFTER INSERT ON messages BEGIN"
+                          " INSERT INTO msg_fts(rowid, text) VALUES (new.id, new.text); END")
+                c.execute("CREATE TRIGGER IF NOT EXISTS msg_fts_au AFTER UPDATE OF text ON messages BEGIN"
+                          " INSERT INTO msg_fts(msg_fts, rowid, text) VALUES ('delete', old.id, old.text);"
+                          " INSERT INTO msg_fts(rowid, text) VALUES (new.id, new.text); END")
+                c.execute("CREATE TRIGGER IF NOT EXISTS msg_fts_ad AFTER DELETE ON messages BEGIN"
+                          " INSERT INTO msg_fts(msg_fts, rowid, text) VALUES ('delete', old.id, old.text); END")
+                if not c.execute("SELECT 1 FROM meta WHERE key='fts_built'").fetchone():
+                    c.execute("INSERT INTO msg_fts(msg_fts) VALUES ('rebuild')")      # what was there before
+                    c.execute("INSERT INTO meta(key,value) VALUES ('fts_built', '1')")
+                self.fts = True
+            except sqlite3.OperationalError:          # a SQLite without FTS5: search falls back to a plain scan
+                pass
             invite_cols = {r["name"] for r in c.execute("PRAGMA table_info(invites)")}
             if "provider" not in invite_cols:
                 c.execute("ALTER TABLE invites ADD COLUMN provider TEXT")
@@ -1567,6 +1585,67 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
             return r["id"] > seen.get(r["thread"], floor)
         return [{"thread": r["thread"], "count": r["n"], "people": people.get(r["thread"], []), "last": msg_out(r),
                  "first": first.get(r["thread"]), "unread": unread(r)} for r in rows]
+
+    @app.get("/search")
+    def search(q: str = Query("", max_length=200), limit: int = Query(20, ge=1, le=50), me: dict = Depends(auth)):
+        """Conversations you may see that match: by what was said in them, who is in them, or a file's name.
+        Each comes with up to three matching lines, the words found marked with \\x02 and \\x03."""
+        q = q.strip()
+        words = re.findall(r"\w+", q.lower())[:6]
+        if len(q) < 2 or not words:
+            return []
+        found: dict = {}                        # thread -> {"hits": [...], "why": set()}
+
+        def add(thread, why, hit=None):
+            f = found.setdefault(thread, {"hits": [], "why": set()})
+            f["why"].add(why)
+            if hit and len(f["hits"]) < 3:
+                f["hits"].append(hit)
+
+        def esc(w: str) -> str:
+            return w.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+        def mark(text: str) -> str:             # the plain-scan fallback marks words the way FTS5's snippet does
+            line = next((l for l in text.splitlines() if any(w in l.lower() for w in words)), text)[:200]
+            return re.sub("(" + "|".join(re.escape(w) for w in words) + ")", "\x02\\1\x03", line, flags=re.I)
+        with store.ro() as c:
+            only, more = visible(c, me["handle"])
+            if store.fts:
+                match = " AND ".join(f'"{w}"*' for w in words)
+                rows = c.execute(f"SELECT m.id, m.thread, m.sender, m.time, snippet(msg_fts, 0, char(2), char(3), '…', 14) AS snip"
+                                 f" FROM msg_fts JOIN messages m ON m.id=msg_fts.rowid WHERE msg_fts MATCH ? AND {only}"
+                                 " ORDER BY m.id DESC LIMIT 300", [match] + more).fetchall()
+            else:
+                rows = c.execute(f"SELECT m.id, m.thread, m.sender, m.time, m.text AS snip FROM messages m WHERE {only}"
+                                 + "".join(" AND m.text LIKE ? ESCAPE '\\'" for _ in words) + " ORDER BY m.id DESC LIMIT 300",
+                                 more + ["%" + esc(w) + "%" for w in words]).fetchall()
+            for r in rows:
+                add(r["thread"], "said", {"id": r["id"], "from": r["sender"], "time": r["time"],
+                                          "text": r["snip"] if store.fts else mark(r["snip"])})
+            like = "%" + esc(q.lower()) + "%"
+            for r in c.execute(f"SELECT DISTINCT mb.thread FROM members mb JOIN messages m ON m.id=mb.thread"
+                               f" WHERE lower(mb.agent) LIKE ? ESCAPE '\\' AND {only} LIMIT 200", [like] + more):
+                add(r["thread"], "with")
+            for r in c.execute(f"SELECT m.id, m.thread, m.sender, m.time, x.name FROM messages m JOIN message_media mm ON mm.msg=m.id"
+                               f" JOIN media x ON x.id=mm.media WHERE lower(x.name) LIKE ? ESCAPE '\\' AND {only} LIMIT 200",
+                               [like] + more):
+                add(r["thread"], "file", {"id": r["id"], "from": r["sender"], "time": r["time"], "file": r["name"]})
+            if not found:
+                return []
+            ids = list(found)
+            qs = ",".join("?" * len(ids))
+            convs = {r["thread"]: r for r in c.execute(f"SELECT t.thread, t.n, m.* FROM convs t JOIN messages m ON m.id=t.last"
+                                                         f" WHERE t.thread IN ({qs})", ids)}
+            people: dict = {}
+            for r in c.execute(f"SELECT thread, agent FROM members WHERE thread IN ({qs}) ORDER BY rowid", ids):
+                people.setdefault(r["thread"], []).append(r["agent"])
+            first = {r["id"]: {"from": r["sender"], "text": r["text"]}
+                     for r in c.execute(f"SELECT id, sender, text FROM messages WHERE id IN ({qs})", ids)}
+        out = [{"thread": t, "count": convs[t]["n"], "people": people.get(t, []), "first": first.get(t), "last": msg_out(convs[t]),
+                "why": sorted(f["why"]), "hits": f["hits"]} for t, f in found.items() if t in convs]
+        newest = lambda x: max([h["id"] for h in found[x["thread"]]["hits"]] or [x["last"]["id"]])
+        out.sort(key=newest, reverse=True)
+        return out[:limit]
 
     @app.get("/inbox")
     def inbox(limit: int = Query(20, ge=1, le=200), wait: float = Query(0, ge=0, le=50),

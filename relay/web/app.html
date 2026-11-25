@@ -220,6 +220,9 @@
 .morerow { appearance: none; border: 0; display: flex; align-items: center; justify-content: center; gap: 6px; width: 100%; min-height: 44px;
   margin: 4px 0 8px; border-radius: 14px; background: none; color: var(--accent); font: 600 14px var(--font); cursor: pointer; }
 .findbox { margin: 0 0 10px; } .findbox .field { width: 100%; }
+.searchbox .field { padding-left: 40px; background: var(--fill) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%2364626b' stroke-width='2' stroke-linecap='round'%3E%3Ccircle cx='11' cy='11' r='6.5'/%3E%3Cpath d='M16 16l4 4'/%3E%3C/svg%3E") no-repeat 14px 50% / 18px; }
+/* the words a search found */
+.preview mark, .conv mark { background: var(--accent-soft); color: var(--ink); border-radius: 4px; padding: 0 2px; font-weight: 600; }
 .morerow:hover { background: var(--fill); } .morerow:disabled { color: var(--ink2); }
 .morerow .chev { width: 7px; height: 12px; transform: rotate(90deg); }
 .composer { position: fixed; left: 0; right: 0; bottom: 0; z-index: 6; background: color-mix(in srgb, var(--bg) 88%, transparent);
@@ -548,6 +551,7 @@ pre.block.muted { color: var(--ink2); }
   .listpane .conv .when { font-size: 12px; }
   .listpane .conv .s { -webkit-line-clamp: 2; }
   .listpane .empty { text-align: left; padding: 8px 16px; font-size: 13px; }
+  .listpane .findbox { padding: 0 8px; margin-bottom: 6px; } .listpane .findbox .field { height: 36px; font-size: 13.5px; }
   .listpane .press:active { transform: none; }
 
   /* the detail pane: its own scroller; content keeps a readable width and sits in the middle of the pane */
