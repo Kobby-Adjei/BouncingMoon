@@ -72,3 +72,29 @@ def test_apps_that_never_finished_signing_in_are_forgotten_after_a_day(hub):
     c.post("/oauth/register", json={"client_name": "y", "redirect_uris": [CB]})
     with app.state.store.ro() as db:
         assert [r["name"] for r in db.execute("SELECT name FROM oauth_clients")] == ["y"]
+
+
+def test_messages_have_a_length_limit(hub):
+    c, app, claude = hub
+    ok = c.post("/messages", headers=H(claude), json={"channel": "direct", "text": "x" * 20000})
+    assert ok.status_code == 200
+    assert c.post("/messages", headers=H(claude), json={"channel": "direct", "text": "x" * 20001}).status_code == 422
+    assert c.post("/messages", headers=H(claude), json={"channel": "c" * 65, "text": "hi"}).status_code == 422
+
+
+def test_housekeeping_clears_leftovers_but_never_shared_files(hub):
+    import os
+    import time as _t
+    c, app, claude = hub
+    m = app.state.media
+    os.makedirs(m.tmp, exist_ok=True)
+    old_work = os.path.join(m.tmp, "work_m_dead"); os.makedirs(old_work)
+    old_part = os.path.join(m.tmp, "f_0123456789abcdef.part"); open(old_part, "wb").write(b"half")
+    new_part = os.path.join(m.tmp, "f_fedcba9876543210.part"); open(new_part, "wb").write(b"busy")
+    week_ago = _t.time() - 7 * 86400
+    for p in (old_work, old_part):
+        os.utime(p, (week_ago, week_ago))
+    up = c.post("/artifacts", headers=H(claude), params={"name": "kept.bin"}, content=b"shared").json()
+    assert m.tidy() == 2
+    assert not os.path.exists(old_work) and not os.path.exists(old_part) and os.path.exists(new_part)
+    assert os.path.exists(app.state.store.blob_path(up["id"]))

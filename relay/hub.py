@@ -344,12 +344,16 @@ class ListenerIn(BaseModel):
     woke: Optional[float] = None     # when it last woke that app (the helper's own clock)
 
 
+class DeleteIn(BaseModel):
+    confirm: str = Field(max_length=64)          # the person's own name, typed: no accidents
+
+
 class MessageIn(BaseModel):
-    text: str
-    channel: Optional[str] = None
+    text: str = Field(max_length=20000)          # the same limit agents have through the connector
+    channel: Optional[str] = Field(default=None, max_length=64)
     reply_to: Optional[int] = None
-    mentions: list[str] = Field(default_factory=list)
-    artifacts: list[str] = Field(default_factory=list)
+    mentions: list[str] = Field(default_factory=list, max_length=20)
+    artifacts: list[str] = Field(default_factory=list, max_length=10)
     media: list[str] = Field(default_factory=list, max_length=10)
     idem: Optional[str] = None
 
@@ -1431,10 +1435,50 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
                     log.info("backup written: %s", os.path.basename(made))
             except Exception as e:                 # a backup that fails must never take the hub down
                 log.warning("backup failed: %s", e)
+            try:
+                media_svc.tidy()                   # half-finished uploads and leftovers from restarts
+            except Exception as e:
+                log.warning("tidying up failed: %s", e)
             time.sleep(3600)
 
     if os.environ.get("RELAY_BACKUPS", "1") != "0":
         threading.Thread(target=nightly_backups, name="relay-backups", daemon=True).start()
+
+    # ---------------------------------------------------------------- delete my account
+    @app.post("/me/delete")
+    def delete_me(body: DeleteIn, me: dict = Depends(auth)):
+        """A person leaves: they, their agents, sign-ins, connections, saved keys and everything they shared
+        are deleted. Their messages stay in other people's conversations as "(deleted)", so replies make
+        sense. The hub's owner can't: the hub would be left with nobody to run it."""
+        if me["role"] != "human":
+            raise HTTPException(403, "Sign in as yourself to delete your account.")
+        if body.confirm.strip().lower() != me["handle"]:
+            raise HTTPException(400, f"Type {me['handle']} to confirm.")
+        if me.get("owner"):
+            raise HTTPException(409, "You run this hub, so your account stays with it.")
+        p = me["handle"]
+        with store.tx() as c:
+            handles = [p] + [r["handle"] for r in c.execute("SELECT handle FROM agents WHERE person=? AND role='agent'", (p,))]
+            q, hs = ",".join("?" * len(handles)), handles
+            mids = [r["id"] for r in c.execute(f"SELECT id FROM messages WHERE sender IN ({q})", hs)]
+            c.execute(f"UPDATE messages SET text='(deleted)', artifacts='[]', origin_session=NULL WHERE sender IN ({q})", hs)
+            if mids:
+                c.execute(f"DELETE FROM message_media WHERE msg IN ({','.join('?' * len(mids))})", mids)
+            for table, col in (("subs", "agent"), ("follows", "agent"), ("cursors", "agent"), ("contacts", "owner"),
+                               ("wakes", "handle"), ("people_emails", "handle"), ("sessions", "handle"),
+                               ("agent_keys", "handle"), ("routes", "handle"), ("thread_sessions", "handle"),
+                               ("session_cursors", "handle"), ("delivered", "handle"), ("passkeys", "handle"),
+                               ("oauth_tokens", "handle"), ("oauth_codes", "handle"), ("webauthn_challenges", "handle"),
+                               ("agents", "handle")):
+                c.execute(f"DELETE FROM {table} WHERE {col} IN ({q})", hs)
+            for table in ("oauth_tokens", "oauth_codes"):
+                c.execute(f"DELETE FROM {table} WHERE person=?", (p,))
+            for table in ("vault_calls", "vault_keys"):
+                c.execute(f"DELETE FROM {table} WHERE owner=?", (p,))
+            c.execute(f"DELETE FROM contacts WHERE address IN ({q})", hs)
+        files = media_svc.erase(handles)
+        log.info("account deleted: @%s with %d agent(s), %d file(s)", p, len(handles) - 1, files)
+        return {"deleted": p, "agents": handles[1:]}
 
     @app.get("/backup", include_in_schema=False)
     def download_backup(me: dict = Depends(auth)):
@@ -1752,6 +1796,7 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
         store=store, auth=auth, post=post, inbox_for=inbox_for, ack_to=ack_to,
         take=take, check_session=check_session, CONVERSATION=CONVERSATION, media=media_svc, origin=origin, no_session=no_session, start_session=start_session,
         mark_read=mark_read, msg_out=msg_out, with_context=with_context, now=_now, loads=_loads, handle_re=HANDLE_RE,
+        session_state=session_state,
         vault=vault))
     from . import people
     sb_url = supabase_url or os.environ.get("SUPABASE_URL")

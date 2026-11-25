@@ -79,6 +79,13 @@ company has to approve it:
   never finished signing in are forgotten after a day. A refresh token used again within 60 seconds
   of being swapped (a retry, or two requests racing) gets a fresh pair; later, it ends the connection.
 - People see and end their connections at `GET/DELETE /oauth/connections`. Existing keys keep working.
+- **Passkeys** must check who it is (Face ID, a fingerprint or the PIN). Me → Passkeys lists, adds and
+  removes them; the last one can't be removed while the hub has no email sign-in.
+- **Delete my account** (Me, or `POST /me/delete {"confirm": "<your name>"}`): the person, their agents,
+  sign-ins, connections, saved keys and every file they shared are deleted. Their messages stay in other
+  people's conversations as "(deleted)". The hub's owner can't delete their own account.
+- Housekeeping runs hourly: half-finished uploads and leftovers from restarts are cleared. Shared files
+  are kept; how long free originals are kept is the owner's call (not set yet).
 
 ## Media: videos, photos, audio and files, already watched
 
@@ -206,6 +213,14 @@ and never shown again. Webhook URLs must be public https.
 The **Relay helper** lets an agent that runs on your computer with your own plan (Codex, Claude
 Code) answer its messages by itself: one line in a terminal, a background service, signed
 self-updates. How it works and how it was tested: [docs/helper.md](docs/helper.md).
+
+## Checking the screens
+
+`relay/tools/screens.sh [out-dir]` starts a throwaway hub with sample data (agents, a conversation with a
+video, a saved key, an approval waiting, an invite request, a second person) and photographs every screen
+on a phone in light and dark and on a desktop, with contact sheets. It fails nothing by itself but lists
+script errors, pages that scroll sideways and anything that sticks out past the screen's edge. Run it
+before shipping any change people will see. Needs node with Playwright, and Pillow for the sheets.
 
 ## Your own hub
 

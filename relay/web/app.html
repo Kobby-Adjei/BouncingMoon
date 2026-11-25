@@ -205,7 +205,7 @@
 .morb .mh.ghost { background: transparent; box-shadow: inset 0 0 0 1.5px var(--ink3); border-right: 0; }
 .door { appearance: none; border: 0; width: 100%; display: flex; align-items: center; gap: 14px; padding: 14px 16px; border-radius: 20px;
   background: var(--card); color: var(--ink); text-align: left; cursor: pointer; box-shadow: 0 1px 2px rgba(24, 23, 29, .04), 0 10px 26px -16px rgba(24, 23, 29, .3); }
-.door .grow { display: flex; flex-direction: column; } .door b { font-size: 16px; font-weight: 600; } .door .grow span { font-size: 13px; color: var(--ink2); }
+.door .grow { flex: 1; min-width: 0; display: flex; flex-direction: column; text-align: left; } .door b { font-size: 16px; font-weight: 600; } .door .grow span { font-size: 13px; color: var(--ink2); }
 .pairs { display: flex; flex-direction: column; gap: 26px; margin: 10px 0 40px; }
 .pair { display: flex; align-items: center; gap: 16px; animation: rise .6s var(--ease) both; animation-delay: calc(var(--i, 0) * 70ms);
   transition: opacity .4s var(--ease), transform .45s var(--ease), max-height .45s var(--ease), margin .45s var(--ease); max-height: 120px; flex-wrap: wrap; }
@@ -442,6 +442,27 @@ pre.block.muted { color: var(--ink2); }
   .detail[data-page=pick] > .page { display: grid; place-items: center; padding-bottom: 96px; }
   .detail[data-page=pick] .blank { padding: 0; }
   .detail[data-page=pick] .blank .t { font-size: 15px; font-weight: 500; color: var(--ink2); }
+  /* the overview where "pick one" used to be: a heading, a quiet line, at most one button, the address */
+  .overview { display: grid; justify-items: center; gap: 12px; text-align: center; max-width: 420px; }
+  .overview .title { font-size: 24px; margin: 8px 0 0; }
+  .oline { display: flex; gap: 16px; justify-content: center; margin: 0; font-size: 13.5px; color: var(--ink2); }
+  .oline > span { display: inline-flex; align-items: center; gap: 7px; }
+  .overview > .btn { margin-top: 6px; }
+  .oaddr { margin-top: 28px; opacity: .9; }
+  /* your agents around Relay */
+  .sky { position: relative; }
+  .sky .links { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; }
+  .sky .links line { stroke: var(--ink3); stroke-width: 1.5; stroke-dasharray: 3 5; stroke-linecap: round; }
+  .sky .links line.linked { stroke: color-mix(in srgb, var(--accent) 50%, transparent); stroke-dasharray: none; }
+  .sky .sat { position: absolute; width: 44px; height: 44px; }
+  .sky .sat.far { opacity: .5; }
+  .sky .sat .av { width: 44px; height: 44px; border-radius: 50%; overflow: hidden; background: var(--card);
+    box-shadow: 0 0 0 .5px var(--line), 0 10px 22px -14px rgba(24, 23, 29, .45); }
+  .sky .core { position: absolute; width: 72px; height: 72px; padding: 0; border: 0; border-radius: 50%; cursor: pointer; color: var(--ink);
+    background: var(--card); display: grid; place-items: center; box-shadow: 0 0 0 .5px var(--line), 0 16px 34px -16px rgba(24, 23, 29, .45); }
+  .sky .core .mark { width: 38px; height: 38px; }
+  .sky .badge { position: absolute; top: -3px; right: -3px; min-width: 22px; height: 22px; padding: 0 6px; border-radius: 999px;
+    background: var(--sun); color: var(--on-sun); font: 700 12px/22px var(--font); box-shadow: 0 0 0 3px var(--bg); }
 
   /* a profile reads left to right on a big screen: picture, name, actions */
   .detail .profile { grid-template-columns: auto minmax(0, 1fr) auto; justify-items: start; align-items: center; text-align: left;

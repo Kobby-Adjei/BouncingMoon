@@ -309,6 +309,8 @@ class Vault:
         if len(headers) > 12:
             raise VaultError("At most 12 headers.")
         body = None
+        if args.get("json") is None and isinstance(args.get("body"), (dict, list)):
+            args = {**args, "json": args["body"]}       # an object in `body` is JSON: never send Python's text of it
         if args.get("json") is not None:
             body = json.dumps(args["json"]).encode()
             headers.setdefault("Content-Type", "application/json")

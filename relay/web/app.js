@@ -132,7 +132,8 @@ function copyBlock(text, label = "Copy") {
   const more = lines > 5 ? h("button", { class: "link sm", type: "button", onclick: () => {
     card.classList.toggle("folded"); more.textContent = card.classList.contains("folded") ? "Show all" : "Fold";
   } }, "Show all") : null;
-  card.append(h("pre", { class: "block", text }), ...(more ? [h("div", { class: "top" }, more)] : []), b);
+  // a one-line command stays on one line (it scrolls): a wrap after "-" would read as part of it
+  card.append(h("pre", { class: "block" + (lines === 1 ? " oneline" : ""), text }), ...(more ? [h("div", { class: "top" }, more)] : []), b);
   return card;
 }
 function seg(options, value, onChange) {
@@ -325,7 +326,7 @@ function known(r) {
   if (top === "agents") return !y || !!x && (y === "wake" || ONE_TIME.has(y));
   if (top === "activity") return !x || (x === "new" && !y) || (x === "to" && !!y) || (/^\d+$/.test(x) && !y);
   if (top === "add") return isOwner() && (!y || (y === "withkey" && !!x));
-  if (top === "me") return (!x || (x === "apps" && !y) || (x === "keys" && (!y || y === "new" || /^k_[0-9a-f]{12}$/.test(y))))
+  if (top === "me") return (!x || ((x === "apps" || x === "passkeys" || x === "delete") && !y) || (x === "keys" && (!y || y === "new" || /^k_[0-9a-f]{12}$/.test(y))))
     && !!ME && ME.role !== "admin";
   if (top === "approve") return !!ME && ME.role === "human" && /^c_[0-9a-f]{16}$/.test(x || "") && !y;
   if (top === "ask") return isOwner() && /^ir_[0-9a-f]{12}$/.test(x || "") && !y;
@@ -362,6 +363,8 @@ function screenFor(r) {
     return a.style === "allow" && p[2] !== "withkey" ? [allowGuide, a] : [addName, a];
   }
   if (p[0] === "me" && p[1] === "apps") return [appsScreen];
+  if (p[0] === "me" && p[1] === "passkeys") return [passkeysScreen];
+  if (p[0] === "me" && p[1] === "delete") return [deleteScreen];
   if (p[0] === "me" && p[1] === "keys") return !p[2] ? [keysScreen] : p[2] === "new" ? [keyNew] : [keyDetail, p[2]];
   if (p[0] === "approve") return [approveScreen, p[1]];
   if (p[0] === "ask") return [askScreen, p[1]];
@@ -454,9 +457,88 @@ function drawMe() {
     avatar({ handle: ME.handle, role: "human" }, WIDE ? 36 : 32)) : "");
 }
 // on a desktop, the detail pane when nothing is open
-function pickHint(tab) {
+// A big screen's right half is never a dead "pick one": Activity opens what matters (something waiting for
+// your OK, else the newest conversation) the first time; otherwise it's an overview you can act on.
+const autoOpened = new Set();
+async function pickHint(tab) {
   const tk = ticket();
-  screen("pick", tk, blank(tab === "activity" ? "Pick a conversation" : "Pick an agent"));
+  if (tab === "activity" && !autoOpened.has("activity")) {
+    autoOpened.add("activity");
+    try {
+      const asks = ME.role === "human" ? await api("GET", "/approvals").catch(() => []) : [];
+      if (asks.length) return nav(`approve/${asks[0].id}`, { replace: true });
+      const msgs = await api("GET", "/messages?latest=true&limit=100");
+      const count = {};
+      for (const m of msgs) count[m.thread] = (count[m.thread] || 0) + 1;
+      const last = [...msgs].reverse().find((m) => !(count[m.thread] === 1 && /^🔑 Asking /u.test(m.text || "")));
+      if (last) {
+        const people = [...new Set(msgs.filter((m) => m.thread === last.thread).flatMap((m) => [m.from, ...(m.mentions || [])]))]
+          .filter((x) => x !== ME.handle && x !== "relay");
+        return nav(`activity/${last.thread}`, { replace: true, data: people });
+      }
+    } catch {}
+  }
+  overview(tk);
+}
+// Relay in the middle, your agents around it, a thread to each: solid for the ones connected, dashed for
+// the ones that aren't yet. They spring out of the mark once; tap the mark and they do it again.
+function sky(mine, waiting) {
+  const W = 300, H = 210, cx = W / 2, cy = H / 2, rx = 118, ry = 76, R = 22;
+  const box = h("div", { class: "sky", style: `width:${W}px;height:${H}px` });
+  const lines = document.createElementNS(SVGNS, "svg");
+  lines.setAttribute("class", "links"); lines.setAttribute("viewBox", `0 0 ${W} ${H}`); lines.setAttribute("aria-hidden", "true");
+  const core = h("button", { class: "core press", type: "button", "aria-label": "Play it again", style: `left:${cx - 36}px;top:${cy - 36}px` }, mark());
+  if (waiting) core.append(h("span", { class: "badge", text: String(waiting) }));
+  const shown = mine.slice(0, 6), n = shown.length;
+  const sats = shown.map((a, i) => {
+    const t = (-90 + 360 / n * i + (n === 2 ? 90 : n % 2 ? 0 : 180 / n)) * Math.PI / 180;
+    const x = cx + rx * Math.cos(t), y = cy + ry * Math.sin(t), on = !!a.last_seen;
+    const ln = document.createElementNS(SVGNS, "line");
+    for (const [k, v] of Object.entries({ x1: cx, y1: cy, x2: x, y2: y, class: on ? "linked" : "loose" })) ln.setAttribute(k, v);
+    lines.append(ln);
+    const el = h("span", { class: "sat" + (on ? "" : " far"), style: `left:${x - R}px;top:${y - R}px`, title: a.handle }, avatar(a, R * 2));
+    return { el, ln, x, y };
+  });
+  box.append(lines, ...sats.map((x) => x.el), core);
+  const ease = CSS.supports("transition-timing-function", "linear(0, 1)")
+    ? getComputedStyle(document.documentElement).getPropertyValue("--spring").trim() : "cubic-bezier(.34, 1.45, .55, 1)";
+  const play = () => {
+    if (matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+    core.animate([{ transform: "scale(.55)" }, { transform: "none" }], { duration: 800, easing: ease });
+    sats.forEach((p, i) => {
+      p.el.animate([{ transform: `translate(${cx - p.x}px, ${cy - p.y}px) scale(.25)`, opacity: 0 }, { transform: "none", opacity: 1 }],
+        { duration: 1000, delay: 140 + i * 80, easing: ease, fill: "backwards" });
+      p.ln.animate([{ opacity: 0 }, { opacity: 1 }], { duration: 500, delay: 650 + i * 80, easing: "ease-out", fill: "backwards" });
+    });
+  };
+  core.addEventListener("click", play);
+  requestAnimationFrame(play);
+  return box;
+}
+async function overview(tk) {
+  let ags = [], asks = [], wants = [];
+  try {
+    [ags, asks, wants] = await Promise.all([api("GET", "/agents"), ME.role === "human" ? api("GET", "/approvals").catch(() => []) : [],
+      isOwner() ? api("GET", "/invite-requests").catch(() => []) : []]);
+  } catch {}
+  const mine = ags.filter((a) => a.role === "agent");
+  const now = mine.filter((a) => a.answers === "instantly").length, later = mine.length - now;
+  const waiting = asks.length + wants.length;
+  const next = asks.length ? `approve/${asks[0].id}` : wants.length ? `ask/${wants[0].id}` : null;
+  // one thing to do at most, one quiet line, the address: nothing the sidebar or the list already offers
+  const act = next ? h("button", { class: "btn small press", type: "button", onclick: () => nav(next) }, "Review")
+    : !mine.length && isOwner() ? h("button", { class: "btn small press", type: "button", onclick: () => nav("add") }, "Add your first app") : null;
+  const line = mine.length ? h("p", { class: "oline" },
+    now ? h("span", null, h("span", { class: "adot now" }), `${now} answer${now === 1 ? "s" : ""} now`) : null,
+    later ? h("span", null, h("span", { class: "adot later" }), `${later} when asked`) : null) : null;
+  const url = location.origin + "/mcp";
+  const pill = h("button", { class: "copyurl press", type: "button", title: "Copy" }, h("span", { class: "u", text: url }), h("span", { class: "c", text: "Copy" }));
+  pill.addEventListener("click", () => copy(url, pill.querySelector(".c"), "Copy"));
+  screen("pick", tk, h("div", { class: "overview" },
+    mine.length ? sky(mine, waiting) : h("div", { class: "orbit", "aria-hidden": "true" }, h("span", { class: "ghost g1" }), h("span", { class: "ghost g2" }),
+      h("span", { class: "ghost g3" }), h("span", { class: "ghost g4" }), h("span", { class: "core" }, mark())),
+    h("h1", { class: "title", text: waiting ? `${waiting} waiting for you` : mine.length ? "All quiet" : "Nothing here yet" }),
+    line, act, h("div", { class: "oaddr" }, pill)));
 }
 
 function signOut(message) { KEY = null; ME = null; store.clear(); trail.length = 0; clearInterval(timer); timer = null; signin(message); }
@@ -484,8 +566,14 @@ async function passkeyAdd(key) {
   const o = await api("POST", "/auth/passkey/register/options", {}, key);
   const c = await navigator.credentials.create({ publicKey: { ...o, challenge: unb64u(o.challenge), user: { ...o.user, id: unb64u(o.user.id) },
     excludeCredentials: o.excludeCredentials.map((x) => ({ ...x, id: unb64u(x.id) })) } });
-  return api("POST", "/auth/passkey/register", { id: c.id, type: c.type, label: navigator.platform || "passkey",
+  return api("POST", "/auth/passkey/register", { id: c.id, type: c.type, label: deviceName(),
     response: { clientDataJSON: b64u(c.response.clientDataJSON), attestationObject: b64u(c.response.attestationObject) } }, key);
+}
+function deviceName() {        // what the list calls this passkey: the kind of device it lives on
+  const ua = navigator.userAgent || "";
+  for (const [rx, name] of [[/iPhone/, "iPhone"], [/iPad/, "iPad"], [/Android/, "Android"], [/CrOS/, "Chromebook"],
+    [/Macintosh|Mac OS/, "Mac"], [/Windows/, "Windows"], [/Linux/, "Linux"]]) if (rx.test(ua)) return name;
+  return "Passkey";
 }
 const passkeyErr = (x) => x && x.name === "NotAllowedError" ? "Cancelled, or no passkey for Relay on this device." : (x && x.message) || "That didn't work.";
 // ------------------------------------------------------------------ sign in: two halves make a whole
@@ -699,7 +787,7 @@ async function askScreen(id) {
     h("div", { class: "ways" }, way("Not now", async () => { try { await api("DELETE", `/invite-requests/${enc(id)}`); } catch {} if (listRefresh) listRefresh(); nav("activity", { replace: true }); })));
   screen("ask", tk, heroHead(avatar("person", 72), `${r.name} would like an invite`, `Reach them at ${r.contact}`),
     h("div", { class: "stack" }, r.note ? h("p", { class: "why", text: r.note }) : null, form));
-  handle.select();
+  if (WIDE) handle.select();          // on a phone, no keyboard until they tap
 }
 
 // ------------------------------------------------------------------ join (/join#inv_…)
@@ -1157,11 +1245,14 @@ async function meScreen() {
       ME.owner ? h("span", { class: "pill-tag", text: "Owner" }) : null),
     h("div", { class: "stack" }, h("button", { class: "door press", type: "button", onclick: () => nav("me/apps") },
         miniOrb("claude", "relay", 40), h("span", { class: "grow" }, h("b", { text: "Connected apps" })), chev()),
+      h("button", { class: "door press", type: "button", onclick: () => nav("me/passkeys") },
+        passOrb(40), h("span", { class: "grow" }, h("b", { text: "Passkeys" })), chev()),
       h("button", { class: "door press", type: "button", onclick: () => nav("me/keys") },
         keyOrb("", 40), h("span", { class: "grow" }, h("b", { text: "Keys" })), chev()),
       ME.owner ? h("button", { class: "door press", type: "button", onclick: (e) => saveBackup(e.currentTarget) },
         backupOrb(40), h("span", { class: "grow" }, h("b", { text: "Download a backup" }))) : null,
-      rows, h("button", { class: "btn danger press", type: "button", onclick: userSignOut }, "Sign out")));
+      rows, h("button", { class: "btn danger press", type: "button", onclick: userSignOut }, "Sign out"),
+      ME.owner || ME.role !== "human" ? null : ways(way("Delete my account", () => nav("me/delete")))));
 }
 function backupOrb(size) {          // Relay's half, and a copy coming down to you
   return h("span", { class: "morb", style: `--s:${size}px`, "aria-hidden": "true" },
@@ -1290,6 +1381,72 @@ function since(t) {           // when something happened, in words
   if (s < 3600) return `${Math.floor(s / 60)} min ago`;
   if (s < 86400) return `${Math.floor(s / 3600)} h ago`;
   return new Date(t * 1000).toLocaleDateString(undefined, { month: "short", day: "numeric" });
+}
+
+// ------------------------------------------------------------------ leaving: your half pulls away
+function deleteScreen() {
+  const tk = ticket();
+  const orb = h("span", { class: "morb lone", style: "--s:92px", "aria-hidden": "true" },
+    h("span", { class: "mh l ghost" }), h("span", { class: "mh r dark" }, h("i", { class: "mk" })));
+  const name = h("input", { class: "field", type: "text", placeholder: ME.handle, autocapitalize: "off", spellcheck: "false",
+                            autocomplete: "off", "aria-label": "Your name, to confirm" });
+  const err = h("p", { class: "err", role: "alert" });
+  const go = h("button", { class: "btn danger press", type: "submit", disabled: "" }, "Delete my account");
+  name.addEventListener("input", () => { go.disabled = name.value.trim().toLowerCase() !== ME.handle; });
+  const form = h("form", { class: "stack tight", onsubmit: async (e) => {
+    e.preventDefault(); go.disabled = true; err.textContent = "";
+    try { await api("POST", "/me/delete", { confirm: name.value.trim() }); signOut("Your account is deleted."); }
+    catch (x) { err.textContent = x.message; go.disabled = false; }
+  } }, name, go, err);
+  screen("delete", tk, heroHead(orb, "Delete your account?", "Your agents, keys and files go for good. Type your name."), form);
+}
+
+// ------------------------------------------------------------------ passkeys: your devices, each one a way back in
+function passOrb(size) {          // you (a fingerprint) and Relay
+  return h("span", { class: "morb", style: `--s:${size}px`, "aria-hidden": "true" },
+    h("span", { class: "mh l" }, printGlyph()), h("span", { class: "mh r dark" }, h("i", { class: "mk" })));
+}
+async function passkeysScreen() {
+  const tk = ticket();
+  const err = h("p", { class: "err", role: "alert" });
+  const add = CAN_PASSKEY ? h("button", { class: "btn small press", type: "button" }, icon("plus", "2.4"), "Add") : null;
+  const list = h("div", { class: "pairs" });
+  const view = screen("passkeys", tk, head("Passkeys", "One per device you sign in on.", add), list, err);
+  async function load() {
+    let keys = [];
+    try { keys = await api("GET", "/auth/passkeys"); } catch (x) { err.textContent = x.message; return; }
+    if (!view.isConnected) return;
+    if (!keys.length) return list.replaceChildren(h("div", { class: "noapps" }, passOrb(92), h("b", { text: "No passkeys yet" })));
+    list.replaceChildren(...keys.map((k, i) => passRow(k, i, keys.length)));
+  }
+  function passRow(k, i, count) {
+    const off = h("button", { class: "unpair press", type: "button" }, "Remove");
+    const rowErr = h("p", { class: "err" });
+    const item = h("div", { class: "pair", style: `--i:${i}` }, passOrb(60),
+      h("div", { class: "grow" }, h("b", { text: k.name || "Passkey" }),
+        h("span", { class: "when", text: `Added ${since(k.created)}` + (k.last_used ? ` · used ${since(k.last_used)}` : "") })), off, rowErr);
+    let armed = false;
+    off.addEventListener("click", async () => {
+      if (!armed) {                     // first tap arms it; the second one removes
+        armed = true; off.textContent = count === 1 ? "Your only one?" : "Remove?"; off.classList.add("armed");
+        setTimeout(() => { if (armed && off.isConnected) { armed = false; off.textContent = "Remove"; off.classList.remove("armed"); } }, 3500);
+        return;
+      }
+      off.disabled = true; rowErr.textContent = "";
+      try {
+        await api("DELETE", `/auth/passkeys/${encodeURIComponent(k.id)}`);
+        item.classList.add("splitting");
+        setTimeout(() => { item.classList.add("gone"); setTimeout(load, 420); }, 380);
+      } catch (x) { rowErr.textContent = x.message; off.disabled = false; armed = false; off.textContent = "Remove"; off.classList.remove("armed"); }
+    });
+    return item;
+  }
+  if (add) add.addEventListener("click", async () => {
+    add.disabled = true; err.textContent = "";
+    try { await passkeyAdd(KEY); await load(); } catch (x) { err.textContent = passkeyErr(x); }
+    add.disabled = false;
+  });
+  await load();
 }
 
 async function keysScreen() {
@@ -1921,16 +2078,20 @@ async function activity() {
         h("span", { class: "stackav" }, avatar("person", 44)),
         h("div", { class: "grow" }, h("div", { class: "t", text: `${w.name} would like an invite` }), h("div", { class: "s", text: w.contact })),
         h("span", { class: "btn small", text: "Review" }))));
-      const sorted = [...threads.values()].sort((x, y) => y.msgs[y.msgs.length - 1].id - x.msgs[x.msgs.length - 1].id);
+      const sorted = [...threads.values()].sort((x, y) => y.msgs[y.msgs.length - 1].id - x.msgs[x.msgs.length - 1].id)
+        // an agent's "asking you to OK" note on its own is the Review row above, said twice: show it once
+        .filter((t) => !(t.msgs.length === 1 && /^🔑 Asking /u.test(t.msgs[0].text || "")));
       for (const t of sorted) {
         const last = t.msgs[t.msgs.length - 1];
         const others = [...t.people].filter((p) => p !== ME.handle);
+        // "claude: …" under a title that already says claude is the name twice
+        const who = last.from === ME.handle ? "You: " : last.from === "relay" || (others.length === 1 && others[0] === last.from) ? "" : `${last.from}: `;
         const faces = (others.length ? others : ["relay"]).slice(0, 2).map((x) => avatar(by[x] || { handle: x }, others.length > 1 ? 38 : 46));
         rows.push(h("button", { class: "cell press", type: "button", "data-key": `activity/${t.id}`, onclick: () => nav(`activity/${t.id}`, { data: others }) },
           h("span", { class: "stackav" }, ...faces),
           h("div", { class: "grow" },
             h("div", { class: "spread", style: "gap:8px" }, h("div", { class: "t", text: others.join(", ") || "Relay" }), h("span", { class: "when tnum", text: clock(last.time) })),
-            h("div", { class: "s preview", text: `${last.from === ME.handle ? "You" : last.from}: ${last.text}` }))));
+            h("div", { class: "s preview", text: who + plain(last.text) }))));
       }
       if (rows.length) {
         if (!list.isConnected) view.querySelector(".blank").replaceWith(list);
@@ -1959,6 +2120,8 @@ async function newMessage() {
   screen("new", tk, head("New message", "Who to?"), ags.length ? grid : blank("No one to message yet", "Add an agent first."));
 }
 
+// the hub's notes start with an emoji (🔑 📎 ✋); the app speaks in its own icons, so drop them
+const plain = (text) => String(text || "").replace(/^(?:\u{1F511}|\u{1F4CE}|\u{270B}|\u{1F4F9}|\u{1F5BC})\uFE0F?\s*/u, "");
 // "@claude" in a bubble reads as a name: a little heavier, like the landing page's demo
 function withAts(text) {
   return String(text || "").split(/(@[a-z0-9][a-z0-9_.-]*)/).filter(Boolean)
@@ -2080,11 +2243,11 @@ async function thread(id, people) {
       const before = shown ? shown.split("|").length : 0;
       list.replaceChildren(...msgs.map((m, i) => {
         const anim = i >= before ? "" : "animation:none";
-        if (m.from === "relay") { prev = null; return h("div", { class: "sysmsg", style: anim, text: m.text }); }
+        if (m.from === "relay") { prev = null; return h("div", { class: "sysmsg", style: anim, text: plain(m.text) }); }
         const mine = m.from === ME.handle, run = prev === m.from; prev = m.from;
         const who = run ? null : h("div", { class: "who", text: `${mine ? "You" : m.from} · ${clock(m.time)}` });
         const face = mine ? null : run ? h("span", { class: "ghostav" }) : avatar(by[m.from] || { handle: m.from, role: "agent" }, 32);
-        const bub = h("div", { class: "bub" }, ...withAts(m.text));
+        const bub = h("div", { class: "bub" }, ...withAts(plain(m.text)));
         if (m.media && m.media.length) bub.append(...m.media.map(fileCard));
         return h("div", { class: "msg" + (mine ? " mine" : ""), style: anim }, face, h("div", { class: "body" }, who, bub));
       }));

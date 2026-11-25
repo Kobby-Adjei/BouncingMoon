@@ -773,6 +773,71 @@ class Media:
             self.thread = threading.Thread(target=self._loop, name="media", daemon=True)
             self.thread.start()
 
+    # ------------------------------------------------------------ forgetting
+    BLOBS = ("artifact", "playable", "poster", "sheet", "preview")
+
+    def _in_use(self, c, aid: str) -> bool:
+        if c.execute("SELECT 1 FROM artifacts WHERE id=?", (aid,)).fetchone():
+            return True
+        return any(c.execute(f"SELECT 1 FROM media WHERE {col}=? LIMIT 1", (aid,)).fetchone() for col in self.BLOBS)
+
+    def drop_blobs(self, aids) -> int:
+        """Delete stored files nothing refers to any more (the same bytes may be shared: files are stored once)."""
+        with self.store.ro() as c:
+            gone = [a for a in set(aids) if a and not self._in_use(c, a)]
+        n = 0
+        for a in gone:
+            p = self.store.blob_path(a)
+            if os.path.exists(p):
+                os.remove(p)
+                n += 1
+        return n
+
+    def erase(self, handles: list) -> int:
+        """Everything these handles shared, gone: each media item keeps only a 'removed' stub (no name, no
+        transcript, no pictures) so conversations still make sense, and its files are deleted."""
+        if not handles:
+            return 0
+        q = ",".join("?" * len(handles))
+        with self.store.tx() as c:
+            rows = c.execute(f"SELECT * FROM media WHERE created_by IN ({q})", handles).fetchall()
+            aids = [r[col] for r in rows for col in self.BLOBS]
+            aids += [r["id"] for r in c.execute(f"SELECT id FROM artifacts WHERE created_by IN ({q})", handles)]
+            c.execute(f"UPDATE media SET revoked=COALESCE(revoked, ?), name=NULL, source_url=NULL, digest='{{}}', error=NULL,"
+                      f" artifact=NULL, playable=NULL, poster=NULL, sheet=NULL, preview=NULL, origin_artifact=NULL"
+                      f" WHERE created_by IN ({q})", [self.now(), *handles])
+            c.execute(f"DELETE FROM artifacts WHERE created_by IN ({q})", handles)
+            links = [r["id"] for r in c.execute(f"SELECT id FROM upload_links WHERE handle IN ({q})", handles)]
+            for lid in links:
+                for f in c.execute("SELECT id FROM upload_files WHERE link=?", (lid,)).fetchall():
+                    if os.path.exists(self._part(f["id"])):
+                        os.remove(self._part(f["id"]))
+                c.execute("DELETE FROM upload_files WHERE link=?", (lid,))
+            c.execute(f"DELETE FROM upload_links WHERE handle IN ({q})", handles)
+        return self.drop_blobs(aids)
+
+    def tidy(self, older_than: float = 2 * 86400) -> int:
+        """Housekeeping: half-finished uploads whose link has expired, and work files left behind by a
+        restart. Never touches anything someone shared."""
+        n, cutoff = 0, self.now() - older_than
+        with self.store.tx() as c:
+            stale = c.execute("SELECT f.id FROM upload_files f JOIN upload_links l ON l.id=f.link"
+                              " WHERE f.media IS NULL AND l.expires<?", (cutoff,)).fetchall()
+            for f in stale:
+                c.execute("DELETE FROM upload_files WHERE id=?", (f["id"],))
+            c.execute("DELETE FROM upload_links WHERE expires<? AND NOT EXISTS"
+                      " (SELECT 1 FROM upload_files f WHERE f.link=upload_links.id)", (cutoff,))
+        for f in stale:
+            if os.path.exists(self._part(f["id"])):
+                os.remove(self._part(f["id"]))
+                n += 1
+        for name in os.listdir(self.tmp) if os.path.isdir(self.tmp) else []:
+            p = os.path.join(self.tmp, name)
+            if (name.startswith(("work_", "look_")) or name.endswith(".part")) and os.path.getmtime(p) < cutoff:
+                shutil.rmtree(p, ignore_errors=True) if os.path.isdir(p) else os.remove(p)
+                n += 1
+        return n
+
     def resume(self) -> None:
         with self.store.tx() as c:
             for r in c.execute("SELECT id, attempts FROM media WHERE status='working'").fetchall():
@@ -1297,9 +1362,8 @@ def mount(app, hub, media: Media) -> dict:
                 f"<p class=lede>Photos, videos, audio or any file, up to {media.max_upload // 2 ** 20}&nbsp;MB each.</p>{note}"
                 f"<section id=drop class=drop><label class=btn>Choose files<input id=pick class=vh type=file multiple></label>"
                 f"<p class=hint>or drop them here</p></section><div id=files class=files aria-live=polite></div>"
-                f"<p class=foot>Big files keep going if your connection drops. Location data is removed from photos "
-                f"before anyone sees them. This link works until "
-                f"{time.strftime('%b %d, %H:%M UTC', time.gmtime(link['expires']))}.</p></div>"
+                f"<p class=foot>Works until {time.strftime('%b %-d', time.gmtime(link['expires']))}"
+                f" · location removed from photos</p></div>"
                 f"<script nonce='{nonce}'>{UPLOAD_JS}</script>")
         return HTMLResponse(page(f"Send files to {link['handle']}", body, nonce), headers=headers(nonce))
 

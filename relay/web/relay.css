@@ -185,6 +185,10 @@ button.cell:hover::before, button.cell:hover + .cell::before { opacity: 0; }
 .msgcard .top .link { padding: 8px 2px; }
 pre.block { flex: 1 1 100%; min-width: 0; margin: 0; padding: 16px 18px; border-radius: 20px; background: var(--fill); white-space: pre-wrap;
   word-break: break-word; font: 12.5px/1.6 var(--mono); letter-spacing: 0; color: var(--ink); }
+/* its own width never pushes the page wider (contain), so the line scrolls inside the card */
+pre.block.oneline { white-space: pre; overflow-x: auto; overscroll-behavior-x: contain; scrollbar-width: none;
+  contain: inline-size; width: 100%; }
+pre.block.oneline::-webkit-scrollbar { display: none; }
 .msgcard.folded pre.block { max-height: calc(14px + 5 * 1.6em); overflow: hidden; color: var(--ink2); }
 .msgcard .btn { order: 1; flex: 1 1 auto; width: auto; }
 

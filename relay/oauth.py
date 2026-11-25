@@ -318,7 +318,7 @@ def mount(app, hub) -> None:
                 f"<p class=lede id=lede>Pick its name.</p>"
                 f"<section class=step id=step aria-live=polite></section>"
                 f"<p class=foot id=foot>Returns to {html.escape(host)}</p></div>"
-                f"<script nonce='{nonce}'>const BOOT={json.dumps(boot)};{PAGE_JS}</script>")
+                f"<script nonce='{nonce}'>const BOOT={script_json(boot)};{PAGE_JS}</script>")
         return HTMLResponse(page(f"Connect {cl['name']}", body, nonce), headers=page_headers(nonce))
 
     def who(authorization: str) -> dict:
@@ -567,7 +567,7 @@ def mount(app, hub) -> None:
         return {"challenge": new_challenge("create", handle), "rp": {"id": rp, "name": "Relay"},
                 "user": {"id": W.b64u(handle.encode()), "name": handle, "displayName": handle},
                 "pubKeyCredParams": [{"type": "public-key", "alg": a} for a in W.ALGS],
-                "authenticatorSelection": {"residentKey": "required", "userVerification": "preferred"},
+                "authenticatorSelection": {"residentKey": "required", "userVerification": "required"},
                 "excludeCredentials": [{"type": "public-key", "id": x} for x in have],
                 "timeout": CHALLENGE_SECONDS * 1000, "attestation": "none"}
 
@@ -593,7 +593,7 @@ def mount(app, hub) -> None:
     @app.post("/auth/passkey/options", include_in_schema=False)
     def passkey_options(request: Request):
         iss, rp = site(request)
-        return {"challenge": new_challenge("get", None), "rpId": rp, "userVerification": "preferred",
+        return {"challenge": new_challenge("get", None), "rpId": rp, "userVerification": "required",
                 "timeout": CHALLENGE_SECONDS * 1000}
 
     @app.post("/auth/passkey/signin", include_in_schema=False)
@@ -635,12 +635,23 @@ def mount(app, hub) -> None:
     def delete_passkey(cred_id: str, me: dict = Depends(auth)):
         handle = person_of(me)
         with store.tx() as c:
-            if not c.execute("DELETE FROM passkeys WHERE cred_id=? AND handle=?", (cred_id, handle)).rowcount:
+            mine = [r["cred_id"] for r in c.execute("SELECT cred_id FROM passkeys WHERE handle=?", (handle,))]
+            if cred_id not in mine:
                 raise HTTPException(404, "no such passkey")
+            if len(mine) == 1 and not hub.email_on:      # with no email sign-in, it's the only way back in
+                raise HTTPException(409, "This is your only way to sign in. Add another passkey first.")
+            c.execute("DELETE FROM passkeys WHERE cred_id=? AND handle=?", (cred_id, handle))
         return {"removed": cred_id}
 
 
 # --------------------------------------------------------------------------- the page
+def script_json(data) -> str:
+    """JSON that is safe inside <script>: an app can name itself anything, and "</script>" in its name
+    must stay text, never end the script and start page markup."""
+    return (json.dumps(data).replace("<", "\\u003c").replace(">", "\\u003e").replace("&", "\\u0026")
+            .replace("\u2028", "\\u2028").replace("\u2029", "\\u2029"))
+
+
 def page_headers(nonce: Optional[str]) -> dict:
     script = f"'nonce-{nonce}'" if nonce else "'none'"
     return {"Content-Security-Policy": (f"default-src 'none'; script-src {script}; style-src 'unsafe-inline'; "
