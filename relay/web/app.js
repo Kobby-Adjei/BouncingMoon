@@ -1702,6 +1702,22 @@ function keyOrb(name, size = 56, left) {
     h("span", { class: "mh r dark" }, h("i", { class: "kh" })), h("span", { class: "kseal" }, tick("sealtick")));
 }
 const hostOf = (url) => { try { return new URL(url).hostname; } catch { return url; } };
+// You've said yes to the same thing five times: let it go ahead without asking, for a week. Reversible, listed.
+function trustOffer(o) {
+  const verb = VERB[o.method] || o.method;
+  const card = h("div", { class: "asknudge trustcard", role: "status" }, h("span", { class: "grow" },
+    h("b", { text: `${o.agent} has ${verb === "post" ? "posted" : verb + "d"} with ${o.key} ${o.times} times, all approved` }),
+    h("span", { text: `Let it ${verb} with ${o.key} without asking for the next ${o.days} days? You can stop it any time in Keys, and every use is still listed there.` }),
+    h("span", { class: "say" },
+      h("button", { class: "btn small press", type: "button", onclick: async () => {
+        try {
+          const t = await api("POST", `/keys/${enc(o.key_id)}/trust`, { agent: o.agent, method: o.method, days: o.days });
+          card.replaceWith(statusLine(`${o.agent} may ${verb} with ${o.key} until ${new Date(t.until * 1000).toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" })}`, true));
+        } catch (x) { alert(x.message); }
+      } }, `Yes, for ${o.days} days`),
+      h("button", { class: "way press", type: "button", onclick: () => card.remove() }, "Keep asking"))));
+  return card;
+}
 // the words a request carries, pulled out of its body so a person can read them before saying yes
 function plainAsk(r) {
   let body = null;
@@ -1895,6 +1911,17 @@ async function keyDetail(id) {
       h("p", { class: "lede", text: k.hosts.join(", ") }), hint),
     h("div", { class: "stack" },
       h("section", { class: "facts" }, h("h2", { class: "label" }, "Ask me first ", saved), askSeg),
+      (k.trusted || []).length ? h("section", { class: "facts" }, h("h2", { class: "label", text: "Trusted for now" }),
+        h("div", { class: "group info" }, ...k.trusted.map((t) => {
+          const stop = h("button", { class: "unpair press", type: "button" }, "Stop");
+          const row = h("div", { class: "cell" }, h("div", { class: "grow" },
+            h("div", { class: "t", text: `${t.agent} may ${VERB[t.method] || t.method} without asking` }),
+            h("div", { class: "s", text: `Until ${new Date(t.until * 1000).toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" })} · every use is still listed below` })), stop);
+          stop.addEventListener("click", async () => {
+            try { await api("POST", `/keys/${enc(k.id)}/untrust`, { agent: t.agent, method: t.method }); row.remove(); } catch (x) { alert(x.message); }
+          });
+          return row;
+        }))) : null,
       h("section", { class: "facts" }, h("h2", { class: "label", text: "Recent" }),
         calls.length ? h("div", { class: "calls" }, ...calls.map(callRow)) : h("p", { class: "quiet", text: "No agent has used it yet." })),
       h("div", { class: "spread" }, swap, off)));
@@ -1936,7 +1963,7 @@ async function approveScreen(cid) {
       const okCall = got.status === "done" && got.result_status < 400;
       orb.classList.add("sealed");
       status.replaceChildren(statusLine(okCall ? `Done. ${u ? u.hostname : "The website"} said yes` : got.error || `${u ? u.hostname : "The website"} said no (HTTP ${got.result_status})`, okCall),
-        h("p", { class: "quiet", text: `${r.agent} gets the answer in its chat.` }), pushNudge());
+        h("p", { class: "quiet", text: `${r.agent} gets the answer in its chat.` }), got.offer_trust ? trustOffer(got.offer_trust) : pushNudge());
     } else {
       status.replaceChildren(statusLine({ declined: "You said no. Nothing was sent.", expired: "This expired. Nothing was sent." }[got.status] || got.status),
         got.status === "declined" ? h("p", { class: "quiet", text: `${r.agent} has been told.` }) : null);
@@ -2517,7 +2544,26 @@ async function newMessage() {
     avatar(a, 52, true), h("span", { text: a.handle }), h("span", { class: "sub", text: reach(a).text }));
   const grid = h("div", { class: "pick stagger" }, ...ags.map(tile));
   const find = ags.length > 8 ? findBox("Find someone", (q) => grid.replaceChildren(...ags.filter((a) => !q || matches(a, q)).map(tile))) : null;
-  screen("new", tk, head("New message", "Who to?"), find, ags.length ? grid : blank("No one to message yet", "Add an agent first."));
+  let cuts = [];
+  try { cuts = ME.role === "human" ? await api("GET", "/shortcuts") : []; } catch {}
+  if (!fresh(tk)) return;
+  const shortcuts = cuts.length ? h("section", { class: "facts" }, h("h2", { class: "label", text: "Shortcuts" }),
+    h("div", { class: "group info" }, ...cuts.map((sc) => {
+      const del = h("button", { class: "unpair press", type: "button", "aria-label": `Remove ${sc.title}` }, "Remove");
+      const run = h("button", { class: "grow plain sclink press", type: "button" },
+        h("div", { class: "t", text: sc.title }), h("div", { class: "s", text: `To ${names(sc.mentions)}${sc.uses ? ` · used ${sc.uses}×` : ""}` }));
+      run.addEventListener("click", async () => {
+        if (!confirm(`Send “${sc.text.slice(0, 140)}” to ${names(sc.mentions)}?`)) return;
+        try { const m = await api("POST", `/shortcuts/${enc(sc.id)}/run`); nav(`activity/${m.thread}`, { replace: true, data: sc.mentions }); }
+        catch (x) { alert(x.message); }
+      });
+      const row = h("div", { class: "cell" }, run, del);
+      del.addEventListener("click", async () => { try { await api("DELETE", `/shortcuts/${enc(sc.id)}`); row.remove(); } catch (x) { alert(x.message); } });
+      return row;
+    }))) : null;
+  screen("new", tk, head("New message", shortcuts ? null : "Who to?"), shortcuts,
+    shortcuts && ags.length ? h("h2", { class: "label pickq", text: "Or pick who to" }) : null, find,
+    ags.length ? grid : blank("No one to message yet", "Add an agent first."));
 }
 
 // ------------------------------------------------------------------ the AI apps someone uses (invite asks, stats)
@@ -2745,6 +2791,7 @@ async function thread(id, people) {
   const PAGE = 60;
   const byId = new Map(), painted = new Set();
   const opened = new Set();             // long messages already unfolded stay open when the view repaints
+  const kept = new Set();               // requests saved as shortcuts while this was open
   let shown = "", older = false, loadedOnce = false, justSent = false, unseen = 0, soloApps = false;
   const scroller = () => WIDE ? view : document.scrollingElement;
   const fromEnd = () => { const el = scroller(); return el.scrollHeight - el.scrollTop - el.clientHeight; };
@@ -2787,6 +2834,17 @@ async function thread(id, people) {
     // a long message folds: the conversation stays readable, the whole thing is one tap away
     const long = text.length > 700 || text.split("\n").length > 14;
     const more = long ? h("button", { class: "more press", type: "button", "aria-expanded": "false" }) : null;
+    const keep = !(m.id === threadId && mine && ME.role === "human") ? null : kept.has(m.id)
+      ? h("span", { class: "more saved", text: "Saved · it's in New message" }) : h("button", { class: "more press savesc", type: "button" }, "Save as shortcut");
+    if (keep && keep.tagName === "BUTTON") keep.addEventListener("click", async () => {
+      const title = prompt("Name this shortcut", topic(text));
+      if (title === null) return;
+      try {
+        await api("POST", "/shortcuts", { title: title.trim(), text, mentions: m.mentions || [] });
+        kept.add(m.id);
+        keep.replaceWith(h("span", { class: "more saved", text: "Saved · it's in New message" }));
+      } catch (x) { alert(x.message); }
+    });
     if (more) {
       const set = (open) => {
         bub.classList.toggle("folded", !open); more.setAttribute("aria-expanded", String(open));
@@ -2800,7 +2858,7 @@ async function thread(id, people) {
         if (!open) bub.scrollIntoView({ block: "nearest", behavior: "smooth" });     // folding a long one back: stay on it
       });
     }
-    return h("div", { class: "msg" + (mine ? " mine" : "") }, face, h("div", { class: "body" }, who, bub, more));
+    return h("div", { class: "msg" + (mine ? " mine" : "") }, face, h("div", { class: "body" }, who, bub, more, keep));
   }
   function paint(keepPlace) {
     const msgs = [...byId.values()].sort((a, b) => a.id - b.id);

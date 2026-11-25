@@ -70,6 +70,11 @@ CREATE TABLE IF NOT EXISTS vault_calls(
   result_status INTEGER, result_type TEXT, result TEXT, error TEXT);
 CREATE INDEX IF NOT EXISTS vault_calls_owner ON vault_calls(owner, status, created);
 CREATE INDEX IF NOT EXISTS vault_calls_key ON vault_calls(key_id, created);
+-- trust that grows: after the owner has said yes to the same thing again and again, they may let this agent
+-- do exactly that (this key, this kind of call) without asking, for a while. Every use is still recorded.
+CREATE TABLE IF NOT EXISTS vault_trust(
+  key_id TEXT NOT NULL, agent TEXT NOT NULL, method TEXT NOT NULL, until REAL NOT NULL, created REAL NOT NULL,
+  PRIMARY KEY(key_id, agent, method));
 """
 
 
@@ -85,6 +90,12 @@ class KeyIn(BaseModel):
     field: Optional[str] = None       # the header name, or the query parameter name
     ask: str = "changes"
     agents: list[str] = Field(default_factory=list)     # empty: all of the owner's agents
+
+
+class TrustIn(BaseModel):
+    agent: str = Field(max_length=64)
+    method: str = Field(max_length=10)
+    days: int = 7
 
 
 class KeyEdit(BaseModel):
@@ -196,7 +207,10 @@ class Vault:
 
     def mine(self, owner: str) -> list:
         with self.store.ro() as c:
-            return [self.key_out(r) for r in c.execute("SELECT * FROM vault_keys WHERE owner=? ORDER BY name", (owner,))]
+            keys = [self.key_out(r) for r in c.execute("SELECT * FROM vault_keys WHERE owner=? ORDER BY name", (owner,))]
+        for k in keys:
+            k["trusted"] = self.trusts(k["id"])
+        return keys
 
     def add(self, owner: str, k: KeyIn) -> dict:
         name = k.name.strip().lower()
@@ -255,6 +269,7 @@ class Vault:
         with self.store.tx() as c:
             self._own(c, owner, kid)
             c.execute("DELETE FROM vault_keys WHERE id=?", (kid,))
+            c.execute("DELETE FROM vault_trust WHERE key_id=?", (kid,))
             c.execute("UPDATE vault_calls SET status='expired', decided=? WHERE key_id=? AND status='waiting'",
                       (self.now(), kid))
 
@@ -324,8 +339,56 @@ class Vault:
         why = str(args.get("why") or "").strip()[:300] or None
         return k, method, url, headers, body, why
 
-    def needs_ok(self, k, method: str) -> bool:
-        return k["ask"] == "always" or (k["ask"] == "changes" and method in CHANGES)
+    def needs_ok(self, k, method: str, agent: Optional[str] = None) -> bool:
+        if not (k["ask"] == "always" or (k["ask"] == "changes" and method in CHANGES)):
+            return False
+        if agent:                      # the owner trusts this agent with exactly this, for now
+            with self.store.ro() as c:
+                if c.execute("SELECT 1 FROM vault_trust WHERE key_id=? AND agent=? AND method=? AND until>?",
+                             (k["id"], agent, method, self.now())).fetchone():
+                    return False
+        return True
+
+    # ------------------------------------------------------------ trust that grows
+    TRUST_AFTER = 5                    # yeses in a row, nothing declined, before Relay offers it
+    TRUST_DAYS = 7
+
+    def trust_offer(self, owner: str, call: dict) -> Optional[dict]:
+        """After an approval: has the owner said yes to this agent doing this with this key the last 5 times?"""
+        if call.get("status") != "done" or not call.get("decided_by"):
+            return None
+        with self.store.ro() as c:
+            if c.execute("SELECT 1 FROM vault_trust WHERE key_id=? AND agent=? AND method=? AND until>?",
+                         (call["key_id"], call["agent"], call["method"], self.now())).fetchone():
+                return None
+            last = [r["status"] for r in c.execute(
+                "SELECT status FROM vault_calls WHERE key_id=? AND agent=? AND method=? AND owner=? AND decided IS NOT NULL"
+                " ORDER BY decided DESC LIMIT ?", (call["key_id"], call["agent"], call["method"], owner, self.TRUST_AFTER))]
+        if len(last) < self.TRUST_AFTER or any(st in ("declined",) for st in last):
+            return None
+        return {"agent": call["agent"], "key": call["key"], "key_id": call["key_id"], "method": call["method"],
+                "times": len(last), "days": self.TRUST_DAYS}
+
+    def trust(self, owner: str, kid: str, agent: str, method: str, days: int) -> dict:
+        days = max(1, min(int(days), 30))
+        with self.store.tx() as c:
+            self._own(c, owner, kid)
+            until = self.now() + days * 86400
+            c.execute("INSERT INTO vault_trust(key_id,agent,method,until,created) VALUES (?,?,?,?,?)"
+                      " ON CONFLICT(key_id,agent,method) DO UPDATE SET until=excluded.until",
+                      (kid, agent, method.upper(), until, self.now()))
+        return {"agent": agent, "method": method.upper(), "until": until}
+
+    def untrust(self, owner: str, kid: str, agent: str, method: str) -> bool:
+        with self.store.tx() as c:
+            self._own(c, owner, kid)
+            return c.execute("DELETE FROM vault_trust WHERE key_id=? AND agent=? AND method=?",
+                             (kid, agent, method.upper())).rowcount > 0
+
+    def trusts(self, kid: str) -> list:
+        with self.store.ro() as c:
+            return [{"agent": r["agent"], "method": r["method"], "until": r["until"]} for r in c.execute(
+                "SELECT * FROM vault_trust WHERE key_id=? AND until>? ORDER BY agent", (kid, self.now()))]
 
     def record(self, k, agent: str, method: str, url: str, headers: dict, body: Optional[bytes], why, status: str,
                anchor: Optional[int] = None) -> str:
@@ -518,12 +581,22 @@ def mount(app, hub, vault: Vault) -> None:
 
     def answer(cid: str, me: dict, ok: bool) -> dict:
         got = vault.decide(person(me), cid, ok)
+        got["offer_trust"] = vault.trust_offer(person(me), got) if ok else None
         if got["anchor"] and cid not in vault.watching:            # the result goes back to the chat that asked, in its conversation
             with hub.store.tx() as c:
                 if c.execute("SELECT 1 FROM messages WHERE id=?", (got["anchor"],)).fetchone():
                     hub.post(c, hub.SYSTEM, ("🔑 " if ok else "✋ ") + summary(got)[:4000],
                              reply_to=got["anchor"], mentions=[got["agent"]])
         return got
+
+    @app.post("/keys/{kid}/trust")
+    def trust(kid: str, body: TrustIn, me: dict = Depends(auth)):
+        """Let this agent make this kind of call with this key without asking, for a few days."""
+        return vault.trust(person(me), kid, body.agent, body.method, body.days)
+
+    @app.post("/keys/{kid}/untrust")
+    def untrust(kid: str, body: TrustIn, me: dict = Depends(auth)):
+        return {"stopped": vault.untrust(person(me), kid, body.agent, body.method)}
 
     @app.post("/approvals/{cid}/approve")
     def approve(cid: str, me: dict = Depends(auth)):

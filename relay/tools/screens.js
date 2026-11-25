@@ -51,6 +51,7 @@ async function seed() {
   const asks = await api("GET", "/invite-requests", undefined, K);
   const client = await api("POST", "/oauth/register", { client_name: "ChatGPT", redirect_uris: ["https://chatgpt.com/connector_platform_oauth_redirect"] });
   const up = await mcp(tok.claude, "request_upload", { note: "the raw clips" });
+  await api("POST", "/shortcuts", { title: "Post tonight's cut", text: "@claude send the 30-second cut to @codex and get it posted tonight", mentions: ["claude", "codex"] }, K);
   const msgs = await api("GET", `/messages?thread=${first.thread}`, undefined, K);
   const card = msgs.flatMap((m) => m.media || [])[0];
   return { K, AMA, thread: first.thread, key: key.id, approval: approval && approval.id, ask: asks[0] && asks[0].id,

@@ -65,6 +65,9 @@ CREATE INDEX IF NOT EXISTS members_agent ON members(agent, thread);
 -- when an agent first read a message (its chat took it): what "Read by claude · 3:29" says
 CREATE TABLE IF NOT EXISTS reads(msg INTEGER NOT NULL, handle TEXT NOT NULL, time REAL NOT NULL, PRIMARY KEY(msg, handle));
 -- the newest message a person has seen in each conversation: what makes a row bold until they open it
+-- a person's saved hand-offs: one tap sends the same request to the same agents again
+CREATE TABLE IF NOT EXISTS shortcuts(id TEXT PRIMARY KEY, handle TEXT NOT NULL, title TEXT NOT NULL, text TEXT NOT NULL,
+  mentions TEXT NOT NULL, created REAL NOT NULL, used REAL, uses INTEGER NOT NULL DEFAULT 0);
 CREATE TABLE IF NOT EXISTS seen(handle TEXT NOT NULL, thread INTEGER NOT NULL, last INTEGER NOT NULL, PRIMARY KEY(handle, thread));
 CREATE INDEX IF NOT EXISTS messages_channel ON messages(channel);
 CREATE TABLE IF NOT EXISTS subs(agent TEXT, channel TEXT, PRIMARY KEY(agent, channel));
@@ -402,6 +405,12 @@ class PushDeviceIn(BaseModel):
     keys: Optional[PushKeysIn] = None
     kinds: Optional[List[str]] = None
     label: Optional[str] = Field(default=None, max_length=60)
+
+
+class ShortcutIn(BaseModel):
+    title: str = Field(default="", max_length=80)
+    text: str = Field(min_length=1, max_length=4000)
+    mentions: List[str] = Field(default_factory=list, max_length=20)
 
 
 class DeleteIn(BaseModel):
@@ -1595,6 +1604,55 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
         return [{"thread": r["thread"], "count": r["n"], "people": people.get(r["thread"], []), "last": msg_out(r),
                  "first": first.get(r["thread"]), "unread": unread(r)} for r in rows]
 
+    # ---------------------------------------------------------------- shortcuts: a hand-off again, in one tap
+    SHORTCUTS_EACH = 30
+
+    def shortcut_out(r) -> dict:
+        return {"id": r["id"], "title": r["title"], "text": r["text"], "mentions": _loads(r["mentions"], []),
+                "created": r["created"], "used": r["used"], "uses": r["uses"]}
+
+    @app.get("/shortcuts")
+    def list_shortcuts(me: dict = Depends(auth)):
+        with store.ro() as c:
+            return [shortcut_out(r) for r in c.execute(
+                "SELECT * FROM shortcuts WHERE handle=? ORDER BY COALESCE(used, created) DESC", (me["handle"],))]
+
+    @app.post("/shortcuts")
+    def save_shortcut(body: ShortcutIn, me: dict = Depends(auth)):
+        if me["role"] != "human":
+            raise HTTPException(403, "Shortcuts are for people.")
+        who = sorted({m.lstrip("@") for m in body.mentions})
+        with store.tx() as c:
+            for m in who:
+                if not c.execute("SELECT 1 FROM agents WHERE handle=?", (m,)).fetchone():
+                    raise HTTPException(400, f"unknown @{m}")
+            if c.execute("SELECT COUNT(*) n FROM shortcuts WHERE handle=?", (me["handle"],)).fetchone()["n"] >= SHORTCUTS_EACH:
+                raise HTTPException(429, f"That's {SHORTCUTS_EACH} shortcuts. Remove one first.")
+            sid = "sc_" + secrets.token_hex(6)
+            title = body.title.strip() or body.text.strip().splitlines()[0][:80]
+            c.execute("INSERT INTO shortcuts(id,handle,title,text,mentions,created) VALUES (?,?,?,?,?,?)",
+                      (sid, me["handle"], title, body.text.strip(), json.dumps(who), _now()))
+            return shortcut_out(c.execute("SELECT * FROM shortcuts WHERE id=?", (sid,)).fetchone())
+
+    @app.delete("/shortcuts/{sid}")
+    def remove_shortcut(sid: str, me: dict = Depends(auth)):
+        with store.tx() as c:
+            if not c.execute("DELETE FROM shortcuts WHERE id=? AND handle=?", (sid, me["handle"])).rowcount:
+                raise HTTPException(404, "no such shortcut")
+        return {"removed": sid}
+
+    @app.post("/shortcuts/{sid}/run")
+    def run_shortcut(sid: str, me: dict = Depends(auth)):
+        """Send it again: a new conversation with the same words to the same agents."""
+        with store.tx() as c:
+            r = c.execute("SELECT * FROM shortcuts WHERE id=? AND handle=?", (sid, me["handle"])).fetchone()
+            if not r:
+                raise HTTPException(404, "no such shortcut")
+            who = [m for m in _loads(r["mentions"], []) if c.execute("SELECT 1 FROM agents WHERE handle=?", (m,)).fetchone()]
+            m = post(c, me["handle"], r["text"], channel=DIRECT, mentions=who)
+            c.execute("UPDATE shortcuts SET used=?, uses=uses+1 WHERE id=?", (_now(), sid))
+        return m
+
     @app.get("/search")
     def search(q: str = Query("", max_length=200), limit: int = Query(20, ge=1, le=50), me: dict = Depends(auth)):
         """Conversations you may see that match: by what was said in them, who is in them, or a file's name.
@@ -1823,7 +1881,7 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
                                ("agent_keys", "handle"), ("routes", "handle"), ("thread_sessions", "handle"),
                                ("session_cursors", "handle"), ("delivered", "handle"), ("passkeys", "handle"),
                                ("oauth_tokens", "handle"), ("oauth_codes", "handle"), ("webauthn_challenges", "handle"),
-                               ("push_subs", "handle"), ("reads", "handle"), ("seen", "handle"),
+                               ("push_subs", "handle"), ("reads", "handle"), ("seen", "handle"), ("shortcuts", "handle"),
                                ("agents", "handle")):
                 c.execute(f"DELETE FROM {table} WHERE {col} IN ({q})", hs)
             for table in ("oauth_tokens", "oauth_codes"):

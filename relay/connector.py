@@ -716,7 +716,7 @@ def mount(app, hub) -> None:
         v = hub.vault
         try:
             k, method, url, headers, body, why = v.prepare(me, args)
-            if not v.needs_ok(k, method):
+            if not v.needs_ok(k, method, me):
                 got = v.run(v.record(k, me, method, url, headers, body, why, "running"))
                 return summary(got), public(got)
             cid = v.record(k, me, method, url, headers, body, why, "waiting")

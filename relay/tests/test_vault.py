@@ -273,3 +273,42 @@ def test_an_object_passed_as_body_goes_out_as_json(hub):
     assert not res["isError"], res
     sent = web.calls[-1]
     assert json.loads(sent["body"]) == {"caption": "New drop."} and sent["headers"]["Content-Type"] == "application/json"
+
+
+# ------------------------------------------------------------------ trust that grows
+def test_five_yeses_offer_a_week_without_asking_and_it_can_be_stopped(hub):
+    c, web, app, t = hub
+    k = save(c, t["kobby"])
+    post = {"key": "instagram", "method": "POST", "url": "https://graph.facebook.com/v21.0/1784/media", "json": {"caption": "x"}}
+    offers = []
+    for i in range(5):
+        req = call(c, t["claude"], "call_api", post)["structuredContent"]["request"]
+        offers.append(c.post(f"/approvals/{req}/approve", headers=H(t["kobby"])).json()["offer_trust"])
+    assert offers[:4] == [None] * 4                                    # not before the fifth yes
+    o = offers[4]
+    assert o == {"agent": "claude", "key": "instagram", "key_id": k["id"], "method": "POST", "times": 5, "days": 7}
+    assert c.post(f"/keys/{k['id']}/trust", headers=H(t["ama"]), json={"agent": "claude", "method": "POST"}).status_code == 404
+    tr = c.post(f"/keys/{k['id']}/trust", headers=H(t["kobby"]), json={"agent": "claude", "method": "POST", "days": 7}).json()
+    assert tr["until"] > 0
+    sent_before = len(web.calls)
+    done = call(c, t["claude"], "call_api", post)["structuredContent"]
+    assert done["status"] == "done" and len(web.calls) == sent_before + 1   # went straight through
+    other = call(c, t["muse"], "call_api", post)["structuredContent"]       # another agent still asks
+    assert other["status"] == "waiting"
+    listed = next(x for x in c.get("/keys", headers=H(t["kobby"])).json() if x["id"] == k["id"])
+    assert listed["trusted"][0]["agent"] == "claude"
+    assert c.post(f"/keys/{k['id']}/untrust", headers=H(t["kobby"]), json={"agent": "claude", "method": "POST"}).json() == {"stopped": True}
+    assert call(c, t["claude"], "call_api", post)["structuredContent"]["status"] == "waiting"   # asks again
+
+
+def test_a_no_in_the_last_five_means_no_offer(hub):
+    c, web, app, t = hub
+    save(c, t["kobby"])
+    post = {"key": "instagram", "method": "POST", "url": "https://graph.facebook.com/v21.0/1784/media", "json": {"caption": "x"}}
+    req = call(c, t["claude"], "call_api", post)["structuredContent"]["request"]
+    c.post(f"/approvals/{req}/decline", headers=H(t["kobby"]))
+    offers = []
+    for i in range(4):
+        req = call(c, t["claude"], "call_api", post)["structuredContent"]["request"]
+        offers.append(c.post(f"/approvals/{req}/approve", headers=H(t["kobby"])).json()["offer_trust"])
+    assert offers == [None] * 4
