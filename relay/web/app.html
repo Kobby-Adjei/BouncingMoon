@@ -205,7 +205,7 @@
 .morb .mh.ghost { background: transparent; box-shadow: inset 0 0 0 1.5px var(--ink3); border-right: 0; }
 .door { appearance: none; border: 0; width: 100%; display: flex; align-items: center; gap: 14px; padding: 14px 16px; border-radius: 20px;
   background: var(--card); color: var(--ink); text-align: left; cursor: pointer; box-shadow: 0 1px 2px rgba(24, 23, 29, .04), 0 10px 26px -16px rgba(24, 23, 29, .3); }
-.door .grow { display: flex; flex-direction: column; } .door b { font-size: 16px; font-weight: 600; } .door .grow span { font-size: 13px; color: var(--ink2); }
+.door .grow { flex: 1; min-width: 0; display: flex; flex-direction: column; text-align: left; } .door b { font-size: 16px; font-weight: 600; } .door .grow span { font-size: 13px; color: var(--ink2); }
 .pairs { display: flex; flex-direction: column; gap: 26px; margin: 10px 0 40px; }
 .pair { display: flex; align-items: center; gap: 16px; animation: rise .6s var(--ease) both; animation-delay: calc(var(--i, 0) * 70ms);
   transition: opacity .4s var(--ease), transform .45s var(--ease), max-height .45s var(--ease), margin .45s var(--ease); max-height: 120px; flex-wrap: wrap; }

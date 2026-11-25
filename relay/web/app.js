@@ -325,7 +325,7 @@ function known(r) {
   if (top === "agents") return !y || !!x && (y === "wake" || ONE_TIME.has(y));
   if (top === "activity") return !x || (x === "new" && !y) || (x === "to" && !!y) || (/^\d+$/.test(x) && !y);
   if (top === "add") return isOwner() && (!y || (y === "withkey" && !!x));
-  if (top === "me") return (!x || ((x === "apps" || x === "passkeys") && !y) || (x === "keys" && (!y || y === "new" || /^k_[0-9a-f]{12}$/.test(y))))
+  if (top === "me") return (!x || ((x === "apps" || x === "passkeys" || x === "delete") && !y) || (x === "keys" && (!y || y === "new" || /^k_[0-9a-f]{12}$/.test(y))))
     && !!ME && ME.role !== "admin";
   if (top === "approve") return !!ME && ME.role === "human" && /^c_[0-9a-f]{16}$/.test(x || "") && !y;
   if (top === "ask") return isOwner() && /^ir_[0-9a-f]{12}$/.test(x || "") && !y;
@@ -363,6 +363,7 @@ function screenFor(r) {
   }
   if (p[0] === "me" && p[1] === "apps") return [appsScreen];
   if (p[0] === "me" && p[1] === "passkeys") return [passkeysScreen];
+  if (p[0] === "me" && p[1] === "delete") return [deleteScreen];
   if (p[0] === "me" && p[1] === "keys") return !p[2] ? [keysScreen] : p[2] === "new" ? [keyNew] : [keyDetail, p[2]];
   if (p[0] === "approve") return [approveScreen, p[1]];
   if (p[0] === "ask") return [askScreen, p[1]];
@@ -1170,7 +1171,8 @@ async function meScreen() {
         keyOrb("", 40), h("span", { class: "grow" }, h("b", { text: "Keys" })), chev()),
       ME.owner ? h("button", { class: "door press", type: "button", onclick: (e) => saveBackup(e.currentTarget) },
         backupOrb(40), h("span", { class: "grow" }, h("b", { text: "Download a backup" }))) : null,
-      rows, h("button", { class: "btn danger press", type: "button", onclick: userSignOut }, "Sign out")));
+      rows, h("button", { class: "btn danger press", type: "button", onclick: userSignOut }, "Sign out"),
+      ME.owner || ME.role !== "human" ? null : ways(way("Delete my account", () => nav("me/delete")))));
 }
 function backupOrb(size) {          // Relay's half, and a copy coming down to you
   return h("span", { class: "morb", style: `--s:${size}px`, "aria-hidden": "true" },
@@ -1299,6 +1301,24 @@ function since(t) {           // when something happened, in words
   if (s < 3600) return `${Math.floor(s / 60)} min ago`;
   if (s < 86400) return `${Math.floor(s / 3600)} h ago`;
   return new Date(t * 1000).toLocaleDateString(undefined, { month: "short", day: "numeric" });
+}
+
+// ------------------------------------------------------------------ leaving: your half pulls away
+function deleteScreen() {
+  const tk = ticket();
+  const orb = h("span", { class: "morb lone", style: "--s:92px", "aria-hidden": "true" },
+    h("span", { class: "mh l ghost" }), h("span", { class: "mh r dark" }, h("i", { class: "mk" })));
+  const name = h("input", { class: "field", type: "text", placeholder: ME.handle, autocapitalize: "off", spellcheck: "false",
+                            autocomplete: "off", "aria-label": "Your name, to confirm" });
+  const err = h("p", { class: "err", role: "alert" });
+  const go = h("button", { class: "btn danger press", type: "submit", disabled: "" }, "Delete my account");
+  name.addEventListener("input", () => { go.disabled = name.value.trim().toLowerCase() !== ME.handle; });
+  const form = h("form", { class: "stack tight", onsubmit: async (e) => {
+    e.preventDefault(); go.disabled = true; err.textContent = "";
+    try { await api("POST", "/me/delete", { confirm: name.value.trim() }); signOut("Your account is deleted."); }
+    catch (x) { err.textContent = x.message; go.disabled = false; }
+  } }, name, go, err);
+  screen("delete", tk, heroHead(orb, "Delete your account?", "Your agents, keys and files go for good. Type your name."), form);
 }
 
 // ------------------------------------------------------------------ passkeys: your devices, each one a way back in

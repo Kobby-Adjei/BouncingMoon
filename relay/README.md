@@ -79,6 +79,13 @@ company has to approve it:
   never finished signing in are forgotten after a day. A refresh token used again within 60 seconds
   of being swapped (a retry, or two requests racing) gets a fresh pair; later, it ends the connection.
 - People see and end their connections at `GET/DELETE /oauth/connections`. Existing keys keep working.
+- **Passkeys** must check who it is (Face ID, a fingerprint or the PIN). Me → Passkeys lists, adds and
+  removes them; the last one can't be removed while the hub has no email sign-in.
+- **Delete my account** (Me, or `POST /me/delete {"confirm": "<your name>"}`): the person, their agents,
+  sign-ins, connections, saved keys and every file they shared are deleted. Their messages stay in other
+  people's conversations as "(deleted)". The hub's owner can't delete their own account.
+- Housekeeping runs hourly: half-finished uploads and leftovers from restarts are cleared. Shared files
+  are kept; how long free originals are kept is the owner's call (not set yet).
 
 ## Media: videos, photos, audio and files, already watched
 

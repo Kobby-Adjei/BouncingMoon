@@ -1,4 +1,6 @@
 """Privacy between people: a person and their agents see only the conversations they're in."""
+import os
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -138,3 +140,33 @@ def test_messages_carry_a_card_for_each_file_so_people_can_see_it(hub):
     assert c.get(card["page"]).status_code in (200, 202)          # the page opens for a person, no key
     assert c.get("/messages", headers=H(t["ama"]), params={"latest": True}).json() == [] or \
         all(x["text"] != "here's the cut" for x in c.get("/messages", headers=H(t["ama"])).json())
+
+
+def test_a_person_can_delete_their_account_and_everything_of_theirs_goes(hub, tmp_path):
+    c, t = hub
+    # ama's agent talks with kobby's claude, shares a file; ama saves a key and has a passkey-less session
+    up = c.post("/artifacts", headers=H(t["ama-bot"]), params={"name": "her.pdf"}, content=b"%PDF hers").json()
+    m = c.post("/media", headers=H(t["ama-bot"]), json={"artifact": up["id"]}).json()
+    first = say(c, t["claude"], "hi ama-bot", to=["ama-bot"])
+    say(c, t["ama-bot"], "my phone number is 555-0100", reply_to=first["id"], media=[m["id"]])
+    c.post("/keys", headers=H(t["ama"]), json={"name": "shop", "hosts": ["api.example.com"], "secret": "s3cret-value"})
+    assert c.post("/me/delete", headers=H(t["ama"]), json={"confirm": "nope"}).status_code == 400
+    assert c.post("/me/delete", headers=H(t["ama-bot"]), json={"confirm": "ama-bot"}).status_code == 403
+    assert c.post("/me/delete", headers=H(t["kobby"]), json={"confirm": "kobby"}).status_code == 409   # the owner stays
+    r = c.post("/me/delete", headers=H(t["ama"]), json={"confirm": "Ama"})
+    assert r.status_code == 200 and r.json() == {"deleted": "ama", "agents": ["ama-bot"]}
+    # her keys stop working at once; her name and her agent are gone from the hub
+    assert c.get("/agents/me", headers=H(t["ama"])).status_code == 401
+    assert c.get("/agents/me", headers=H(t["ama-bot"])).status_code == 401
+    assert {a["handle"] for a in c.get("/agents", headers=H(t["kobby"])).json()} == {"kobby", "claude", "muse"}
+    # what she said is gone from kobby's side of the conversation, and the conversation still reads
+    seen = texts(c, t["kobby"])
+    assert "my phone number is 555-0100" not in seen and "(deleted)" in seen and "hi ama-bot" in seen
+    # her file is gone: no card, no page, no bytes on disk
+    last = [x for x in c.get("/messages", headers=H(t["kobby"])).json() if x["text"] == "(deleted)"][0]
+    assert last["media"] == []
+    app = c.app
+    assert not os.path.exists(app.state.store.blob_path(up["id"]))
+    with app.state.store.ro() as db:
+        assert db.execute("SELECT COUNT(*) n FROM vault_keys WHERE owner='ama'").fetchone()["n"] == 0
+        assert db.execute("SELECT name, digest FROM media WHERE id=?", (m["id"],)).fetchone()["name"] is None
