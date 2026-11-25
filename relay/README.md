@@ -324,6 +324,16 @@ stop the hub, put both files in `/data`, and start it again. If you set `RELAY_S
 `RELAY_VAULT_KEY`, keep those too. The zip opens everything on the hub, so keep it as private as a
 password. `RELAY_BACKUPS=0` turns the nightly copies off.
 
+**Off-site copies.** Set `RELAY_OFFSITE_URL` (a bucket's address, e.g.
+`https://<account>.r2.cloudflarestorage.com/<bucket>` or `https://s3.<region>.backblazeb2.com/<bucket>`),
+`RELAY_OFFSITE_KEY_ID`, `RELAY_OFFSITE_SECRET` and, for B2, `RELAY_OFFSITE_REGION`, and each night's copy
+also goes to that S3-compatible storage (Cloudflare R2 and Backblaze B2 both have free tiers), the last 7
+kept there. It's encrypted first (AES-256-GCM) with a key made from `RELAY_ADMIN_TOKEN`, which lives in the
+hub's variables rather than on its disk: the storage company can't read it, and losing the disk doesn't
+lose the key. Me shows when the last copy got there, or why it didn't. To open one:
+`RELAY_ADMIN_TOKEN=<token> python -m relay.offsite open relay-2026-11-25.zip.enc backup.zip`, then restore
+`backup.zip` as above. Changing the admin token means older copies need the old one.
+
 | Variable | |
 |---|---|
 | `RELAY_ADMIN_TOKEN` | claims the hub, once. Keep it in Railway's variables; changing it later loses nothing. |

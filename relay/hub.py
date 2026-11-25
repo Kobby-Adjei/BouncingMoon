@@ -1741,6 +1741,15 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
 
     # ---------------------------------------------------------------- backups (no paid plan needed; see backup.py)
     from . import backup as backup_mod
+    from . import offsite as offsite_mod
+    try:
+        offsite = offsite_mod.Offsite.from_env()     # R2, B2 or any S3: a copy that survives losing this disk
+    except ValueError as e:
+        offsite = None
+        log.warning("off-site backups are off: %s", e)
+    if offsite and not os.environ.get("RELAY_ADMIN_TOKEN"):
+        log.warning("off-site backups are locked with an admin token kept on this disk; set RELAY_ADMIN_TOKEN "
+                    "as a variable so a copy can still be opened if the disk is lost")
 
     def nightly_backups():
         time.sleep(300)                            # let a fresh deploy settle first
@@ -1749,6 +1758,9 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
                 made = backup_mod.nightly(store.dir, room=lambda n: media_mod.room(store.dir, n))
                 if made:
                     log.info("backup written: %s", os.path.basename(made))
+                sent = offsite_mod.sync(store.dir, offsite, admin_token)
+                if sent:
+                    log.info("backup copied off-site: %s", sent)
             except Exception as e:                 # a backup that fails must never take the hub down
                 log.warning("backup failed: %s", e)
             try:
@@ -1796,6 +1808,18 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
         files = media_svc.erase(handles)
         log.info("account deleted: @%s with %d agent(s), %d file(s)", p, len(handles) - 1, files)
         return {"deleted": p, "agents": handles[1:]}
+
+    @app.get("/backup/status")
+    def backup_status(me: dict = Depends(auth)):
+        """For the owner: the newest nightly copy here, and whether one is safely off this server."""
+        if not (me.get("owner") or me["role"] == "admin"):
+            raise HTTPException(403, "Only the hub's owner sees backups.")
+        folder = os.path.join(store.dir, "backups")
+        local = sorted(f for f in os.listdir(folder) if f.endswith(".zip")) if os.path.isdir(folder) else []
+        st = offsite_mod.status(store.dir)
+        return {"local": {"name": local[-1], "time": os.path.getmtime(os.path.join(folder, local[-1]))} if local else None,
+                "offsite": {"on": bool(offsite), "name": st.get("name"), "ok": st.get("ok"), "error": st.get("error"),
+                            "failed": st.get("failed")}}
 
     @app.get("/backup", include_in_schema=False)
     def download_backup(me: dict = Depends(auth)):

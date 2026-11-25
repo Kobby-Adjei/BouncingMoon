@@ -22,7 +22,7 @@ RUN python -c "import os; from faster_whisper import download_model; m = os.envi
  && rm -rf /opt/whisper/*/.cache /root/.cache \
  && python -c "import os; from faster_whisper import WhisperModel; WhisperModel('/opt/whisper/' + os.environ['RELAY_WHISPER_MODEL'], device='cpu', compute_type='int8'); print('speech model loads')"
 
-COPY __init__.py hub.py connector.py wake.py people.py captions.py media.py oauth.py webauthn.py vault.py providers.py backup.py push.py cli.py cli.sig.json /app/relay/
+COPY __init__.py hub.py connector.py wake.py people.py captions.py media.py oauth.py webauthn.py vault.py providers.py backup.py offsite.py push.py cli.py cli.sig.json /app/relay/
 COPY logos/*.svg /app/relay/logos/
 COPY web/ /app/relay/web/
 ENV RELAY_DATA=/data PYTHONUNBUFFERED=1

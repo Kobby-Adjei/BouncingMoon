@@ -1371,7 +1371,7 @@ async function meScreen() {
         keyOrb("", 40), h("span", { class: "grow" }, h("b", { text: "Keys" })), chev()),
       !ME.owner && ME.role === "human" ? friendDoor() : null,
       ME.owner ? h("button", { class: "door press", type: "button", onclick: (e) => saveBackup(e.currentTarget) },
-        backupOrb(40), h("span", { class: "grow" }, h("b", { text: "Download a backup" }))) : null),
+        backupOrb(40), h("span", { class: "grow" }, h("b", { text: "Download a backup" }), backupLine())) : null),
       rows, h("button", { class: "btn ghost press signout", type: "button", onclick: userSignOut }, "Sign out"),
       ME.owner || ME.role !== "human" ? null : ways(way("Delete my account", () => nav("me/delete")))));
 }
@@ -1427,6 +1427,18 @@ function backupOrb(size) {          // Relay's half, and a copy coming down to y
     h("span", { class: "mh l" }, svg("0 0 24 24", [{ d: "M12 5v10m-4.5-4.5L12 15l4.5-4.5M6 19h12", fill: "none", stroke: "currentColor",
       "stroke-width": "2.2", "stroke-linecap": "round", "stroke-linejoin": "round" }])),
     h("span", { class: "mh r dark" }, h("i", { class: "mk" })));
+}
+// under "Download a backup": whether a copy is safely off this server, and when
+function backupLine() {
+  const line = h("span", { class: "doorsub", text: " " });
+  api("GET", "/backup/status").then((st) => {
+    const o = st.offsite;
+    if (o.on && o.ok && !(o.failed > o.ok)) line.textContent = `Off-site copy · ${since(o.ok)}`;
+    else if (o.on && o.error) { line.textContent = `Off-site copy failed: ${o.error}`; line.classList.add("bad"); }
+    else if (o.on) line.textContent = "Off-site copy · first one tonight";
+    else line.textContent = st.local ? `Nightly copy on this server · ${since(st.local.time)}` : "Nightly copies start tonight";
+  }).catch(() => line.remove());
+  return line;
 }
 async function saveBackup(btn) {
   const label = btn.querySelector("b"), was = label.textContent;
