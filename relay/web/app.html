@@ -228,8 +228,9 @@
 .profile { display: grid; justify-items: center; gap: 6px; margin: 12px 0 28px; text-align: center; }
 .profile .title { font-size: 28px; margin-top: 8px; }
 .profile > .av { animation: settle .6s var(--spring) both; }
-.quick { display: flex; gap: 8px; justify-content: center; margin-top: 14px; }
-.quick .q { display: grid; justify-items: center; gap: 4px; flex: 0 1 132px; min-width: 0; padding: 10px 14px 9px; border: 0; border-radius: var(--r);   /* side by side, the same width */
+.quick { display: grid; grid-auto-flow: column; grid-auto-columns: 1fr; gap: 8px; width: max-content; max-width: 100%; margin: 14px auto 0; }
+/* side by side and the same width: each as wide as the longest label needs, whatever the phone's font */
+.quick .q { display: grid; justify-items: center; gap: 4px; min-width: 112px; padding: 10px 16px 9px; border: 0; border-radius: var(--r);
   background: var(--fill); color: var(--accent); font-size: 13px; font-weight: 600; cursor: pointer; white-space: nowrap; }
 .quick .q:hover { background: var(--fill2); }
 .quick .q svg { width: 22px; height: 22px; }
