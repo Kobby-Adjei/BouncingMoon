@@ -133,3 +133,16 @@ def test_a_desktop_is_one_sidebar_with_everything_one_click_away():
     assert 'railItem("agents", "Agents"), railItem("activity", "Activity", waiting), person ? railItem("me/keys", "Keys")' in js
     assert 'class: "railme press"' in js and "every(shell, count, 15000)" in js       # you at the bottom; the count stays fresh
     assert "body:has(.shell) #bar { display: none; }" in html                          # no top bar above the app
+
+
+def test_one_vocabulary_and_plain_words():
+    """The critics' polish: "key" means a website key; agents say how they answer; approvals read plainly."""
+    js = open(os.path.join(WEB, "app.js")).read()
+    for gone in ('"Use a key"', "Copy a backup key", "Issue new key", "admin key, once"):
+        assert gone not in js
+    assert "Use a recovery code" in js and "Use the setup code" in js
+    assert '"Answers instantly"' in js and '"Reads when you ask"' in js            # the same two phrases everywhere
+    assert '["Chat apps", "They read Relay when you ask them to."' in js            # Add teaches it at the moment of choice
+    assert "function plainAsk(r)" in js and "never sees the key" in js and "Expires in" in js
+    mark = open(os.path.join(WEB, "mark.svg")).read()
+    assert '<path d="M30 10a22 22 0 0 0 0 44z" opacity=".38"/><path d="M38 10a22 22 0 0 1 0 44z"/>' in mark   # Relay's half solid

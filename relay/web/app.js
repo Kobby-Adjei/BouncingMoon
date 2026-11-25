@@ -41,8 +41,8 @@ function svg(viewBox, paths, cls) {
 }
 function mark(cls = "mark") {      // the Relay mark: one half passing to the other
   return svg("0 0 64 64", [
-    { d: "M30 10a22 22 0 0 0 0 44z", fill: "currentColor" },
-    { d: "M38 10a22 22 0 0 1 0 44z", fill: "currentColor", opacity: ".38" }], cls);
+    { d: "M30 10a22 22 0 0 0 0 44z", fill: "currentColor", opacity: ".38" },        // your half
+    { d: "M38 10a22 22 0 0 1 0 44z", fill: "currentColor" }], cls);                  // Relay's half: solid, as on every orb
 }
 const stroke = { fill: "none", stroke: "currentColor", "stroke-width": "1.9", "stroke-linecap": "round", "stroke-linejoin": "round" };
 const ICONS = {
@@ -100,6 +100,15 @@ function clock(t) {
     ? d.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" })
     : d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
 }
+// What you can expect from an agent, said the same way everywhere: it answers on its own (a filled green dot),
+// it reads Relay when you ask it (a hollow ring), or it hasn't connected yet (grey). People: here or not.
+function reach(a) {
+  if (!a || a.role === "human" || !a.answers) return { cls: presence(a && a.last_seen), text: ago(a && a.last_seen) };
+  if (a.answers === "instantly") return { cls: "on", text: "Answers instantly" };
+  if (!a.last_seen) return { cls: "off", text: "Not connected yet" };
+  return { cls: "asks", text: "Reads when you ask" };
+}
+const seenWords = (t) => { const s = ago(t); return s === "Active now" ? "here now" : `last checked ${s.replace(/ ago$/, " ago")}`; };
 function presence(t) {
   if (!t) return "off";
   const s = Date.now() / 1000 - t;
@@ -209,7 +218,7 @@ function avatar(a, size = 40, withPresence = false) {
   } else {
     tile.append(h("span", { class: "mono", text: (a.handle || "?").slice(0, 1).toUpperCase() }));
   }
-  if (withPresence && typeof a !== "string") tile.append(h("span", { class: "badge dot " + presence(a.last_seen) }));
+  if (withPresence && typeof a !== "string") tile.append(h("span", { class: "badge dot " + reach(a).cls }));
   return tile;
 }
 const appAvatar = (a, size) => avatar(a.id === "person" ? "person" : a.id === "other" ? "other" : a.provider, size);
@@ -302,9 +311,7 @@ function ensureShell() {
   app.replaceChildren(shell);
   // what's waiting for you (an OK to give, someone asking to join), on Activity, kept fresh
   const count = async () => {
-    const [asks, wants] = await Promise.all([person ? api("GET", "/approvals").catch(() => []) : [],
-      isOwner() ? api("GET", "/invite-requests").catch(() => []) : []]);
-    const n = asks.length + wants.length;
+    const n = await waitingCount();
     waiting.textContent = n > 9 ? "9+" : String(n); waiting.hidden = !n;
     waiting.closest(".railitem").setAttribute("aria-label", n ? `Activity, ${n} waiting for you` : "Activity");
   };
@@ -491,6 +498,7 @@ back.addEventListener("click", goBack);
 for (const b of topseg.children) b.addEventListener("click", () => goTab(b.dataset.go === "activity" ? activity : agents));
 window.addEventListener("scroll", () => bar.classList.toggle("scrolled", window.scrollY > 8), { passive: true });
 function drawMe() {
+  watchWaiting();
   barRight.replaceChildren(ME && ME.role !== "admin" && !WIDE ? h("button", { class: "mebtn press", type: "button", "aria-label": "You", title: ME.handle, onclick: () => nav("me") },
     avatar({ handle: ME.handle, role: "human" }, WIDE ? 36 : 32)) : "");
 }
@@ -572,7 +580,35 @@ async function overview(tk) {
     line, act));
 }
 
-function signOut(message) { KEY = null; ME = null; store.clear(); trail.length = 0; clearInterval(timer); timer = null; signin(message); }
+function signOut(message) {
+  KEY = null; ME = null; store.clear(); trail.length = 0; clearInterval(timer); timer = null;
+  clearInterval(waitTimer); waitTimer = null; segBadge.hidden = true;
+  signin(message);
+}
+// how many things wait for you: an OK to give, someone asking to join
+async function waitingCount() {
+  const [asks, wants] = await Promise.all([ME && ME.role === "human" ? api("GET", "/approvals").catch(() => []) : [],
+    isOwner() ? api("GET", "/invite-requests").catch(() => []) : []]);
+  return asks.length + wants.length;
+}
+// on a phone, the same count rides on the Activity switch at the top
+const segBadge = h("span", { class: "rbadge segbadge", hidden: "" });
+let waitTimer = null;
+function watchWaiting() {
+  if (waitTimer || !ME || ME.role === "admin") return;
+  const seg = [...topseg.children].find((b) => b.dataset.go === "activity");
+  if (!seg) return;
+  seg.append(segBadge);
+  const tick = async () => {
+    if (!ME || WIDE) return;
+    try {
+      const n = await waitingCount();
+      segBadge.textContent = n > 9 ? "9+" : String(n); segBadge.hidden = !n;
+      seg.setAttribute("aria-label", n ? `Activity, ${n} waiting for you` : "Activity");
+    } catch {}
+  };
+  tick(); waitTimer = setInterval(tick, 15000);
+}
 function userSignOut() {
   const k = KEY;
   KEY = null;    // first, so a 401 here can't loop back into signOut
@@ -663,14 +699,14 @@ function signin(message, mode) {
     try { await signedIn(await passkeySignIn(), true); } catch (x) { err.textContent = passkeyErr(x); b.disabled = false; }
   });
   welcomeView(brand("Relay", "Face ID, a fingerprint or your PIN."), h("div", { class: "stack tight" }, b, err),
-    ways(AUTH.email ? way("Email me a code", () => signin(null, "email")) : null, way("Use a key", () => signin(null, "key"))),
+    ways(AUTH.email ? way("Email me a code", () => signin(null, "email")) : null, way(AUTH.claimed ? "Use a recovery code" : "Use the setup code", () => signin(null, "key"))),
     firstTime());
 }
-// below the sign-in: a new hub asks its owner for the admin key once; a claimed one is invite-only
+// below the sign-in: a new hub asks its owner for the setup code once; a claimed one is invite-only
 const firstTime = () => AUTH.claimed
   ? h("p", { class: "first" }, "New here? Relay is invite-only for now. ",
       h("button", { class: "inline press", type: "button", onclick: askInvite }, "Ask for an invite"))
-  : h("p", { class: "first", text: "First time here? Use your admin key, once." });
+  : null;          // a new hub: the "Use the setup code" link above says it
 
 // a stranger asks the hub's owner for an invite: a name, a way back to them, a line about why
 function askInvite() {
@@ -703,8 +739,8 @@ function askInvite() {
 }
 
 function keySignin(message) {
-  const input = h("input", { class: "field", type: "password", placeholder: "Relay key", autocomplete: "current-password",
-                              spellcheck: "false", "aria-label": "Your Relay key" });
+  const input = h("input", { class: "field", type: "password", placeholder: AUTH.claimed ? "Recovery code" : "Setup code", autocomplete: "current-password",
+                              spellcheck: "false", "aria-label": AUTH.claimed ? "Your recovery code" : "The hub's setup code" });
   const remember = h("input", { type: "checkbox", checked: store.remember() });
   const err = h("p", { class: "err", role: "alert", text: message || "" });
   const btn = h("button", { class: "btn press", type: "submit" }, "Continue");
@@ -719,7 +755,7 @@ function keySignin(message) {
       KEY = k; ME = me; store.set(k, remember.checked); fuse(() => goTab(agents));
     } catch (x) { err.textContent = x.status === 401 ? "That key isn't recognised." : x.message; btn.disabled = false; }
   } }, input, btn, h("label", { class: "check" }, remember, "Keep me signed in"), err);
-  welcomeView(brand("Relay", AUTH.claimed ? "Your Relay key." : "Your key, or the admin key the first time."), form,
+  welcomeView(brand("Relay", AUTH.claimed ? "The recovery code you saved when you joined." : "The setup code is RELAY_ADMIN_TOKEN on your server. You need it once."), form,
     ways(CAN_PASSKEY ? way("Use a passkey", () => signin(null, "start")) : null, AUTH.email ? way("Email me a code", () => signin(null, "email")) : null));
   input.focus();
 }
@@ -737,7 +773,7 @@ function emailSignin(message, prefill) {
     catch (x) { err.textContent = x.message; btn.disabled = false; }
   } }, input, btn, err);
   welcomeView(brand("Relay", "We'll email you a code."), message ? h("div", { class: "notice", role: "alert", text: message }) : null, form,
-    ways(CAN_PASSKEY ? way("Use a passkey", () => signin(null, "start")) : null, way("Use a key", () => signin(null, "key"))));
+    ways(CAN_PASSKEY ? way("Use a passkey", () => signin(null, "start")) : null, way("Use a recovery code", () => signin(null, "key"))));
   input.focus();
 }
 
@@ -765,7 +801,7 @@ function checkEmail(email) {
     catch (x) { err.textContent = x.message; go.disabled = false; }
   } }, code, go, err);
   welcomeView(brand("Check your email", email), form,
-    ways(resend, way("Use a key", () => { clearInterval(timer); timer = null; signin(null, "key"); })), note);
+    ways(resend, way("Use a recovery code", () => { clearInterval(timer); timer = null; signin(null, "key"); })), note);
   code.focus();
   count();
 }
@@ -860,8 +896,8 @@ async function joinView(code) {
       store.set(s.token, true);
       history.replaceState(null, "", "/app#add");               // first stop: connect your own AI, step by step
       const into = () => goTab(agents);
-      const backup = way("Copy a backup key", null);
-      backup.addEventListener("click", () => copy(r.token, backup, "Copy a backup key"));
+      const backup = way("Copy a recovery code", null);
+      backup.addEventListener("click", () => copy(r.token, backup, "Copy a recovery code"));
       if (CAN_PASSKEY) return offerPasskey(`Welcome, ${r.handle}`, "Add a passkey. It's how you'll sign in.", into, [backup]);
       welcomeView(brand(`Welcome, ${r.handle}`, "Keep your key somewhere safe. It's how you'll sign in.", r.handle),
         h("div", { class: "stack tight" }, h("button", { class: "btn press", type: "button", onclick: () => fuse(into) }, "Open Relay")),
@@ -890,8 +926,8 @@ function claim(remember) {
       const s = await api("POST", "/auth/session/owner", {}, r.token);
       KEY = s.token; ME = await api("GET", "/agents/me", undefined, s.token);
       store.set(s.token, remember);
-      const c = way("Copy a backup key", null);
-      c.addEventListener("click", () => copy(r.token, c, "Copy a backup key"));
+      const c = way("Copy a recovery code", null);
+      c.addEventListener("click", () => copy(r.token, c, "Copy a recovery code"));
       if (CAN_PASSKEY) return offerPasskey(`Welcome, ${r.handle}`, "The hub is yours. Add a passkey and you won't need a key again.",
         () => goTab(agents), [c]);
       welcomeView(brand(`Welcome, ${r.handle}`, "The hub is yours. Keep your key somewhere safe.", r.handle),
@@ -933,7 +969,7 @@ async function agents() {
         h("button", { class: "cell press", type: "button", "data-key": `agents/${enc(a.handle)}`, onclick: () => nav(`agents/${enc(a.handle)}`) },
           avatar(a, 46, true),
           h("div", { class: "grow" }, h("div", { class: "t", text: a.handle }),
-            h("div", { class: "s", text: `${PROVIDER_NAMES[providerOf(a)] || "Other"} · ${ago(a.last_seen)}` })),
+            h("div", { class: "s", text: a.role === "human" ? `Person · ${ago(a.last_seen)}` : `${PROVIDER_NAMES[providerOf(a)] || "Other"} · ${reach(a).text}` })),
           chev()));
       if (!rows.length && q) list.replaceChildren(h("div", { class: "empty", text: `No one called “${q}”.` }));
       else if (rows.length) {
@@ -1028,9 +1064,9 @@ function allowGuide(a) {
     h("div", { class: "stack tight", style: "padding-top:14px" },
       h("p", { class: "hint", style: "margin:0", text: a.via === "invite"
         ? "Instant replies: a small helper on that computer wakes Claude Code the moment a message lands."
-        : `If ${a.label} can't sign in, it can use a Relay key instead.` }),
+        : `If ${a.label} can't sign in, it can use a Relay token instead.` }),
       h("button", { class: "btn ghost small press", type: "button", onclick: () => nav(`add/${a.id}/withkey`) },
-        a.via === "invite" ? "Set up instant replies" : "Use a key instead")));
+        a.via === "invite" ? "Set up instant replies" : "Use a token instead")));
   const hello = h("div", { class: "hellobox" });
   const view = screen("allow", tk, h("div", { class: "hero" }, orb, h("h1", { class: "title", text: `Add Relay to ${a.label}` })),
     h("div", { class: "stack" }, status, list, hello, done, isOwner() ? adv : null));
@@ -1056,13 +1092,22 @@ function allowGuide(a) {
   }, 2500);
 }
 
+const ADD_GROUPS = [
+  ["Chat apps", "They read Relay when you ask them to.", ["claude_app", "chatgpt", "grok", "muse"]],
+  ["On your computer", "Claude Code and Codex can answer on their own.", ["claude_code", "codex", "gemini", "cursor", "other"]],
+];
 function addPick() {
-  const grid = h("div", { class: "pick stagger" });
-  for (const a of APPS.filter((x) => isOwner() || x.style === "allow")) {
-    grid.append(h("button", { class: "opt press", type: "button", onclick: () => nav(`add/${a.id}`) },
-      appAvatar(a, 52), h("span", { text: a.label }), h("span", { class: "sub", text: a.sub })));
-  }
-  screen("add", ticket(), isOwner() ? head("Add", "Where does it live?") : head("Connect your AI", "Which app do you use? Pick one and follow three steps."), grid);
+  const opt = (a) => h("button", { class: "opt press", type: "button", onclick: () => nav(`add/${a.id}`) },
+    appAvatar(a, 52), h("span", { text: a.label }), h("span", { class: "sub", text: a.sub }));
+  const groups = ADD_GROUPS.map(([title, lede, ids]) => {
+    const apps = ids.map((id) => APPS.find((a) => a.id === id)).filter((a) => isOwner() || a.style === "allow");
+    return h("section", { class: "addgroup" }, h("h2", { class: "label", text: title }), h("p", { class: "hint", text: lede }),
+      h("div", { class: "pick stagger" }, ...apps.map(opt)));
+  });
+  const person = isOwner() ? h("button", { class: "door press", type: "button", onclick: () => nav("add/person") },
+    avatar("person", 40), h("span", { class: "grow" }, h("b", { text: "Invite a person" }), h("span", { class: "doorsub", text: "A friend or teammate, with their own agents" })), chev()) : null;
+  screen("add", ticket(), isOwner() ? head("Add", "Connect an AI app, or invite someone.") : head("Connect your AI", "Pick the app you use, then follow the steps."),
+    ...groups, person);
 }
 
 async function addName(a) {
@@ -1287,13 +1332,14 @@ async function profile(handle) {
     a.role === "human" && isOwner() && (AUTH.email || a.email) ? emailRow(a) : null,
     a.client ? h("div", { class: "cell" }, h("div", { class: "grow t plain" }, "Connected from"), h("span", { class: "v", text: a.client })) : null);
   const danger = isOwner() && a.handle !== ME.handle ? h("div", { class: "spread danger-row" },
-    h("button", { class: "link sm press", type: "button", onclick: () => newKey(a) }, "Issue new key"),
+    h("button", { class: "link sm press", type: "button", onclick: () => newKey(a) }, a.role === "human" ? "New recovery code" : "Reset its connection"),
     h("button", { class: "link sm red press", type: "button", onclick: async () => {
-      if (!confirm(`Remove ${a.handle}? Its key stops working at once. Past messages stay.`)) return;
+      if (!confirm(`Remove ${a.handle}? It's signed out at once. Past messages stay.`)) return;
       try { await api("DELETE", `/agents/${encodeURIComponent(a.handle)}`); if (listRefresh) listRefresh(); nav("agents", { replace: true }); } catch (x) { alert(x.message); }
     } }, "Remove")) : null;
-  const sub = h("div", { class: "row small", style: "gap:8px" }, h("span", { class: "dot " + presence(a.last_seen) }),
-    h("span", { text: a.role === "human" ? `Person · ${ago(a.last_seen)}` : ago(a.last_seen) }));
+  const r = reach(a);
+  const sub = h("div", { class: "row small", style: "gap:8px" }, h("span", { class: "dot " + r.cls }),
+    h("span", { text: a.role === "human" ? `Person · ${ago(a.last_seen)}` : a.last_seen && r.cls !== "off" ? `${r.text} · ${seenWords(a.last_seen)}` : r.text }));
   screen("profile", tk,
     h("div", { class: "profile" }, avatar(a, 88), h("h1", { class: "title", text: a.handle }), sub, quick),
     h("div", { class: "stack" }, h("section", { class: "facts" }, h("h2", { class: "label", text: "Details" }), info), danger));
@@ -1310,7 +1356,7 @@ async function meScreen() {
     h("div", { class: "profile" }, avatar({ handle: ME.handle, role: "human" }, 88), h("h1", { class: "title", text: ME.handle }),
       ME.owner ? h("span", { class: "pill-tag", text: "Owner" }) : null),
     ME.owner ? goingCard() : null,
-    h("div", { class: "stack" }, h("button", { class: "door press", type: "button", onclick: () => nav("me/apps") },
+    h("div", { class: "stack" }, h("div", { class: "doors" }, h("button", { class: "door press", type: "button", onclick: () => nav("me/apps") },
         miniOrb("claude", "relay", 40), h("span", { class: "grow" }, h("b", { text: "Connected apps" })), chev()),
       h("button", { class: "door press", type: "button", onclick: () => nav("me/passkeys") },
         passOrb(40), h("span", { class: "grow" }, h("b", { text: "Passkeys" })), chev()),
@@ -1318,8 +1364,8 @@ async function meScreen() {
         keyOrb("", 40), h("span", { class: "grow" }, h("b", { text: "Keys" })), chev()),
       !ME.owner && ME.role === "human" ? friendDoor() : null,
       ME.owner ? h("button", { class: "door press", type: "button", onclick: (e) => saveBackup(e.currentTarget) },
-        backupOrb(40), h("span", { class: "grow" }, h("b", { text: "Download a backup" }))) : null,
-      rows, h("button", { class: "btn danger press", type: "button", onclick: userSignOut }, "Sign out"),
+        backupOrb(40), h("span", { class: "grow" }, h("b", { text: "Download a backup" }))) : null),
+      rows, h("button", { class: "btn ghost press signout", type: "button", onclick: userSignOut }, "Sign out"),
       ME.owner || ME.role !== "human" ? null : ways(way("Delete my account", () => nav("me/delete")))));
 }
 // How it's going: counted on this hub, shown only to its owner, sent nowhere
@@ -1328,9 +1374,8 @@ function goingCard() {
   const card = h("section", { class: "facts goingcard" }, h("h2", { class: "label", text: "How it's going" }), grid);
   const tile = (n, label) => h("div", { class: "gtile" }, h("b", { class: "tnum", text: String(n) }), h("span", { text: label }));
   api("GET", "/stats").then((st) => {
-    grid.replaceChildren(tile(st.asked, st.waiting ? `asked · ${st.waiting} waiting` : "asked to join"), tile(st.invited, "invited"),
-      tile(st.people, st.people === 1 ? "person joined" : "people joined"), tile(st.apps_connected, "apps connected"),
-      tile(st.agent_conversations, "agent-to-agent chats"), tile(st.active_week, "active this week"));
+    grid.replaceChildren(tile(st.asked, "asked"), tile(st.invited, "invited"), tile(st.people, "joined"),
+      tile(st.apps_connected, "apps"), tile(st.agent_conversations, "agent chats"), tile(st.active_week, "active this week"));
     if (st.wanted && st.wanted.length) card.append(h("p", { class: "wanted" }, h("span", { text: "Most asked for" }),
       ...st.wanted.slice(0, 4).map(([id, n]) => h("span", { class: "wapp" }, appMark(id, 16), h("span", { text: `${appLabel(id)} ${n}` })))));
   }).catch(() => card.remove());
@@ -1490,6 +1535,16 @@ function keyOrb(name, size = 56, left) {
     h("span", { class: "mh r dark" }, h("i", { class: "kh" })), h("span", { class: "kseal" }, tick("sealtick")));
 }
 const hostOf = (url) => { try { return new URL(url).hostname; } catch { return url; } };
+// the words a request carries, pulled out of its body so a person can read them before saying yes
+function plainAsk(r) {
+  let body = null;
+  try { body = r.body ? JSON.parse(r.body) : null; } catch {}
+  let q = {}; try { q = Object.fromEntries(new URL(r.url).searchParams); } catch {}
+  const all = { ...q, ...(body && typeof body === "object" ? body : {}) };
+  const pick = (names) => { for (const n of names) if (typeof all[n] === "string" && all[n].trim()) return all[n].trim(); return null; };
+  return { text: pick(["caption", "text", "message", "status", "title", "description", "content", "body"]),
+           media: pick(["image_url", "video_url", "media_url", "url", "link"]) };
+}
 const VERB = { GET: "read", POST: "post", PUT: "change", PATCH: "change", DELETE: "delete" };
 function since(t) {           // when something happened, in words
   if (!t) return "";
@@ -1713,7 +1768,7 @@ async function approveScreen(cid) {
     if (got.status === "done" || got.status === "failed") {
       const okCall = got.status === "done" && got.result_status < 400;
       orb.classList.add("sealed");
-      status.replaceChildren(statusLine(okCall ? `Sent · HTTP ${got.result_status}` : got.error || `The website answered HTTP ${got.result_status}`, okCall),
+      status.replaceChildren(statusLine(okCall ? `Done. ${u ? u.hostname : "The website"} said yes` : got.error || `${u ? u.hostname : "The website"} said no (HTTP ${got.result_status})`, okCall),
         h("p", { class: "quiet", text: `${r.agent} gets the answer in its chat.` }));
     } else {
       status.replaceChildren(statusLine({ declined: "You said no. Nothing was sent.", expired: "This expired. Nothing was sent." }[got.status] || got.status),
@@ -1729,12 +1784,20 @@ async function approveScreen(cid) {
   yes.addEventListener("click", () => decide(true));
   no.addEventListener("click", () => decide(false));
   const headers = Object.entries(r.headers || {}).filter(([k]) => k.toLowerCase() !== "content-type");
+  // first in plain words: what it will say and what it carries, when it expires, and that the key stays hidden
+  const said = plainAsk(r);
+  const left = r.status === "waiting" ? Math.max(0, Math.round((r.created + 86400 - Date.now() / 1000) / 3600)) : null;
+  const plainBox = h("div", { class: "plainask" },
+    said.text ? h("p", { class: "says" }, h("span", { class: "k", text: "It will say" }), h("q", { text: said.text })) : null,
+    said.media ? h("p", { class: "says" }, h("span", { class: "k", text: "With" }), h("a", { href: said.media, target: "_blank", rel: "noopener noreferrer", text: shortUrl(said.media) })) : null,
+    h("p", { class: "trust", text: `Relay adds your key and sends exactly what's below. ${r.agent} never sees the key; it only gets the website's answer.` }),
+    left !== null ? h("p", { class: "expires", text: left <= 1 ? "Expires within the hour" : `Expires in ${left} h if you don't answer` }) : null);
   screen("approve", tk,
     h("div", { class: "hero approvehero" }, orb, h("h1", { class: "title", text: `${r.agent} wants to ${VERB[r.method] || r.method}` }),
       h("p", { class: "lede", text: `with your ${r.key || "saved"} key, on ${u ? u.hostname : r.url}` }),
       r.why ? h("p", { class: "why", text: r.why }) : null),
-    h("div", { class: "stack" },
-      h("section", { class: "facts" }, h("h2", { class: "label", text: "What will be sent" }),
+    h("div", { class: "stack" }, plainBox,
+      h("section", { class: "facts" }, h("h2", { class: "label", text: "Exactly what's sent" }),
         h("p", { class: "sendline" }, h("b", { text: r.method }), h("code", { text: u ? u.pathname + u.search : r.url })),
         r.body ? bodyView(r.body) : null,
         headers.length ? h("dl", { class: "sendlist small" }, ...headers.flatMap(([k, v]) => [h("dt", { text: k }), h("dd", { text: v })])) : null),
@@ -1763,7 +1826,8 @@ function runsOn(a) {
 }
 
 async function newKey(a) {
-  if (!confirm(`Issue a new key for ${a.handle}? The current key stops working immediately, so it must be pasted into its app again.`)) return;
+  if (!confirm(a.role === "human" ? `Make a new recovery code for ${a.handle}? The old one stops working at once.`
+    : `Reset ${a.handle}'s connection? Its current token stops working at once, so its app has to connect again.`)) return;
   try {
     const r = await api("POST", `/agents/${encodeURIComponent(a.handle)}/token`);
     const appGuess = APPS.find((x) => x.provider === providerOf(a) && x.style === "connector") || APPS.find((x) => x.id === "other");
@@ -1773,10 +1837,10 @@ async function newKey(a) {
   } catch (x) { alert(x.message); }
 }
 function keyShown(handle, token) {
-  const c = h("button", { class: "btn press", type: "button" }, "Copy key");
-  c.addEventListener("click", () => copy(token, c, "Copy key"));
-  screen("key", ticket(), heroHead(avatar("person", 72), `New key for ${handle}`, "Shown once. They sign in with it."),
-    h("div", { class: "stack tight" }, copyField("Key", token, { secret: true }), c));
+  const c = h("button", { class: "btn press", type: "button" }, "Copy code");
+  c.addEventListener("click", () => copy(token, c, "Copy code"));
+  screen("key", ticket(), heroHead(avatar("person", 72), `New recovery code for ${handle}`, "Shown once. Send it to them privately; they sign in with it."),
+    h("div", { class: "stack tight" }, copyField("Recovery code", token, { secret: true }), c));
 }
 
 // ------------------------------------------------------------------ wake-ups
@@ -2195,6 +2259,7 @@ async function activity() {
           h("div", { class: "s one", text: (w.by ? `via ${w.by} · ` : "") + w.contact })),
         h("span", { class: "btn small", text: "Review" }))));
       // what needs you first, then the conversations newest first, under Today · Yesterday · This week · Earlier
+      needs.forEach((row, i) => { if (i) row.querySelector(".btn").classList.add("quiet"); });     // one solid button: the first
       // a pile of things to review never pushes the conversations off the screen: three, then the rest on request
       const FOLD = 3;
       const folded = !allNeeds && needs.length > FOLD + 1;
@@ -2245,7 +2310,7 @@ async function newMessage() {
   let ags = [];
   try { ags = (await api("GET", "/agents")).filter((a) => a.handle !== ME.handle); } catch {}
   const tile = (a) => h("button", { class: "opt press", type: "button", onclick: () => nav(`activity/to/${enc(a.handle)}`) },
-    avatar(a, 52, true), h("span", { text: a.handle }), h("span", { class: "sub", text: ago(a.last_seen) }));
+    avatar(a, 52, true), h("span", { text: a.handle }), h("span", { class: "sub", text: reach(a).text }));
   const grid = h("div", { class: "pick stagger" }, ...ags.map(tile));
   const find = ags.length > 8 ? findBox("Find someone", (q) => grid.replaceChildren(...ags.filter((a) => !q || matches(a, q)).map(tile))) : null;
   screen("new", tk, head("New message", "Who to?"), find, ags.length ? grid : blank("No one to message yet", "Add an agent first."));

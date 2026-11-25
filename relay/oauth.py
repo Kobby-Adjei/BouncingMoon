@@ -316,7 +316,7 @@ def mount(app, hub) -> None:
                 f"<div class=orb id=orb aria-hidden=true><span class='half l'>{left}</span>"
                 f"<span class='half r' id=rhalf><i class=mk></i></span><span class=seal id=seal></span></div>"
                 f"<h1 class=title id=title>Connect {html.escape(cl['name'])} to Relay</h1>"
-                f"<p class=lede id=lede>Pick its name.</p>"
+                f"<p class=lede id=lede>Choose the name it goes by on Relay.</p>"
                 f"<section class=step id=step aria-live=polite></section>"
                 f"<p class=foot id=foot>Returns to {html.escape(host)}</p></div>"
                 f"<script nonce='{nonce}'>const BOOT={script_json(boot)};{PAGE_JS}</script>")
@@ -747,25 +747,26 @@ main{position:relative;z-index:1;min-height:100vh;display:flex;justify-content:c
  .title{font-size:23px}.step{gap:10px}.coin .disc{transform:scale(.88)}.coins{gap:6px 2px}
  .half img{width:32px;height:32px}.face svg{width:34px;height:34px;margin-right:10px}
  .half.l img,.half.l b{margin-left:2px}.half.r img,.half.r b,.half.r .mk{margin-right:2px}.half b{font-size:28px}}
-.btn{appearance:none;display:flex;align-items:center;justify-content:center;gap:10px;width:100%;height:56px;padding:0 22px;border:0;border-radius:999px;
- background:var(--accent);color:var(--on-accent);font:600 17px var(--font);letter-spacing:-.015em;cursor:pointer;margin-top:10px;
+.btn{appearance:none;display:flex;align-items:center;justify-content:center;gap:10px;width:100%;height:48px;padding:0 22px;border:0;border-radius:999px;
+ background:var(--accent);color:var(--on-accent);font:600 16px var(--font);letter-spacing:-.01em;cursor:pointer;margin-top:10px;
  box-shadow:0 1px 0 rgba(255,255,255,.22) inset,0 12px 26px -12px var(--accent);transition:transform .45s var(--spring),background-color .2s,opacity .2s}
 .btn:hover{background:var(--accent-hover)}.btn:active{transform:scale(.96);transition:transform .12s var(--ease)}.btn:disabled{opacity:.5}
 .btn.soft{background:var(--fill);color:var(--ink);box-shadow:none;margin-top:0}
 .btn svg{width:22px;height:22px}
-.tl{appearance:none;background:none;border:0;color:var(--ink2);font:500 14.5px var(--font);cursor:pointer;padding:6px 8px;border-radius:8px}
+.tl{appearance:none;background:none;border:0;color:var(--ink2);font:500 14.5px var(--font);cursor:pointer;padding:8px 12px;min-height:36px;border-radius:999px}
 .tl.accent{color:var(--accent)}.tl:active{opacity:.5}
 .pill{width:220px;height:46px;border:0;border-radius:999px;text-align:center;background:var(--card);color:var(--ink);font:600 16px var(--font);
  box-shadow:0 0 0 1.5px var(--accent),0 8px 20px -12px var(--accent)}
 .pill:focus{outline:none;box-shadow:0 0 0 2px var(--accent),0 0 0 6px var(--glow)}
-input.field{width:100%;height:56px;border:0;border-radius:999px;padding:0 22px;text-align:center;background:var(--card);color:var(--ink);font:17px var(--font);
+input.field{width:100%;height:48px;border:0;border-radius:999px;padding:0 22px;text-align:center;background:var(--card);color:var(--ink);font:16px var(--font);
  box-shadow:0 0 0 .5px rgba(24,23,29,.12),0 6px 16px -10px rgba(24,23,29,.25)}
 input.field:focus{outline:none;box-shadow:0 0 0 2px var(--accent),0 0 0 6px var(--glow)}
 .me{font-size:13px;color:var(--ink2);display:flex;gap:4px;align-items:center;justify-content:center;margin-top:2px}.me b{color:var(--ink);font-weight:600}
-.me .tl{font-size:13px;padding:2px 4px;color:var(--accent)}
+.me .tl{font-size:13px;padding:8px 8px;min-height:32px;margin:-8px 0;color:var(--accent)}
 .keep{display:flex;gap:8px;align-items:center;font-size:13.5px;color:var(--ink2)}.keep input{accent-color:var(--accent);width:17px;height:17px;margin:0}
 .err{color:var(--red);font-size:14px;margin:0}.err:empty{display:none}
 .sub{color:var(--ink2);font-size:14px;margin:-4px 0 4px}
+.grants{color:var(--ink2);font-size:13.5px;line-height:1.45;margin:2px auto 0;max-width:34ch;text-align:center}
 @media (prefers-reduced-motion:reduce){*,*:before{animation-duration:.01ms!important;animation-delay:0s!important;transition-duration:.01ms!important}}
 :focus-visible{outline:2px solid var(--accent);outline-offset:3px}
 """.replace("GRAIN_URL", GRAIN)
@@ -796,7 +797,7 @@ function signIn(msg){const err=$('p',{class:'err',role:'alert',text:msg||''});co
  if(canPasskey)parts.push($('button',{class:'btn',html:G.print+'<span>Sign in with a passkey</span>',on:{click:()=>passkey(err)}}));
  if(BOOT.email){const em=$('input',{class:'field',type:'email',id:'email',placeholder:'Email',autocomplete:'email','aria-label':'Email'});
   parts.push(em,$('button',{class:canPasskey?'btn soft':'btn',on:{click:()=>emailCode(em.value.trim(),err)}},'Email me a code'))}
- show(...parts,err,$('button',{class:'tl',on:{click:keyForm}},'Use a Relay key instead'))}
+ show(...parts,err,$('button',{class:'tl',on:{click:keyForm}},'Use a recovery code instead'))}
 async function passkey(err){try{const o=await api('POST','/auth/passkey/options',{});
   const c=await navigator.credentials.get({publicKey:{challenge:dec(o.challenge),rpId:o.rpId,userVerification:o.userVerification,timeout:o.timeout,allowCredentials:[]}});
   const r=c.response;const s=await api('POST','/auth/passkey/signin',{id:c.id,rawId:enc(c.rawId),type:c.type,response:{clientDataJSON:enc(r.clientDataJSON),authenticatorData:enc(r.authenticatorData),signature:enc(r.signature),userHandle:r.userHandle?enc(r.userHandle):null}});
@@ -806,7 +807,7 @@ async function emailCode(email,err){if(!email.includes('@')){err.textContent='Ty
  const code=$('input',{class:'field',type:'text',id:'code',inputmode:'numeric',autocomplete:'one-time-code',placeholder:'Code from the email','aria-label':'Code from the email'});const e2=$('p',{class:'err',role:'alert'});
  show($('p',{class:'sub',text:'Sent to '+email}),code,$('button',{class:'btn',on:{click:async()=>{try{const s=await api('POST','/auth/verify',{email,code:code.value});viaEmail=true;signedIn(s.token,true)}catch(x){e2.textContent=x.message}}}},'Sign in'),e2,
   $('button',{class:'tl',on:{click:()=>signIn()}},'Back'));code.focus()}
-function keyForm(){const k=$('input',{class:'field',type:'password',id:'key',placeholder:'Relay key','aria-label':'Your Relay key',autocomplete:'current-password'});
+function keyForm(){const k=$('input',{class:'field',type:'password',id:'key',placeholder:'Recovery code','aria-label':'Your recovery code',autocomplete:'current-password'});
  show(k,$('button',{class:'btn',on:{click:()=>{if(k.value.trim())signedIn(k.value.trim())}}},'Continue'),keep(false),$('button',{class:'tl',on:{click:()=>signIn()}},'Back'));k.focus()}
 async function consent(){let d;try{d=await api('GET','/oauth/request/'+BOOT.request,undefined,cred)}catch(e){
   if(e.status===401||e.status===403){store.clear();cred=null;signIn(e.status===403?e.message:'')}else show($('p',{class:'err',text:e.message}));return}
@@ -839,13 +840,15 @@ async function consent(){let d;try{d=await api('GET','/oauth/request/'+BOOT.requ
  const me=$('div',{class:'me'},$('span',{html:'<b></b>'}),$('span',{text:'·'}),$('button',{class:'tl',on:{click:()=>{store.clear();cred=null;signIn()}}},'Switch'));
  me.querySelector('b').textContent=d.you;
  nn.addEventListener('input',()=>pick());
- show(group,moreBtn,box,warn,err,$('button',{class:'btn',id:'allow',on:{click:()=>allow(nn,err)}},'Allow'),me,$('button',{class:'tl',on:{click:deny}},'Cancel'));pick()}
+ // what Allow lets it do, said before the button, in plain words
+ const grants=$('p',{class:'grants',text:BOOT.app+' can read and send Relay messages under this name, and ask to use your saved keys. You approve each use. It never sees the keys, or anyone else\u2019s conversations.'});
+ show(group,moreBtn,box,warn,grants,err,$('button',{class:'btn',id:'allow',on:{click:()=>allow(nn,err)}},'Allow'),me,$('button',{class:'tl',on:{click:deny}},'Cancel'));pick()}
 async function allow(nn,err){const v=(document.querySelector('input[name=who]:checked')||{}).value;
  const body=v==='__new__'?{request:BOOT.request,new_agent:nn.value.trim()}:{request:BOOT.request,agent:v};
  const b=document.getElementById('allow');b.disabled=true;err.textContent='';
  try{const r=await api('POST','/oauth/decide',body,cred);await offerPasskey();
   document.getElementById('seal').innerHTML=G.tick;orb.classList.add('fused');
-  document.getElementById('title').textContent='Connected';document.getElementById('lede').textContent=BOOT.app+' is '+r.agent+' on Relay.';
+  document.getElementById('title').textContent='Connected';document.getElementById('lede').textContent='It\u2019s '+r.agent+' on Relay. In '+BOOT.app+', say \u201cCheck Relay\u201d to try it.';
   step.replaceChildren();document.getElementById('foot').textContent='Back to '+BOOT.host+'…';setTimeout(()=>{location.href=r.redirect},1700)}
  catch(e){err.textContent=e.message;b.disabled=false}}
 async function deny(){try{const r=await api('POST','/oauth/deny',{request:BOOT.request});location.href=r.redirect}catch(e){show($('p',{class:'err',text:e.message}))}}
