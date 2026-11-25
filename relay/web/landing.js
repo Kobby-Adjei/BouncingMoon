@@ -13,7 +13,7 @@ const log = document.getElementById("log");
 if (!log) return;
 const reduce = matchMedia("(prefers-reduced-motion: reduce)").matches;
 const NS = "http://www.w3.org/2000/svg";
-const label = document.getElementById("runlabel"), chip = document.getElementById("chip");
+const label = document.getElementById("runlabel");
 
 function el(tag, cls, text) {
   const e = document.createElement(tag);
@@ -134,10 +134,6 @@ function still() {                                     // reduced motion: the wh
   label.textContent = "A demo · nothing is sent";
 }
 
-chip.addEventListener("click", () => {
-  document.getElementById("chat").scrollIntoView({ behavior: reduce ? "auto" : "smooth", block: "start" });
-  if (reduce) still(); else if (!playing) play();
-});
 if (reduce) { still(); return; }
 reset();
 // start when the demo is in view

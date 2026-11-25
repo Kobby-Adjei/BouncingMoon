@@ -138,11 +138,6 @@ nav.top { display: flex; align-items: center; justify-content: space-between; he
 .b.ask .go { border: 0; border-radius: 999px; background: var(--accent); color: var(--on-accent); font: 600 14px var(--font); height: 34px; padding: 0 18px; cursor: pointer; }
 .b.ask .go:hover { background: var(--accent-hover); }
 
-.chips { display: flex; justify-content: center; margin-top: 12px; }
-.chip { display: inline-flex; align-items: center; gap: 7px; border: 1px solid var(--line); background: none; border-radius: 999px; padding: 6px 13px;
-  font-size: 13px; color: var(--ink); cursor: pointer; transition: background-color .2s var(--ease); }
-.chip:hover { background: var(--fill); }
-.chip svg { width: 13px; height: 13px; color: var(--ink2); }
 
 
 /* ---------------------------------------------------------------- the end: a half waiting for its other half */
@@ -205,7 +200,6 @@ nav.top { display: flex; align-items: center; justify-content: space-between; he
   <div class="chat" id="chat" aria-label="A demo: you ask Claude to send a 30-second cut to Codex; Codex gets it already watched and asks to post it with your Instagram key; you approve with one tap. Nothing is sent.">
     <div class="runline"><span id="runlabel">A demo · nothing is sent</span></div>
     <ol class="log" id="log"></ol>
-    <div class="chips"><button type="button" class="chip" id="chip"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M4 12a8 8 0 1 0 2.4-5.7M4 4v4h4"/></svg>Play it again</button></div>
     </div>
   </section>
 
