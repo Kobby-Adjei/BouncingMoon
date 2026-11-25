@@ -79,11 +79,11 @@ async function seed() {
   const VARIANTS = [["phone-light", { width: 390, height: 844 }, "light"], ["phone-dark", { width: 390, height: 844 }, "dark"],
     ["desktop", { width: 1280, height: 800 }, "light"]];
   const browser = await chromium.launch();
-  const problems = [];
+  const problems = [], a11y = [];
   for (const [variant, viewport, scheme] of VARIANTS) {
     for (const [name, p, who, desktop] of SCREENS) {
       if (variant === "desktop" && !desktop) continue;
-      const page = await browser.newPage({ viewport, colorScheme: scheme });
+      const page = await browser.newPage({ viewport, colorScheme: scheme, bypassCSP: !!process.env.RELAY_AXE });
       page.on("pageerror", (e) => problems.push(`${variant}/${name}: ${e.message}`));
       page.on("console", (m) => { if (m.type() === "error") problems.push(`${variant}/${name}: console: ${m.text()}`); });
       await page.goto(HUB + "/app");
@@ -108,11 +108,19 @@ async function seed() {
       });
       for (const o of out) problems.push(`${variant}/${name}: sticks out: ${o}`);
       await page.screenshot({ path: path.join(OUT, `${variant}--${name}.png`) });
+      // RELAY_AXE=<path to axe.min.js>: also check each screen for accessibility problems (axe-core)
+      if (process.env.RELAY_AXE && variant !== "desktop") {
+        await page.addScriptTag({ path: process.env.RELAY_AXE });
+        const v = await page.evaluate(async () => (await axe.run(document, { resultTypes: ["violations"] })).violations
+          .map((x) => ({ id: x.id, impact: x.impact, help: x.help, nodes: x.nodes.slice(0, 3).map((n) => n.target.join(" ")) })));
+        for (const x of v) a11y.push(`${variant}/${name}: [${x.impact}] ${x.id}: ${x.help} — ${x.nodes.join(" | ")}`);
+      }
       await page.close();
     }
   }
   await browser.close();
   fs.writeFileSync(path.join(OUT, "problems.txt"), problems.join("\n") + "\n");
+  if (process.env.RELAY_AXE) { fs.writeFileSync(path.join(OUT, "a11y.txt"), a11y.join("\n") + "\n"); console.log(`${a11y.length} accessibility finding(s), in a11y.txt`); }
   console.log(problems.length ? `${problems.length} problem(s):\n` + problems.join("\n") : "No script errors, nothing scrolls sideways.");
   process.exit(0);
 })();

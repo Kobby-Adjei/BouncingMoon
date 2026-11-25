@@ -133,7 +133,9 @@ function copyBlock(text, label = "Copy") {
     card.classList.toggle("folded"); more.textContent = card.classList.contains("folded") ? "Show all" : "Fold";
   } }, "Show all") : null;
   // a one-line command stays on one line (it scrolls): a wrap after "-" would read as part of it
-  card.append(h("pre", { class: "block" + (lines === 1 ? " oneline" : ""), text }), ...(more ? [h("div", { class: "top" }, more)] : []), b);
+  // a one-line command can scroll, so the keyboard can reach and scroll it too
+  card.append(h("pre", { class: "block" + (lines === 1 ? " oneline" : ""), text, tabindex: lines === 1 ? "0" : null,
+    "aria-label": lines === 1 ? "Command" : null }), ...(more ? [h("div", { class: "top" }, more)] : []), b);
   return card;
 }
 function seg(options, value, onChange) {

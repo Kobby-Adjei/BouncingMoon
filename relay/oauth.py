@@ -716,7 +716,7 @@ main{position:relative;z-index:1;min-height:100vh;display:flex;justify-content:c
 .title{font:700 30px/1.08 var(--display);letter-spacing:-.04em;margin:0;text-wrap:balance;animation:rise .7s var(--ease) .15s both}
 .lede{color:var(--ink2);font-size:16px;margin:10px 0 30px;animation:rise .7s var(--ease) .22s both}
 .step{width:100%;display:flex;flex-direction:column;align-items:center;gap:14px}
-.foot{color:var(--ink2);font-size:12.5px;margin:26px 0 0;opacity:.7}
+.foot{color:var(--ink2);font-size:12.5px;margin:26px 0 0}
 /* coins: one per agent. Tap one and it becomes the orb's right half */
 .coins{display:flex;flex-wrap:wrap;justify-content:center;gap:16px 6px;margin:0 -14px}
 .coins.more{margin-top:16px}.coins[hidden]{display:none}
