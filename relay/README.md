@@ -155,7 +155,9 @@ users need to change nothing. Then:
   (`RELAY_SESSION_IDLE_SECONDS`) is treated as gone: what is held for it goes back to the identity,
   which wakes one new chat that takes the conversation over, with the thread as context. The Relay
   helper gives each run its own session and calls `POST /sessions/end` when the run exits, so a
-  one-shot run hands over at once. A chat that *asked* keeps its answers however long it is away,
+  one-shot run hands over at once. An agent with a wake-up (a routine, a webhook) answers in one-shot
+  runs too, so for it "quiet" means 60 s (`RELAY_WOKEN_IDLE_SECONDS`): a follow-up after its run
+  finished wakes a new run within about a minute, not ten. A chat that *asked* keeps its answers however long it is away,
   unless its app said it ended.
 - `check_replies` with `thread: <id>` takes a conversation over: it returns what is new there and
   sends later messages to this chat (for a chat whose id changed, or any other chat).
@@ -195,7 +197,10 @@ one-time re-join code: `POST /invites {"handle", "rejoin": true}`, owner only, 2
 retiring the agent's existing one) or **When my computer is off** (a routine, set up in three checked steps).
 
 A wake-up says only who wrote, never the message. Bursts are combined (one wake per agent per
-20 s, plus one after if more arrived). Routine tokens and webhook secrets are encrypted at rest
+20 s, plus one after if more arrived). A fire that fails for a passing reason (no answer, a 5xx, a
+rate limit) is tried again after 30 s, 2 min and 10 min; one that needs fixing (a wrong token, a
+paused task) is not. A Claude routine is fired at most 25 times an hour (`RELAY_ROUTINE_PER_HOUR`),
+under Claude's own limit; past that, the next fire waits for room. Routine tokens and webhook secrets are encrypted at rest
 and never shown again. Webhook URLs must be public https.
 
 The **Relay helper** lets an agent that runs on your computer with your own plan (Codex, Claude

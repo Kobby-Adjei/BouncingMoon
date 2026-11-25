@@ -363,3 +363,51 @@ def test_chats_unheard_of_for_30_days_are_forgotten_unless_something_waits_for_t
     db.close()
     assert left == {"old-waiting"}
     assert [m["text"] for m in call(c, t["claude"], "check_replies", session="old-waiting")["messages"]] == ["a"]
+
+
+# ---------------------------------------------------------------- one-shot runs (a routine, a webhook)
+@pytest.fixture
+def woken(tmp_path):
+    """Chats stay 'alive' for the usual 10 minutes, but a woken run is done after 0.5 s of quiet."""
+    rec = Recorder()
+    c = TestClient(create_app(data_dir=str(tmp_path), admin_token=ADMIN, wake_opener=rec,
+                              wake_check_url=False, wake_cooldown=0.1,
+                              woken_idle_seconds=0.5, session_sweep_seconds=0.2))
+    toks = {}
+    for h in ("claude", "muse"):
+        toks[h] = c.post("/agents", headers={"Authorization": f"Bearer {ADMIN}"}, json={"handle": h}).json()["token"]
+    c.put("/agents/muse/wake", headers={"Authorization": f"Bearer {ADMIN}"},
+          json={"kind": "webhook", "url": "https://wake.example/muse"})
+    return c, rec, toks
+
+
+def test_a_follow_up_to_a_woken_run_that_finished_wakes_a_new_run_at_once(woken):
+    c, rec, t = woken
+    asked, ans = answered(c, t)
+    assert fired(rec, "muse") == 1
+    time.sleep(0.7)                                       # the routine run answered and finished
+    call(c, t["claude"], "reply", {"message_id": ans["id"], "text": "expand on 2"}, "chat-A")
+    assert fired(rec, "muse", 2) == 2                     # not ten minutes later: now
+    got = call(c, t["muse"], "check_replies", session="muse-2")["messages"]
+    assert [m["text"] for m in got] == ["expand on 2"]
+
+
+def test_a_follow_up_that_lands_while_the_run_is_finishing_is_handed_on_within_seconds(woken):
+    c, rec, t = woken
+    asked, ans = answered(c, t)
+    assert fired(rec, "muse") == 1
+    call(c, t["claude"], "reply", {"message_id": ans["id"], "text": "and 3?"}, "chat-A")   # muse-1 just answered
+    assert fired(rec, "muse", 2, timeout=3) == 2          # its run went quiet: handed to a new one
+    assert [m["text"] for m in call(c, t["muse"], "check_replies", session="muse-2")["messages"]] == ["and 3?"]
+
+
+def test_a_chat_app_without_a_wake_up_still_gets_the_usual_ten_minutes(woken):
+    c, rec, t = woken
+    asked = call(c, t["muse"], "ask", {"to": "claude", "message": "a caption?", "wait_seconds": 0}, "muse-A")
+    call(c, t["claude"], "check_replies", session="claude-chat")
+    ans = call(c, t["claude"], "reply", {"message_id": asked["asked"], "text": "New drop."}, "claude-chat")
+    time.sleep(0.7)
+    call(c, t["muse"], "reply", {"message_id": ans["id"], "text": "shorter?"}, "muse-A")
+    time.sleep(0.6)                                       # sweeps ran: claude's chat (no wake-up) keeps it
+    assert call(c, t["claude"], "check_replies", session="another-chat")["messages"] == []
+    assert [m["text"] for m in call(c, t["claude"], "check_replies", session="claude-chat")["messages"]] == ["shorter?"]

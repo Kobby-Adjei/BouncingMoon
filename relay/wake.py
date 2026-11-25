@@ -12,8 +12,11 @@ the hub and runs a command the moment something arrives.
 
 Rules: a wake-up says only *that* there is something new, never the message itself (the agent
 reads messages through its own key). Bursts are coalesced: at most one wake per agent every
-COOLDOWN seconds, plus one more after the cooldown if anything arrived during it. Secrets are
-encrypted at rest and never returned.
+COOLDOWN seconds, plus one more after the cooldown if anything arrived during it. A fire that fails
+for a passing reason (the network, a 5xx, a rate limit) is tried again later (RETRY_AFTER); one that
+can't work until someone fixes it (a wrong token, a paused task) is not. A Claude routine is fired
+at most ROUTINE_PER_HOUR times an hour, under Claude's own limit; past that, the next fire waits
+for room. Secrets are encrypted at rest and never returned.
 """
 from __future__ import annotations
 
@@ -22,6 +25,7 @@ import hashlib
 import hmac
 import ipaddress
 import json
+import os
 import secrets
 import socket
 import threading
@@ -36,6 +40,8 @@ ROUTINE_BETA = "experimental-cc-routine-2026-04-01"
 COOLDOWN = 20.0
 TIMEOUT = 15.0
 READ_WINDOW = 180.0      # how long after a fire the agent has to read its messages before we say it didn't
+RETRY_AFTER = (30.0, 120.0, 600.0)   # a fire that failed for a passing reason is tried again after these
+ROUTINE_PER_HOUR = int(os.environ.get("RELAY_ROUTINE_PER_HOUR", 25))   # under Claude's limit on routine runs
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS wakes(
@@ -175,6 +181,10 @@ class Waker:
         self.cooldown = cooldown
         self.due: dict[str, float] = {}          # handle -> when to fire
         self.notes: dict[str, set] = {}          # handle -> who the new messages are from
+        self.tries: dict[str, int] = {}          # handle -> failed fires in a row
+        self.recent: dict[str, list] = {}        # handle -> when it was fired in the last hour
+        self.retry_after = RETRY_AFTER
+        self.per_hour = ROUTINE_PER_HOUR
         self.lock = threading.Lock()
         self.kick = threading.Event()
         with store.tx() as c:
@@ -258,17 +268,42 @@ class Waker:
             for h, senders in batch.items():
                 try:
                     with self.store.ro() as c:
-                        r = c.execute("SELECT last_fired FROM wakes WHERE handle=?", (h,)).fetchone()
+                        r = c.execute("SELECT kind, last_fired FROM wakes WHERE handle=?", (h,)).fetchone()
                     if not r:
+                        self.tries.pop(h, None)
                         continue                       # no wake-up configured: nothing to do
                     if r["last_fired"] and now - r["last_fired"] < self.cooldown:
-                        with self.lock:                # coalesce into one fire after the cooldown
-                            self.notes.setdefault(h, set()).update(senders)
-                            self.due[h] = r["last_fired"] + self.cooldown
+                        self._later(h, senders, r["last_fired"] + self.cooldown)   # one fire after the cooldown
                         continue
-                    self._fire(h, senders)
+                    hour = [t for t in self.recent.get(h, []) if now - t < 3600]
+                    if r["kind"] == "claude_routine" and len(hour) >= self.per_hour:
+                        self._later(h, senders, hour[0] + 3600)                    # wait for room under the limit
+                        continue
+                    status = self._fire(h, senders)
+                    if status.startswith("ok"):
+                        self.tries.pop(h, None)
+                    elif self._passing(status):        # try again later, with whoever wrote meanwhile
+                        n = self.tries.get(h, 0)
+                        if n < len(self.retry_after):
+                            self.tries[h] = n + 1
+                            self._later(h, senders, time.time() + self.retry_after[n])
+                        else:
+                            self.tries.pop(h, None)
+                    else:
+                        self.tries.pop(h, None)        # needs the owner to fix it: the screen says how
                 except Exception:
                     pass                               # a wake-up must never break messaging
+
+    def _later(self, h: str, senders: set, when: float) -> None:
+        with self.lock:
+            self.notes.setdefault(h, set()).update(senders)
+            self.due[h] = min(self.due.get(h, when), when)
+
+    @staticmethod
+    def _passing(status: str) -> bool:
+        """A failure that may clear by itself: no answer, Claude's or the server's side, a rate limit."""
+        code = _code(status)
+        return code is None or code == 429 or code >= 500
 
     def _fire(self, handle: str, senders: set) -> str:
         with self.store.ro() as c:
@@ -291,6 +326,7 @@ class Waker:
                 "Content-Type": "application/json", "X-Relay-Timestamp": ts,
                 "X-Relay-Signature": f"sha256={sig}", "User-Agent": "relay-hub"})
         started = time.time()                 # before the request: a quick agent may read before it returns
+        self.recent[handle] = [t for t in self.recent.get(handle, []) if started - t < 3600] + [started]
         try:
             with self.open(req) as resp:
                 status = f"ok {getattr(resp, 'status', 200)}"
