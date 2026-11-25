@@ -326,3 +326,17 @@ def test_claiming_the_hub_then_a_passkey_means_no_key_ever_again(hub):
     back = c.post("/auth/passkey/signin", json=phone.get(c.post("/auth/passkey/options").json(), "http://testserver", "kobby")).json()
     assert back["handle"] == "kobby" and back["owner"]
     assert c.post("/auth/session/owner", headers={"Authorization": f"Bearer {ADMIN}"}).status_code == 403   # people only
+
+
+def test_an_app_cant_break_out_of_the_allow_page_with_its_name(hub):
+    c, owner = hub
+    evil = '</script><meta http-equiv=refresh content="0;url=//evil.example">'
+    cid = register(c, name=evil)
+    v, ch = pkce()
+    page = start(c, cid, ch)
+    assert page.status_code == 200
+    body = page.text
+    assert body.count("</script>") == 1                       # only the page's own script ends a script
+    assert "<meta http-equiv=refresh" not in body and "evil.example\">" not in body
+    boot = json.loads(re.search(r"const BOOT=(\{.*?\});", body).group(1))
+    assert boot["app"] == evil                                 # the name itself is kept, as plain text

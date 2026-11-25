@@ -318,7 +318,7 @@ def mount(app, hub) -> None:
                 f"<p class=lede id=lede>Pick its name.</p>"
                 f"<section class=step id=step aria-live=polite></section>"
                 f"<p class=foot id=foot>Returns to {html.escape(host)}</p></div>"
-                f"<script nonce='{nonce}'>const BOOT={json.dumps(boot)};{PAGE_JS}</script>")
+                f"<script nonce='{nonce}'>const BOOT={script_json(boot)};{PAGE_JS}</script>")
         return HTMLResponse(page(f"Connect {cl['name']}", body, nonce), headers=page_headers(nonce))
 
     def who(authorization: str) -> dict:
@@ -641,6 +641,13 @@ def mount(app, hub) -> None:
 
 
 # --------------------------------------------------------------------------- the page
+def script_json(data) -> str:
+    """JSON that is safe inside <script>: an app can name itself anything, and "</script>" in its name
+    must stay text, never end the script and start page markup."""
+    return (json.dumps(data).replace("<", "\\u003c").replace(">", "\\u003e").replace("&", "\\u0026")
+            .replace("\u2028", "\\u2028").replace("\u2029", "\\u2029"))
+
+
 def page_headers(nonce: Optional[str]) -> dict:
     script = f"'nonce-{nonce}'" if nonce else "'none'"
     return {"Content-Security-Policy": (f"default-src 'none'; script-src {script}; style-src 'unsafe-inline'; "
