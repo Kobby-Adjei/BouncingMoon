@@ -485,8 +485,10 @@ def mount(app, hub, supabase: Optional[Supabase], resend: Optional[Resend] = Non
             if c.execute("SELECT COUNT(*) n FROM invite_requests WHERE status='waiting'").fetchone()["n"] >= ASKS_WAITING:
                 raise HTTPException(429, "Lots of people asked today. Try again tomorrow.")
             apps = sorted({a for a in body.apps if a in APP_CHOICES})
+            rid = "ir_" + secrets.token_hex(6)
             c.execute("INSERT INTO invite_requests(id,name,contact,note,origin,created,apps) VALUES (?,?,?,?,?,?,?)",
-                      ("ir_" + secrets.token_hex(6), name, contact, note, origin, now, json.dumps(apps)))
+                      (rid, name, contact, note, origin, now, json.dumps(apps)))
+        hub.tell_owner("invites", f"{name} would like an invite", "Tap to review.", f"/app#ask/{rid}", rid)
         return {"asked": True}
 
     @app.get("/invite-requests/friends")
@@ -509,9 +511,11 @@ def mount(app, hub, supabase: Optional[Supabase], resend: Optional[Resend] = Non
         with store.tx() as c:
             if c.execute("SELECT COUNT(*) n FROM invite_requests WHERE by=?", (me["handle"],)).fetchone()["n"] >= FRIEND_INVITES:
                 raise HTTPException(429, f"You've put {FRIEND_INVITES} friends forward already.")
+            rid = "ir_" + secrets.token_hex(6)
             c.execute("INSERT INTO invite_requests(id,name,contact,note,origin,created,apps,by) VALUES (?,?,?,?,?,?,?,?)",
-                      ("ir_" + secrets.token_hex(6), name, contact, (body.note or "").strip() or None,
+                      (rid, name, contact, (body.note or "").strip() or None,
                        hub.hash("friend:" + me["handle"]), hub.now(), "[]", me["handle"]))
+        hub.tell_owner("invites", f"{me['handle']} put {name} forward", "Tap to review.", f"/app#ask/{rid}", rid)
         return {"asked": True}
 
     @app.get("/invite-requests")

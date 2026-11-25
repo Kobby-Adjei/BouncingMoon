@@ -126,6 +126,7 @@ class Vault:
     def __init__(self, store, now, secret: str, send: Optional[Callable] = None,
                  resolve: Optional[Callable] = None):
         self.store, self.now = store, now
+        self.on_waiting = None        # set by the hub: who to tell when a call needs an OK
         self.aead = AESGCM(HKDF(algorithm=hashes.SHA256(), length=32, salt=b"relay-vault",
                                 info=b"keys v1").derive(secret.encode()))
         self.send = send or _http
@@ -338,6 +339,11 @@ class Vault:
                       " VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
                       (cid, k["id"], k["owner"], agent, anchor, method, url, json.dumps(headers), body, why, status,
                        self.now()))
+        if status == "waiting" and self.on_waiting:          # tell the owner's phone: it needs their OK
+            try:
+                self.on_waiting(k["owner"], cid, agent, method, url, k["name"])
+            except Exception:
+                pass
         return cid
 
     def set_anchor(self, cid: str, anchor: int) -> None:
