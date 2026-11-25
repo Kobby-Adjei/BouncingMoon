@@ -402,6 +402,7 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
                caption_public_url: Optional[str] = None,
                session_idle_seconds: Optional[float] = None,
                session_sweep_seconds: Optional[float] = None,
+               woken_idle_seconds: Optional[float] = None,
                media_threads: Optional[bool] = None) -> FastAPI:
     data_dir = data_dir or os.environ.get("RELAY_DATA", "./relay-data")
     os.makedirs(data_dir, exist_ok=True)
@@ -447,6 +448,10 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
                          else os.environ.get("RELAY_SESSION_IDLE_SECONDS", 600))
     session_sweep = float(session_sweep_seconds if session_sweep_seconds is not None
                           else os.environ.get("RELAY_SESSION_SWEEP_SECONDS", 30))
+    # An agent with a wake-up (a Claude routine, a webhook) answers in one-shot runs: a run that has gone
+    # quiet this long has finished, so a follow-up wakes a new run instead of waiting ten minutes for it.
+    woken_idle = min(session_idle, float(woken_idle_seconds if woken_idle_seconds is not None
+                                         else os.environ.get("RELAY_WOKEN_IDLE_SECONDS", 60)))
     with store.ro() as c:
         session_floor = int(c.execute("SELECT value FROM meta WHERE key='session_floor'").fetchone()["value"])
 
@@ -588,7 +593,11 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
             return "idle"
         if r["ended"]:
             return "ended"
-        return "idle" if (r["seen"] or 0) < _now() - session_idle else "alive"
+        return "idle" if (r["seen"] or 0) < _now() - idle_after(c, h) else "alive"
+
+    def idle_after(c, h: str) -> float:
+        woken = c.execute("SELECT 1 FROM wakes WHERE handle=?", (h,)).fetchone()
+        return woken_idle if woken else session_idle
 
     def release(c, h: str, session: str, everything: bool = False) -> int:
         """Give back to the identity what this chat will never read: unread messages held for it in
@@ -1370,7 +1379,9 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
                 " JOIN messages root ON root.id=m.thread"
                 " JOIN session_cursors s ON s.handle=r.handle AND s.session=r.session"
                 " WHERE r.session!='' AND m.sender!=r.handle AND root.sender!=r.handle AND m.id>s.last"
-                " AND (s.ended IS NOT NULL OR COALESCE(s.seen, 0)<?)", (_now() - session_idle,)).fetchall()
+                " AND (s.ended IS NOT NULL OR COALESCE(s.seen, 0) < ? - CASE WHEN EXISTS"
+                " (SELECT 1 FROM wakes w WHERE w.handle=r.handle) THEN ? ELSE ? END)",
+                (_now(), woken_idle, session_idle)).fetchall()
             n = sum(release(c, p["handle"], p["session"]) for p in pairs)
             prune(c)
             return n

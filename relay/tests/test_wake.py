@@ -330,3 +330,79 @@ def test_an_existing_database_gains_the_read_column(tmp_path):
     w = c.get("/agents/claude/wake", headers=H(ADMIN)).json()
     # reads were never recorded before, so an old fire proves nothing either way: press Test
     assert w["last_read"] is None and w["state"] == "ready" and w["fires"] == 1 and w["problem"] is None
+
+
+# ---------------------------------------------------------------- retries and Claude's hourly limit
+class Flaky:
+    """Answers with the given HTTP codes in turn (200 once they run out)."""
+    def __init__(self, codes):
+        self.codes, self.calls = list(codes), 0
+    def __call__(self, req):
+        import urllib.error
+        self.calls += 1
+        if self.codes:
+            code = self.codes.pop(0)
+            if code is None:
+                raise urllib.error.URLError("no answer")
+            if code != 200:
+                raise urllib.error.HTTPError(req.full_url, code, "no", {}, None)
+        return FakeResp()
+
+
+def waker_hub(tmp_path, opener, **kw):
+    app = create_app(data_dir=str(tmp_path), admin_token=ADMIN, wake_opener=opener,
+                     wake_check_url=False, wake_cooldown=0.05)
+    app.state.waker.retry_after = (0.2, 0.2, 0.2)
+    for k, v in kw.items():
+        setattr(app.state.waker, k, v)
+    c = TestClient(app)
+    claude, codex = reg(c, "claude"), reg(c, "codex")
+    c.put("/agents/codex/wake", headers=H(ADMIN),
+          json={"kind": "claude_routine", "url": ROUTINE, "token": "sk-ant-oat01-" + "x" * 30})
+    return c, claude
+
+
+def say(c, tok, text):
+    c.post("/messages", headers=H(tok), json={"channel": "direct", "text": text, "mentions": ["codex"]})
+
+
+def test_a_fire_that_failed_for_a_passing_reason_is_tried_again(tmp_path):
+    opener = Flaky([503, None, 200])                        # Claude had a problem, then no answer, then fine
+    c, claude = waker_hub(tmp_path, opener)
+    say(c, claude, "ping")
+    assert wait_for(lambda: opener.calls >= 3)
+    time.sleep(0.6)
+    assert opener.calls == 3                             # and once it got through, no more
+    assert c.get("/agents/codex/wake", headers=H(ADMIN)).json()["last_status"] == "ok 200"
+
+
+def test_a_fire_that_needs_the_owner_to_fix_it_is_not_retried(tmp_path):
+    opener = Flaky([401, 401, 401])
+    c, claude = waker_hub(tmp_path, opener)
+    say(c, claude, "ping")
+    assert wait_for(lambda: opener.calls >= 1)
+    time.sleep(0.8)
+    assert opener.calls == 1
+    assert c.get("/agents/codex/wake", headers=H(ADMIN)).json()["problem"]["code"] == "token"
+
+
+def test_retries_stop_after_three(tmp_path):
+    opener = Flaky([503] * 10)
+    c, claude = waker_hub(tmp_path, opener)
+    say(c, claude, "ping")
+    assert wait_for(lambda: opener.calls >= 4)
+    time.sleep(0.8)
+    assert opener.calls == 4                             # the first try and three more
+
+
+def test_a_routine_is_fired_at_most_its_hourly_limit(tmp_path):
+    rec = Recorder()
+    c, claude = waker_hub(tmp_path, rec, per_hour=2)
+    for i in range(2):
+        say(c, claude, f"ping {i}")
+        assert wait_for(lambda: len(rec.calls) == i + 1)
+    say(c, claude, "ping 2")                             # a third run this hour would go past the limit
+    time.sleep(1.5)
+    assert len(rec.calls) == 2
+    due = c.app.state.waker.due.get("codex")
+    assert due and due - time.time() > 3000              # it waits for room within the hour, not dropped
