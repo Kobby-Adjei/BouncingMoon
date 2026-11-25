@@ -328,7 +328,7 @@ function known(r) {
   if (top === "agents") return !y || !!x && (y === "wake" || ONE_TIME.has(y));
   if (top === "activity") return !x || (x === "new" && !y) || (x === "to" && !!y) || (/^\d+$/.test(x) && !y);
   if (top === "add") return isOwner() && (!y || (y === "withkey" && !!x));
-  if (top === "me") return (!x || ((x === "apps" || x === "passkeys" || x === "delete") && !y) || (x === "keys" && (!y || y === "new" || /^k_[0-9a-f]{12}$/.test(y))))
+  if (top === "me") return (!x || ((x === "apps" || x === "passkeys" || x === "delete" || x === "friend") && !y) || (x === "keys" && (!y || y === "new" || /^k_[0-9a-f]{12}$/.test(y))))
     && !!ME && ME.role !== "admin";
   if (top === "approve") return !!ME && ME.role === "human" && /^c_[0-9a-f]{16}$/.test(x || "") && !y;
   if (top === "ask") return isOwner() && /^ir_[0-9a-f]{12}$/.test(x || "") && !y;
@@ -367,6 +367,7 @@ function screenFor(r) {
   if (p[0] === "me" && p[1] === "apps") return [appsScreen];
   if (p[0] === "me" && p[1] === "passkeys") return [passkeysScreen];
   if (p[0] === "me" && p[1] === "delete") return [deleteScreen];
+  if (p[0] === "me" && p[1] === "friend") return [friendScreen];
   if (p[0] === "me" && p[1] === "keys") return !p[2] ? [keysScreen] : p[2] === "new" ? [keyNew] : [keyDetail, p[2]];
   if (p[0] === "approve") return [approveScreen, p[1]];
   if (p[0] === "ask") return [askScreen, p[1]];
@@ -649,6 +650,11 @@ function askInvite() {
   const contact = h("input", { class: "field", type: "text", placeholder: "Email, phone or @handle", autocomplete: "email", maxlength: "120",
                                 spellcheck: "false", "aria-label": "How to reach you" });
   const note = h("input", { class: "field", type: "text", placeholder: "What would you use it for? (optional)", maxlength: "300", "aria-label": "Note" });
+  const picked = new Set();
+  const chips = h("div", { class: "appchips", role: "group", "aria-label": "The AI apps you use" },
+    ...APP_CHOICES.map(([id, label]) => h("button", { class: "appchip press", type: "button", "aria-pressed": "false", onclick: (e) => {
+      const b = e.currentTarget; picked.has(id) ? picked.delete(id) : picked.add(id); b.setAttribute("aria-pressed", String(picked.has(id))); } },
+      appMark(id), h("span", { text: label }))));
   const trap = h("input", { type: "text", name: "website", tabindex: "-1", autocomplete: "off", class: "trap", "aria-hidden": "true" });
   const err = h("p", { class: "err", role: "alert" });
   const btn = h("button", { class: "btn press", type: "submit" }, "Ask for an invite");
@@ -658,11 +664,11 @@ function askInvite() {
     btn.disabled = true; err.textContent = "";
     try {
       await api("POST", "/invite-requests", { name: name.value.trim(), contact: contact.value.trim(), note: note.value.trim() || null,
-        website: trap.value || null }, null);
+        apps: [...picked], website: trap.value || null }, null);
       fuse(() => welcomeView(brand("Asked", "When you're in, you'll get a link. It opens a page like this one.", name.value.trim()),
         ways(way("Back", () => signin(null, "start")))));
     } catch (x) { err.textContent = x.message; btn.disabled = false; }
-  } }, name, contact, note, trap, btn, err);
+  } }, name, contact, h("p", { class: "chipq", text: "Which AI apps do you use?" }), chips, note, trap, btn, err);
   welcomeView(brand("Ask for an invite", "Whoever runs this Relay gets your note."), form,
     ways(way("I have an invite link", () => signin(null))));
   name.focus();
@@ -787,8 +793,11 @@ async function askScreen(id) {
     } catch (x) { err.textContent = x.message; yes.disabled = false; }
   } }, h("div", { class: "fieldnote" }, h("span", { class: "k", text: "Their name on Relay" }), handle), yes, err,
     h("div", { class: "ways" }, way("Not now", async () => { try { await api("DELETE", `/invite-requests/${enc(id)}`); } catch {} if (listRefresh) listRefresh(); nav("activity", { replace: true }); })));
-  screen("ask", tk, heroHead(avatar("person", 72), `${r.name} would like an invite`, `Reach them at ${r.contact}`),
-    h("div", { class: "stack" }, r.note ? h("p", { class: "why", text: r.note }) : null, form));
+  const uses = (r.apps || []).length ? h("div", { class: "appchips quiet", "aria-label": "Uses" },
+    ...r.apps.map((id) => h("span", { class: "appchip", "aria-pressed": "true" }, appMark(id), h("span", { text: appLabel(id) })))) : null;
+  screen("ask", tk, heroHead(avatar("person", 72), `${r.name} would like an invite`,
+      (r.by ? `Put forward by ${r.by} · ` : "") + `Reach them at ${r.contact}`),
+    h("div", { class: "stack" }, uses, r.note ? h("p", { class: "why", text: r.note }) : null, form));
   if (WIDE) handle.select();          // on a phone, no keyboard until they tap
 }
 
@@ -1245,16 +1254,66 @@ async function meScreen() {
   screen("me", tk,
     h("div", { class: "profile" }, avatar({ handle: ME.handle, role: "human" }, 88), h("h1", { class: "title", text: ME.handle }),
       ME.owner ? h("span", { class: "pill-tag", text: "Owner" }) : null),
+    ME.owner ? goingCard() : null,
     h("div", { class: "stack" }, h("button", { class: "door press", type: "button", onclick: () => nav("me/apps") },
         miniOrb("claude", "relay", 40), h("span", { class: "grow" }, h("b", { text: "Connected apps" })), chev()),
       h("button", { class: "door press", type: "button", onclick: () => nav("me/passkeys") },
         passOrb(40), h("span", { class: "grow" }, h("b", { text: "Passkeys" })), chev()),
       h("button", { class: "door press", type: "button", onclick: () => nav("me/keys") },
         keyOrb("", 40), h("span", { class: "grow" }, h("b", { text: "Keys" })), chev()),
+      !ME.owner && ME.role === "human" ? friendDoor() : null,
       ME.owner ? h("button", { class: "door press", type: "button", onclick: (e) => saveBackup(e.currentTarget) },
         backupOrb(40), h("span", { class: "grow" }, h("b", { text: "Download a backup" }))) : null,
       rows, h("button", { class: "btn danger press", type: "button", onclick: userSignOut }, "Sign out"),
       ME.owner || ME.role !== "human" ? null : ways(way("Delete my account", () => nav("me/delete")))));
+}
+// How it's going: counted on this hub, shown only to its owner, sent nowhere
+function goingCard() {
+  const grid = h("div", { class: "going" });
+  const card = h("section", { class: "facts goingcard" }, h("h2", { class: "label", text: "How it's going" }), grid);
+  const tile = (n, label) => h("div", { class: "gtile" }, h("b", { class: "tnum", text: String(n) }), h("span", { text: label }));
+  api("GET", "/stats").then((st) => {
+    grid.replaceChildren(tile(st.asked, st.waiting ? `asked · ${st.waiting} waiting` : "asked to join"), tile(st.invited, "invited"),
+      tile(st.people, st.people === 1 ? "person joined" : "people joined"), tile(st.apps_connected, "apps connected"),
+      tile(st.agent_conversations, "agent-to-agent chats"), tile(st.active_week, "active this week"));
+    if (st.wanted && st.wanted.length) card.append(h("p", { class: "wanted" }, h("span", { text: "Most asked for" }),
+      ...st.wanted.slice(0, 4).map(([id, n]) => h("span", { class: "wapp" }, appMark(id, 16), h("span", { text: `${appLabel(id)} ${n}` })))));
+  }).catch(() => card.remove());
+  return card;
+}
+// Invite a friend: a person puts up to three forward; the owner still decides
+function friendDoor() {
+  const left = h("span", { class: "doorhint" });
+  api("GET", "/invite-requests/friends").then((f) => { left.textContent = f.left ? `${f.left} left` : "All used"; }).catch(() => {});
+  return h("button", { class: "door press", type: "button", onclick: () => nav("me/friend") },
+    h("span", { class: "morb", style: "--s:40px", "aria-hidden": "true" }, h("span", { class: "mh l" }, h("b", { text: "+" })),
+      h("span", { class: "mh r dark" }, h("i", { class: "mk" }))),
+    h("span", { class: "grow" }, h("b", { text: "Invite a friend" })), left, chev());
+}
+async function friendScreen() {
+  const tk = ticket();
+  let f = { left: 0, asked: [] };
+  try { f = await api("GET", "/invite-requests/friends"); } catch {}
+  const name = h("input", { class: "field", type: "text", placeholder: "Their name", maxlength: "60", "aria-label": "Their name" });
+  const contact = h("input", { class: "field", type: "text", placeholder: "Email, phone or @handle", maxlength: "120", spellcheck: "false",
+                               "aria-label": "How to reach them" });
+  const note = h("input", { class: "field", type: "text", placeholder: "Why they'd like it (optional)", maxlength: "300", "aria-label": "Note" });
+  const err = h("p", { class: "err", role: "alert" });
+  const go = h("button", { class: "btn press", type: "submit" }, "Put them forward");
+  const form = h("form", { class: "stack tight", onsubmit: async (e) => {
+    e.preventDefault();
+    if (!name.value.trim() || contact.value.trim().length < 3) { err.textContent = "Add their name and how to reach them."; return; }
+    go.disabled = true; err.textContent = "";
+    try {
+      await api("POST", "/invite-requests/friend", { name: name.value.trim(), contact: contact.value.trim(), note: note.value.trim() || null });
+      fuse(() => nav("me", { replace: true }));
+    } catch (x) { err.textContent = x.message; go.disabled = false; }
+  } }, name, contact, note, go, err);
+  const sent = f.asked.length ? h("section", { class: "facts" }, h("h2", { class: "label", text: "Put forward" }),
+    h("div", { class: "group info" }, ...f.asked.map((a) => h("div", { class: "cell" }, h("span", { class: "grow", text: a.name }),
+      h("span", { class: "doorhint", text: a.status === "invited" ? "Invited" : a.status === "dismissed" ? "Not now" : "Waiting" }))))) : null;
+  screen("friend", tk, heroHead(avatar("person", 72), "Invite a friend",
+      f.left ? `The owner decides. ${f.left} left.` : "You've put three friends forward."), f.left ? form : null, sent);
 }
 function backupOrb(size) {          // Relay's half, and a copy coming down to you
   return h("span", { class: "morb", style: `--s:${size}px`, "aria-hidden": "true" },
@@ -2078,7 +2137,8 @@ async function activity() {
         h("span", { class: "btn small", text: "Review" })));
       const needs = oks.concat(wants.map((w) => h("button", { class: "cell jobcell press", type: "button", "data-key": `ask/${w.id}`, onclick: () => nav(`ask/${w.id}`) },
         h("span", { class: "stackav" }, avatar("person", 44)),
-        h("div", { class: "grow" }, h("div", { class: "t one", text: `${w.name} would like an invite` }), h("div", { class: "s one", text: w.contact })),
+        h("div", { class: "grow" }, h("div", { class: "t one", text: `${w.name} would like an invite` }),
+          h("div", { class: "s one", text: (w.by ? `via ${w.by} · ` : "") + w.contact })),
         h("span", { class: "btn small", text: "Review" }))));
       // what needs you first, then the conversations newest first, under Today · Yesterday · This week · Earlier
       const rows = needs.length ? [secthead("Needs you"), ...needs] : [];
@@ -2126,6 +2186,17 @@ async function newMessage() {
   const grid = h("div", { class: "pick stagger" }, ...ags.map((a) => h("button", { class: "opt press", type: "button", onclick: () => nav(`activity/to/${enc(a.handle)}`) },
     avatar(a, 52, true), h("span", { text: a.handle }), h("span", { class: "sub", text: ago(a.last_seen) }))));
   screen("new", tk, head("New message", "Who to?"), ags.length ? grid : blank("No one to message yet", "Add an agent first."));
+}
+
+// ------------------------------------------------------------------ the AI apps someone uses (invite asks, stats)
+const APP_CHOICES = [["claude", "Claude", "claude"], ["chatgpt", "ChatGPT", "openai"], ["grok", "Grok", "grok"], ["muse", "Muse", "muse"],
+  ["claude-code", "Claude Code", "claude"], ["codex", "Codex", "codex"], ["gemini", "Gemini", "gemini"], ["cursor", "Cursor", "cursor"]];
+const appLabel = (id) => (APP_CHOICES.find((x) => x[0] === id) || [id, id])[1];
+function appMark(id, size = 18) {
+  const logo = LOGOS[(APP_CHOICES.find((x) => x[0] === id) || [])[2]];
+  if (logo && logo.src) return h("img", { src: logo.src, alt: "", width: size, height: size });
+  if (logo) return svg("0 0 24 24", [{ d: logo.d, fill: "currentColor", "fill-rule": "evenodd" }]);
+  return null;
 }
 
 // ------------------------------------------------------------------ reading a busy hub at a glance
@@ -2333,6 +2404,12 @@ async function thread(id, people) {
 // ------------------------------------------------------------------ start
 brandmini.append(mark(), h("span", { class: "word", text: "Relay" }));
 (async function start() {
+  // arriving from the old address with a one-time code: read it, and clear it from the address bar at once
+  let handoff = null;
+  if (location.hash.startsWith("#handoff=")) {
+    try { handoff = decodeURIComponent(location.hash.slice(9)); } catch {}
+    history.replaceState(null, "", "/app");
+  }
   const wantInvite = location.hash === "#invite";          // the landing page's "Ask for an invite"
   if (wantInvite) history.replaceState(null, "", "/app");
   // an invite link: take the code from the #fragment and clear it from the address bar at once
@@ -2352,9 +2429,25 @@ brandmini.append(mark(), h("span", { class: "word", text: "Relay" }));
       history.replaceState(null, "", "/app");
     }
   }
-  try { const c = await api("GET", "/auth/config", undefined, null); AUTH = { email: !!(c && c.email), claimed: !(c && c.claimed === false) }; } catch { AUTH = { email: false, claimed: true }; }
+  try { const c = await api("GET", "/auth/config", undefined, null); AUTH = { email: !!(c && c.email), claimed: !(c && c.claimed === false), home: (c && c.home) || null }; } catch { AUTH = { email: false, claimed: true }; }
+  // the hub moved to a new address: take the person with it, signed in (a one-time code), or just go there
+  if (AUTH.home && AUTH.home !== location.origin && /^https?:\/\//.test(AUTH.home)) {
+    const saved = store.get();
+    let code = null;
+    if (saved) { try { code = (await api("POST", "/auth/handoff", undefined, saved)).code; } catch {} }
+    location.replace(AUTH.home + "/app" + (code ? "#handoff=" + encodeURIComponent(code) : location.hash));
+    return;
+  }
   if (link && (link.token || link.hash)) return finishLink(link);
   await loadProviders();
+  if (handoff) {                          // signed in here now; a passkey made on the old address doesn't work here
+    try {
+      const r = await api("POST", "/auth/handoff/claim", { code: handoff }, null);
+      ME = await api("GET", "/agents/me", undefined, r.token); KEY = r.token; store.set(r.token, true);
+      if (CAN_PASSKEY) return offerPasskey(`Welcome back, ${ME.handle}`, "Relay has a new address. Add a passkey for it.", () => goTab(agents));
+      return fuse(() => goTab(agents));
+    } catch (x) { return signin(x.message); }
+  }
   if (joinCode !== null) return joinView(joinCode);
   if (link && link.error) return signin(link.error, AUTH.email ? "email" : "key");
   const saved = store.get();

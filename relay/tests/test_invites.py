@@ -308,3 +308,36 @@ def test_a_made_up_forwarded_address_doesnt_get_round_the_ask_limit(hub):
     codes = [hub.post("/invite-requests", json=ask, headers={"X-Forwarded-For": f"10.0.0.{i}, 203.0.113.7"}).status_code
              for i in range(5)]
     assert codes == [200, 200, 200, 429, 429]       # the address the proxy added counts, not the one the caller wrote
+
+
+def test_asks_say_which_apps_and_friends_can_be_put_forward(hub):
+    owner = hub.post("/owner", headers=H(ADMIN), json={"handle": "kobby"}).json()["token"]
+    hub.post("/invite-requests", json={"name": "Abena", "contact": "abena@example.com", "apps": ["claude", "chatgpt", "nonsense"]})
+    inv = hub.post("/invites", headers=H(owner), json={"handle": "ama", "role": "human"}).json()
+    ama = hub.post("/invites/claim", json={"code": inv["code"]}).json()["token"]
+    assert hub.get("/invite-requests/friends", headers=H(ama)).json() == {"left": 3, "asked": []}
+    for i in range(3):
+        assert hub.post("/invite-requests/friend", headers=H(ama), json={"name": f"Kofi {i}", "contact": "kofi@example.com"}).json() == {"asked": True}
+    assert hub.post("/invite-requests/friend", headers=H(ama), json={"name": "One more", "contact": "x@y.z"}).status_code == 429
+    assert hub.get("/invite-requests/friends", headers=H(ama)).json()["left"] == 0
+    waiting = hub.get("/invite-requests", headers=H(owner)).json()
+    stranger = [w for w in waiting if w["name"] == "Abena"][0]
+    assert stranger["apps"] == ["chatgpt", "claude"] and stranger["by"] is None
+    assert {w["by"] for w in waiting if w["name"].startswith("Kofi")} == {"ama"}          # the owner sees who put them forward
+    agent = hub.post("/agents", headers=H(owner), json={"handle": "claude"}).json()["token"]
+    assert hub.post("/invite-requests/friend", headers=H(agent), json={"name": "x", "contact": "x@y.z"}).status_code == 403
+
+
+def test_the_owner_sees_how_its_going_and_nobody_else_does(hub):
+    owner = hub.post("/owner", headers=H(ADMIN), json={"handle": "kobby"}).json()["token"]
+    hub.post("/invite-requests", json={"name": "Abena", "contact": "abena@example.com", "apps": ["claude", "chatgpt"]})
+    hub.post("/invite-requests", json={"name": "Yaw", "contact": "yaw@example.com", "apps": ["chatgpt"]},
+             headers={"X-Forwarded-For": "203.0.113.9"})
+    claude = hub.post("/agents", headers=H(owner), json={"handle": "claude"}).json()["token"]
+    codex = hub.post("/agents", headers=H(owner), json={"handle": "codex"}).json()["token"]
+    first = hub.post("/messages", headers=H(claude), json={"channel": "direct", "text": "hi", "mentions": ["codex"]}).json()
+    hub.post("/messages", headers=H(codex), json={"reply_to": first["id"], "text": "hello"})
+    s = hub.get("/stats", headers=H(owner)).json()
+    assert s["asked"] == 2 and s["waiting"] == 2 and s["agent_conversations"] == 1 and s["apps_connected"] == 2
+    assert s["wanted"][0] == ["chatgpt", 2]
+    assert hub.get("/stats", headers=H(claude)).status_code == 403 and hub.get("/stats").status_code == 401

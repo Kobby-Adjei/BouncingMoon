@@ -156,7 +156,8 @@ def mount(app, hub) -> None:
             c.execute("ALTER TABLE oauth_tokens ADD COLUMN rotated REAL")   # swapped for a new one (not ended)
 
     def issuer(request: Request) -> str:
-        return hub.origin(request)
+        # the address the app actually used: while the hub moves domains, an app on the old one signs in there
+        return hub.here(request) if hasattr(hub, "here") else hub.origin(request)
 
     def cors(resp: Response) -> Response:
         resp.headers["Access-Control-Allow-Origin"] = "*"           # MCP clients in a browser read these

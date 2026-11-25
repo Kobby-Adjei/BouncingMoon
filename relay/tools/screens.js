@@ -46,7 +46,8 @@ async function seed() {
   let approval = null;
   for (let i = 0; i < 40 && !approval; i++) { const w = await api("GET", "/approvals", undefined, K); approval = Array.isArray(w) && w[0]; await sleep(250); }
   // someone asking for an invite; an app on its way in; a phone upload link
-  await api("POST", "/invite-requests", { name: "Abena Owusu", contact: "abena@example.com", note: "Claude and ChatGPT for my shop" });
+  await api("POST", "/invite-requests", { name: "Abena Owusu", contact: "abena@example.com", note: "For my shop", apps: ["claude", "chatgpt", "muse"] });
+  await api("POST", "/invite-requests/friend", { name: "Kofi Boateng", contact: "kofi@example.com" }, AMA);
   const asks = await api("GET", "/invite-requests", undefined, K);
   const client = await api("POST", "/oauth/register", { client_name: "ChatGPT", redirect_uris: ["https://chatgpt.com/connector_platform_oauth_redirect"] });
   const up = await mcp(tok.claude, "request_upload", { note: "the raw clips" });
@@ -73,7 +74,7 @@ async function seed() {
     ["approve", s.approval ? `/app#approve/${s.approval}` : null, "K", true], ["invite-ask", s.ask ? `/app#ask/${s.ask}` : null, "K", false],
     ["me", "/app#me", "K", true], ["apps", "/app#me/apps", "K", false], ["passkeys", "/app#me/passkeys", "K", false],
     ["keys", "/app#me/keys", "K", true], ["key-new", "/app#me/keys/new", "K", false], ["key", `/app#me/keys/${s.key}`, "K", false],
-    ["me-person", "/app#me", "AMA", false], ["delete", "/app#me/delete", "AMA", false],
+    ["me-person", "/app#me", "AMA", false], ["friend", "/app#me/friend", "AMA", false], ["delete", "/app#me/delete", "AMA", false],
     ["allow", auth, "K", true], ["media-page", s.mediaPage, null, true], ["upload-page", upload, null, false],
   ].filter((x) => x[1]);
   const VARIANTS = [["phone-light", { width: 390, height: 844 }, "light"], ["phone-dark", { width: 390, height: 844 }, "dark"],
@@ -90,6 +91,7 @@ async function seed() {
       await page.evaluate((k) => { localStorage.clear(); if (k) localStorage.setItem("relay_key", k); }, who ? s[who] : null);
       const [route, mark] = p.startsWith("/#") ? ["/", p.slice(2)] : [p, null];
       await page.goto(HUB + route, { waitUntil: "load" });
+      if (route.includes("#")) await page.reload({ waitUntil: "load" });    // a #change alone doesn't reload the app
       if (mark === "demo") { await page.evaluate(() => document.getElementById("chat").scrollIntoView({ block: "start" })); await page.waitForTimeout(6500); }
       else if (mark === "end") { await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight)); await page.waitForTimeout(1200); }
       else await page.waitForTimeout(route === "/" ? 3500 : 1800);
