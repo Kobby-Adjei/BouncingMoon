@@ -1,10 +1,11 @@
 // The hero: the two halves are thrown in and become one, with physics (fuse.js). The page's own styles
 // are the sealed resting state, so reduced motion or no script simply shows it.
 if (window.relayFuse) relayFuse(document.querySelector(".hero .orb"),
-  { left: ".h.l", right: ".h.r", seal: ".seal", marks: ".h > *", enter: true, sealBase: "translate(-50%, -50%)" });
+  { left: ".h.l", right: ".h.r", seal: ".seal", marks: ".h > *", markRest: .35, enter: true, sealBase: "translate(-50%, -50%)" });
 
 // Landing page: a short demo of how Relay feels, played once when it comes into view.
-// You ask Claude; Claude hands Muse the video, already watched; Muse asks to post; you tap Approve.
+// You ask Claude; Claude hands Codex the video, already watched; Codex asks to post; you tap Approve.
+// Codex, because it answers by itself (with the Relay helper). A chat app like Muse only reads when asked.
 // It's a demo: it never talks to the hub, shows nothing about anyone's agents, and posts nothing.
 (function () {
 "use strict";
@@ -12,7 +13,7 @@ const log = document.getElementById("log");
 if (!log) return;
 const reduce = matchMedia("(prefers-reduced-motion: reduce)").matches;
 const NS = "http://www.w3.org/2000/svg";
-const label = document.getElementById("runlabel"), chip = document.getElementById("chip");
+const label = document.getElementById("runlabel");
 
 function el(tag, cls, text) {
   const e = document.createElement(tag);
@@ -41,9 +42,9 @@ function avatar(who) {
 
 // ---------------------------------------------------------------- the exchange (seconds from the start)
 const SCRIPT = [
-  { t: 0.3, from: "you", text: "@claude send the 30-second cut to @muse and get it posted tonight.", file: "cut-30s.mp4 · 18 MB" },
-  { t: 1.5, from: "claude", text: "Sent to Muse.", card: true },
-  { t: 3.1, from: "muse", text: "Watched it. I'll post it with “New drop. Link in bio.”" },
+  { t: 0.3, from: "you", text: "@claude send the 30-second cut to @codex and get it posted tonight.", file: "cut-30s.mp4 · 18 MB" },
+  { t: 1.5, from: "claude", text: "Sent to Codex.", card: true },
+  { t: 3.1, from: "codex", text: "Watched it. I'll post it with “New drop. Link in bio.”" },
   { t: 4.4, from: "relay", ask: true },
 ];
 
@@ -66,9 +67,9 @@ const rows = SCRIPT.map((m) => {
     b.className = "b ask";
     const orb = el("span", "morb");
     orb.append(el("span", "mh l"), el("span", "mh r"), el("span", "kseal"));
-    orb.firstChild.append(avatarImg("muse")); orb.children[1].append(el("i", "kh")); orb.lastChild.append(tickSvg());
+    orb.firstChild.append(avatarImg("codex")); orb.children[1].append(el("i", "kh")); orb.lastChild.append(tickSvg());
     const words = el("div", "askw");
-    words.append(el("b", null, "Muse wants to post"), el("span", null, "with your Instagram key · it never sees it"));
+    words.append(el("b", null, "Codex wants to post"), el("span", null, "with your Instagram key · it never sees it"));
     const go = el("button", "go", "Approve"); go.type = "button";
     const ok = el("span", "okay", "Posted. (A demo: nothing was sent.)");
     go.addEventListener("click", () => approve(step));
@@ -86,7 +87,7 @@ const rows = SCRIPT.map((m) => {
     const poster = el("span", "poster");
     poster.append(svg("0 0 24 24", [["path", { d: "M8 5.5v13l11-6.5z", fill: "#fff" }]]));
     const meta = el("div", "meta");
-    meta.append(el("b", null, "cut-30s.mp4"), el("span", null, "0:30 · 1080×1920"), el("span", "seen", "Already watched: 3 shots · captions in · loud enough"));
+    meta.append(el("b", null, "cut-30s.mp4"), el("span", null, "0:30 · 1080×1920"), el("span", "seen", "Already watched: 3 shots · captioned"));
     card.append(poster, meta);
     b.append(card);
   }
@@ -133,10 +134,6 @@ function still() {                                     // reduced motion: the wh
   label.textContent = "A demo · nothing is sent";
 }
 
-chip.addEventListener("click", () => {
-  document.getElementById("chat").scrollIntoView({ behavior: reduce ? "auto" : "smooth", block: "start" });
-  if (reduce) still(); else if (!playing) play();
-});
 if (reduce) { still(); return; }
 reset();
 // start when the demo is in view

@@ -124,3 +124,17 @@ def test_someone_elses_file_cant_be_turned_into_a_media_link(hub):
     r = c.post("/media", headers=H(t["ama-bot"]), json={"artifact": up["id"]})
     assert r.status_code in (400, 404) and "link" not in r.json()
     assert "link" in c.post("/media", headers=H(t["muse"]), json={"artifact": up["id"]}).json()   # kobby's circle may
+
+
+def test_messages_carry_a_card_for_each_file_so_people_can_see_it(hub):
+    c, t = hub
+    up = c.post("/artifacts", headers=H(t["claude"]), params={"name": "cut.mp4"}, content=b"\x00not-really-a-video").json()
+    m = c.post("/media", headers=H(t["claude"]), json={"artifact": up["id"]}).json()
+    say(c, t["claude"], "here's the cut", to=["muse"], media=[m["id"]])
+    got = c.get("/messages", headers=H(t["kobby"]), params={"latest": True}).json()[-1]
+    assert got["text"] == "here's the cut" and len(got["media"]) == 1
+    card = got["media"][0]
+    assert card["id"] == m["id"] and card["name"] == "cut.mp4" and card["page"].startswith("/m/")
+    assert c.get(card["page"]).status_code in (200, 202)          # the page opens for a person, no key
+    assert c.get("/messages", headers=H(t["ama"]), params={"latest": True}).json() == [] or \
+        all(x["text"] != "here's the cut" for x in c.get("/messages", headers=H(t["ama"])).json())

@@ -19,6 +19,7 @@ window.relayFuse = function (orb, o) {
   const L = orb.querySelector(o.left), R = orb.querySelector(o.right), seal = orb.querySelector(o.seal);
   const marks = [...orb.querySelectorAll(o.marks)];
   const S = orb.getBoundingClientRect().width || 200;
+  const rest = o.markRest || 0;                         // how much of the logos stays visible under the seal
   const base = o.sealBase || "";                       // how the page centres the seal, kept under the motion
   const gap0 = o.gap != null ? o.gap : 0.06 * S;       // how far apart the halves rest before the pull
   const enter = !!o.enter;
@@ -66,7 +67,7 @@ window.relayFuse = function (orb, o) {
       F.L.push({ transform: `translateX(${(halves[0].x - g / 2).toFixed(2)}px) rotate(${halves[0].r.toFixed(2)}deg)`, opacity: fade(halves[0]) });
       F.R.push({ transform: `translateX(${(halves[1].x + g / 2).toFixed(2)}px) rotate(${halves[1].r.toFixed(2)}deg)`, opacity: fade(halves[1]) });
       F.orb.push({ transform: `translateY(${oy.toFixed(2)}px) rotate(${th.toFixed(2)}deg) scale(${(1 - q).toFixed(4)}, ${(1 + q * 0.55).toFixed(4)})` });
-      F.marks.push({ opacity: contact === null ? 1 : 1 - smooth(ramp(t, contact + 0.12, contact + 0.5)) });
+      F.marks.push({ opacity: contact === null ? 1 : 1 - (1 - rest) * smooth(ramp(t, contact + 0.12, contact + 0.5)) });
       F.seal.push({ transform: `${base} translateY(${sy.toFixed(2)}px) scale(${Math.max(0, ss).toFixed(4)})`.trim(),
                     opacity: sealAt !== null && t >= sealAt ? smooth(ramp(t, sealAt, sealAt + 0.08)) : 0 });
     }
@@ -75,7 +76,7 @@ window.relayFuse = function (orb, o) {
   }
   // the last frame is exactly the resting state: the halves together, still, the seal centred
   F.L.push({ transform: "none", opacity: 1 }); F.R.push({ transform: "none", opacity: 1 });
-  F.orb.push({ transform: "none" }); F.marks.push({ opacity: 0 }); F.seal.push({ transform: base || "none", opacity: 1 });
+  F.orb.push({ transform: "none" }); F.marks.push({ opacity: rest }); F.seal.push({ transform: base || "none", opacity: 1 });
   const run = { duration: F.orb.length * FRAME * 1000, easing: "linear", fill: "both" };
   L.animate(F.L, run); R.animate(F.R, run); orb.animate(F.orb, run); seal.animate(F.seal, run);
   for (const m of marks) m.animate(F.marks, run);

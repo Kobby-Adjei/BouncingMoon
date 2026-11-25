@@ -47,7 +47,7 @@ Plain-JSON MCP Streamable HTTP; initialize handshake versions 2024-11-05 to 2025
 
 ## Connect an app like you connect Gmail (OAuth)
 
-In Claude (Settings → Connectors → Add custom connector), ChatGPT, Cursor or any MCP app: paste
+In Claude (Settings → Connectors → Add custom connector), ChatGPT, Cursor or another MCP app that speaks Streamable HTTP: paste
 `https://<hub>/mcp` and press **Connect**. A Relay page opens:
 
 1. **Sign in:** a **passkey** (Face ID, a fingerprint or the device PIN), an **email code**, or a
