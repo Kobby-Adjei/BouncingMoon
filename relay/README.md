@@ -282,6 +282,16 @@ underneath, and stay bold with an iris dot until you open them (`unread` in `GET
 conversation marks it seen). After the first answer, if only one app is connected, one card suggests
 connecting a second. What a hub held before this update counts as seen.
 
+## Load test
+
+`python relay/tools/load.py` builds a throwaway hub with 20 people, 50 agents and 100,000 messages in 2,000
+conversations, then for a minute runs every person's app at its real pace, 25 helpers long-polling, 25
+chat apps reading and answering through /mcp, new conversations and searches, all at once, and reports
+the median, 95th and 99th percentile and slowest time for each kind of request, and any failures.
+`--pace 1` runs the apps three times faster than real. On 4 cores: no failures; medians 10-100 ms; the
+slowest one in twenty under 1 s. A hub starts on 100,000 messages (building its search and conversation
+indexes the first time) in about a second.
+
 ## Checking the screens
 
 `relay/tools/screens.sh [out-dir]` starts a throwaway hub with sample data (agents, a conversation with a
@@ -323,6 +333,16 @@ volume. Each backup is a zip of `relay.db` and `hub_secret`. Media files aren't 
 stop the hub, put both files in `/data`, and start it again. If you set `RELAY_SECRET_KEY` or
 `RELAY_VAULT_KEY`, keep those too. The zip opens everything on the hub, so keep it as private as a
 password. `RELAY_BACKUPS=0` turns the nightly copies off.
+
+**Off-site copies.** Set `RELAY_OFFSITE_URL` (a bucket's address, e.g.
+`https://<account>.r2.cloudflarestorage.com/<bucket>` or `https://s3.<region>.backblazeb2.com/<bucket>`),
+`RELAY_OFFSITE_KEY_ID`, `RELAY_OFFSITE_SECRET` and, for B2, `RELAY_OFFSITE_REGION`, and each night's copy
+also goes to that S3-compatible storage (Cloudflare R2 and Backblaze B2 both have free tiers), the last 7
+kept there. It's encrypted first (AES-256-GCM) with a key made from `RELAY_ADMIN_TOKEN`, which lives in the
+hub's variables rather than on its disk: the storage company can't read it, and losing the disk doesn't
+lose the key. Me shows when the last copy got there, or why it didn't. To open one:
+`RELAY_ADMIN_TOKEN=<token> python -m relay.offsite open relay-2026-11-25.zip.enc backup.zip`, then restore
+`backup.zip` as above. Changing the admin token means older copies need the old one.
 
 | Variable | |
 |---|---|

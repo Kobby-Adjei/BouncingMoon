@@ -428,7 +428,9 @@ def mount(app, hub) -> None:
                         f"{f' after {wait} s' if wait else ''}. {why} The answer will come back to this chat: call "
                         f"check_replies with thread {sent['thread']} to get it.",
                         {"status": "pending", "to": to, "asked": sent["id"], "wakes": instant})
-            time.sleep(1.0)
+            with store.changed:                # wake as soon as anything is written (the answer, usually)
+                w = store.writes
+                store.changed.wait_for(lambda: store.writes != w, timeout=1.0)
 
     def start_conversation(c, me, text, channel, mentions, session, media=()) -> dict:
         """A new thread from this chat. An app that sends no id is known by this conversation from now on."""
@@ -716,7 +718,7 @@ def mount(app, hub) -> None:
         v = hub.vault
         try:
             k, method, url, headers, body, why = v.prepare(me, args)
-            if not v.needs_ok(k, method):
+            if not v.needs_ok(k, method, me):
                 got = v.run(v.record(k, me, method, url, headers, body, why, "running"))
                 return summary(got), public(got)
             cid = v.record(k, me, method, url, headers, body, why, "waiting")

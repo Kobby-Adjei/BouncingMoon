@@ -369,7 +369,7 @@ function known(r) {
   if (top === "activity") return !x || (x === "new" && !y) || (x === "to" && !!y) || (/^\d+$/.test(x) && !y);
   if (top === "add") return isOwner() ? (!y || (y === "withkey" && !!x))
     : !!ME && ME.role === "human" && !y && (!x || APPS.some((a) => a.id === x && a.style === "allow"));
-  if (top === "me") return (!x || ((x === "apps" || x === "passkeys" || x === "delete" || x === "friend" || x === "notify") && !y) || (x === "keys" && (!y || y === "new" || /^k_[0-9a-f]{12}$/.test(y))))
+  if (top === "me") return (!x || ((x === "apps" || x === "passkeys" || x === "delete" || x === "friend" || x === "notify" || (x === "people" && isOwner())) && !y) || (x === "keys" && (!y || y === "new" || /^k_[0-9a-f]{12}$/.test(y))))
     && !!ME && ME.role !== "admin";
   if (top === "approve") return !!ME && ME.role === "human" && /^c_[0-9a-f]{16}$/.test(x || "") && !y;
   if (top === "ask") return isOwner() && /^ir_[0-9a-f]{12}$/.test(x || "") && !y;
@@ -408,6 +408,7 @@ function screenFor(r) {
   if (p[0] === "me" && p[1] === "apps") return [appsScreen];
   if (p[0] === "me" && p[1] === "passkeys") return [passkeysScreen];
   if (p[0] === "me" && p[1] === "notify") return [notifyScreen];
+  if (p[0] === "me" && p[1] === "people") return [peopleScreen];
   if (p[0] === "me" && p[1] === "delete") return [deleteScreen];
   if (p[0] === "me" && p[1] === "friend") return [friendScreen];
   if (p[0] === "me" && p[1] === "keys") return !p[2] ? [keysScreen] : p[2] === "new" ? [keyNew] : [keyDetail, p[2]];
@@ -970,12 +971,15 @@ async function agents() {
       find.hidden = everyone.length <= 8 && !q;
       if (add) add.hidden = !everyone.length;          // empty: the one button is the big one in the middle
       const shownAgs = q ? everyone.filter((a) => matches(a, q)) : everyone;
-      const rows = shownAgs.map((a) =>
+      const row = (a) =>
         h("button", { class: "cell press", type: "button", "data-key": `agents/${enc(a.handle)}`, onclick: () => nav(`agents/${enc(a.handle)}`) },
           avatar(a, 46, true),
           h("div", { class: "grow" }, h("div", { class: "t", text: a.handle }),
             h("div", { class: "s", text: a.role === "human" ? `Person · ${ago(a.last_seen)}` : `${PROVIDER_NAMES[providerOf(a)] || "Other"} · ${reach(a).text}` })),
-          chev()));
+          chev());
+      // whose is whose: your agents first, then each other person's, then the people themselves
+      const groups = agentGroups(shownAgs);
+      const rows = groups.length > 1 ? groups.flatMap(([title, list2]) => [secthead(title), ...list2.map(row)]) : shownAgs.map(row);
       if (!rows.length && q) list.replaceChildren(h("div", { class: "empty", text: `No one called “${q}”.` }));
       else if (rows.length) {
         if (!list.isConnected) view.querySelector(".blank").replaceWith(list);
@@ -997,6 +1001,15 @@ async function agents() {
   every(view, refresh, 5000);
 }
 // nothing connected yet: one thing to do, said plainly, with the button right there
+// Agents grouped by whose they are: "Yours", "ama's", then "People". One group needs no heading.
+function agentGroups(ags) {
+  const mine = ags.filter((a) => a.role === "agent" && a.person === ME.handle);
+  const people = ags.filter((a) => a.role === "human");
+  const others = {};
+  for (const a of ags) if (a.role === "agent" && a.person !== ME.handle) (others[a.person || "?"] = others[a.person || "?"] || []).push(a);
+  return [["Yours", mine], ...Object.keys(others).sort().map((p) => [p === "?" ? "Others" : `${p}'s`, others[p]]), ["People", people]]
+    .filter(([, l]) => l.length);
+}
 // a search box for a list that has grown: by name, or by the app it lives in
 const matches = (a, q) => a.handle.includes(q) || (PROVIDER_NAMES[providerOf(a)] || "").toLowerCase().includes(q);
 function findBox(label, onChange) {
@@ -1339,8 +1352,11 @@ async function profile(handle) {
   const danger = isOwner() && a.handle !== ME.handle ? h("div", { class: "spread danger-row" },
     h("button", { class: "link sm press", type: "button", onclick: () => newKey(a) }, a.role === "human" ? "New recovery code" : "Reset its connection"),
     h("button", { class: "link sm red press", type: "button", onclick: async () => {
-      if (!confirm(`Remove ${a.handle}? It's signed out at once. Past messages stay.`)) return;
-      try { await api("DELETE", `/agents/${encodeURIComponent(a.handle)}`); if (listRefresh) listRefresh(); nav("agents", { replace: true }); } catch (x) { alert(x.message); }
+      const human = a.role === "human";
+      if (!confirm(human ? `Remove ${a.handle} from this hub? Their agents, sign-ins, connected apps, saved keys and files go too. Their messages stay in other people's conversations as "(deleted)".`
+        : `Remove ${a.handle}? It's signed out at once. Past messages stay.`)) return;
+      try { await api("DELETE", human ? `/people/${enc(a.handle)}` : `/agents/${enc(a.handle)}`); if (listRefresh) listRefresh(); nav(human ? "me/people" : "agents", { replace: true }); }
+      catch (x) { alert(x.message); }
     } }, "Remove")) : null;
   const r = reach(a);
   const sub = h("div", { class: "row small", style: "gap:8px" }, h("span", { class: "dot " + r.cls }),
@@ -1365,13 +1381,16 @@ async function meScreen() {
         miniOrb("claude", "relay", 40), h("span", { class: "grow" }, h("b", { text: "Connected apps" })), chev()),
       h("button", { class: "door press", type: "button", onclick: () => nav("me/passkeys") },
         passOrb(40), h("span", { class: "grow" }, h("b", { text: "Passkeys" })), chev()),
+      ME.owner ? h("button", { class: "door press", type: "button", onclick: () => nav("me/people") },
+        h("span", { class: "morb", style: "--s:40px", "aria-hidden": "true" }, h("span", { class: "mh l" }, youGlyph()), h("span", { class: "mh r" }, youGlyph())),
+        h("span", { class: "grow" }, h("b", { text: "People" })), chev()) : null,
       ME.role === "human" ? h("button", { class: "door press", type: "button", onclick: () => nav("me/notify") },
         bellOrb(40), h("span", { class: "grow" }, h("b", { text: "Notifications" })), notifyHint(), chev()) : null,
       WIDE ? null : h("button", { class: "door press", type: "button", onclick: () => nav("me/keys") },
         keyOrb("", 40), h("span", { class: "grow" }, h("b", { text: "Keys" })), chev()),
       !ME.owner && ME.role === "human" ? friendDoor() : null,
       ME.owner ? h("button", { class: "door press", type: "button", onclick: (e) => saveBackup(e.currentTarget) },
-        backupOrb(40), h("span", { class: "grow" }, h("b", { text: "Download a backup" }))) : null),
+        backupOrb(40), h("span", { class: "grow" }, h("b", { text: "Download a backup" }), backupLine())) : null),
       rows, h("button", { class: "btn ghost press signout", type: "button", onclick: userSignOut }, "Sign out"),
       ME.owner || ME.role !== "human" ? null : ways(way("Delete my account", () => nav("me/delete")))));
 }
@@ -1427,6 +1446,18 @@ function backupOrb(size) {          // Relay's half, and a copy coming down to y
     h("span", { class: "mh l" }, svg("0 0 24 24", [{ d: "M12 5v10m-4.5-4.5L12 15l4.5-4.5M6 19h12", fill: "none", stroke: "currentColor",
       "stroke-width": "2.2", "stroke-linecap": "round", "stroke-linejoin": "round" }])),
     h("span", { class: "mh r dark" }, h("i", { class: "mk" })));
+}
+// under "Download a backup": whether a copy is safely off this server, and when
+function backupLine() {
+  const line = h("span", { class: "doorsub", text: " " });
+  api("GET", "/backup/status").then((st) => {
+    const o = st.offsite;
+    if (o.on && o.ok && !(o.failed > o.ok)) line.textContent = `Off-site copy · ${since(o.ok)}`;
+    else if (o.on && o.error) { line.textContent = `Off-site copy failed: ${o.error}`; line.classList.add("bad"); }
+    else if (o.on) line.textContent = "Off-site copy · first one tonight";
+    else line.textContent = st.local ? `Nightly copy on this server · ${since(st.local.time)}` : "Nightly copies start tonight";
+  }).catch(() => line.remove());
+  return line;
 }
 async function saveBackup(btn) {
   const label = btn.querySelector("b"), was = label.textContent;
@@ -1520,6 +1551,40 @@ function connectHint() {
   btn.addEventListener("click", () => copy(url, btn.querySelector(".c"), "Copy"));
   return h("div", { class: "addapp" }, canAdd() ? h("button", { class: "btn small press", type: "button", onclick: () => nav("add") }, icon("plus", "2.4"), "Connect an app") : null,
     h("span", { class: "k", text: "Or paste your Relay address into any MCP app" }), btn);
+}
+
+// ------------------------------------------------------------------ people (the owner's view)
+async function peopleScreen() {
+  const tk = ticket();
+  let ags = [], invs = [];
+  try { [ags, invs] = await Promise.all([api("GET", "/agents"), api("GET", "/invites").catch(() => [])]); } catch {}
+  if (!fresh(tk)) return;
+  const people = ags.filter((a) => a.role === "human").sort((x, y) => (y.owner - x.owner) || (y.last_seen || 0) - (x.last_seen || 0));
+  const theirs = (h_) => ags.filter((a) => a.role === "agent" && a.person === h_);
+  const rows = people.map((p) => {
+    const mine = theirs(p.handle);
+    return h("button", { class: "cell press", type: "button", onclick: () => nav(p.handle === ME.handle ? "me" : `agents/${enc(p.handle)}`) },
+      avatar(p, 46, true),
+      h("div", { class: "grow" }, h("div", { class: "t", text: p.handle + (p.owner ? " · owner" : "") }),
+        h("div", { class: "s", text: `${mine.length ? mine.map((a) => a.handle).join(", ") : "No agents yet"} · ${ago(p.last_seen)}` })),
+      h("span", { class: "stackav" }, ...mine.slice(0, 3).map((a) => avatar(a, 26))), chev());
+  });
+  const pending = invs.filter((i) => i.role === "human" && i.state === "pending");
+  const wait = pending.map((i) => {
+    const cancel = h("button", { class: "unpair press", type: "button" }, "Cancel");
+    const row = h("div", { class: "cell" }, avatar("person", 46),
+      h("div", { class: "grow" }, h("div", { class: "t", text: i.handle }),
+        h("div", { class: "s", text: `Invited ${since(i.created)} · the link works until ${new Date(i.expires * 1000).toLocaleDateString(undefined, { month: "short", day: "numeric" })}` })), cancel);
+    cancel.addEventListener("click", async () => {
+      if (!confirm(`Cancel ${i.handle}'s invite? The link stops working.`)) return;
+      try { await api("DELETE", `/invites/${enc(i.id)}`); row.remove(); } catch (x) { alert(x.message); }
+    });
+    return row;
+  });
+  screen("people", tk, head("People", `${people.length} on this hub`,
+      h("button", { class: "btn small press", type: "button", onclick: () => nav("add/person") }, icon("plus", "2.4"), "Invite")),
+    h("div", { class: "group people" }, ...rows),
+    wait.length ? h("section", { class: "facts" }, h("h2", { class: "label", text: "Invited, not joined yet" }), h("div", { class: "group people" }, ...wait)) : null);
 }
 
 // ------------------------------------------------------------------ notifications: when something needs you
@@ -1637,6 +1702,22 @@ function keyOrb(name, size = 56, left) {
     h("span", { class: "mh r dark" }, h("i", { class: "kh" })), h("span", { class: "kseal" }, tick("sealtick")));
 }
 const hostOf = (url) => { try { return new URL(url).hostname; } catch { return url; } };
+// You've said yes to the same thing five times: let it go ahead without asking, for a week. Reversible, listed.
+function trustOffer(o) {
+  const verb = VERB[o.method] || o.method;
+  const card = h("div", { class: "asknudge trustcard", role: "status" }, h("span", { class: "grow" },
+    h("b", { text: `${o.agent} has ${verb === "post" ? "posted" : verb + "d"} with ${o.key} ${o.times} times, all approved` }),
+    h("span", { text: `Let it ${verb} with ${o.key} without asking for the next ${o.days} days? You can stop it any time in Keys, and every use is still listed there.` }),
+    h("span", { class: "say" },
+      h("button", { class: "btn small press", type: "button", onclick: async () => {
+        try {
+          const t = await api("POST", `/keys/${enc(o.key_id)}/trust`, { agent: o.agent, method: o.method, days: o.days });
+          card.replaceWith(statusLine(`${o.agent} may ${verb} with ${o.key} until ${new Date(t.until * 1000).toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" })}`, true));
+        } catch (x) { alert(x.message); }
+      } }, `Yes, for ${o.days} days`),
+      h("button", { class: "way press", type: "button", onclick: () => card.remove() }, "Keep asking"))));
+  return card;
+}
 // the words a request carries, pulled out of its body so a person can read them before saying yes
 function plainAsk(r) {
   let body = null;
@@ -1830,6 +1911,17 @@ async function keyDetail(id) {
       h("p", { class: "lede", text: k.hosts.join(", ") }), hint),
     h("div", { class: "stack" },
       h("section", { class: "facts" }, h("h2", { class: "label" }, "Ask me first ", saved), askSeg),
+      (k.trusted || []).length ? h("section", { class: "facts" }, h("h2", { class: "label", text: "Trusted for now" }),
+        h("div", { class: "group info" }, ...k.trusted.map((t) => {
+          const stop = h("button", { class: "unpair press", type: "button" }, "Stop");
+          const row = h("div", { class: "cell" }, h("div", { class: "grow" },
+            h("div", { class: "t", text: `${t.agent} may ${VERB[t.method] || t.method} without asking` }),
+            h("div", { class: "s", text: `Until ${new Date(t.until * 1000).toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" })} · every use is still listed below` })), stop);
+          stop.addEventListener("click", async () => {
+            try { await api("POST", `/keys/${enc(k.id)}/untrust`, { agent: t.agent, method: t.method }); row.remove(); } catch (x) { alert(x.message); }
+          });
+          return row;
+        }))) : null,
       h("section", { class: "facts" }, h("h2", { class: "label", text: "Recent" }),
         calls.length ? h("div", { class: "calls" }, ...calls.map(callRow)) : h("p", { class: "quiet", text: "No agent has used it yet." })),
       h("div", { class: "spread" }, swap, off)));
@@ -1871,7 +1963,7 @@ async function approveScreen(cid) {
       const okCall = got.status === "done" && got.result_status < 400;
       orb.classList.add("sealed");
       status.replaceChildren(statusLine(okCall ? `Done. ${u ? u.hostname : "The website"} said yes` : got.error || `${u ? u.hostname : "The website"} said no (HTTP ${got.result_status})`, okCall),
-        h("p", { class: "quiet", text: `${r.agent} gets the answer in its chat.` }), pushNudge());
+        h("p", { class: "quiet", text: `${r.agent} gets the answer in its chat.` }), got.offer_trust ? trustOffer(got.offer_trust) : pushNudge());
     } else {
       status.replaceChildren(statusLine({ declined: "You said no. Nothing was sent.", expired: "This expired. Nothing was sent." }[got.status] || got.status),
         got.status === "declined" ? h("p", { class: "quiet", text: `${r.agent} has been told.` }) : null);
@@ -2452,7 +2544,26 @@ async function newMessage() {
     avatar(a, 52, true), h("span", { text: a.handle }), h("span", { class: "sub", text: reach(a).text }));
   const grid = h("div", { class: "pick stagger" }, ...ags.map(tile));
   const find = ags.length > 8 ? findBox("Find someone", (q) => grid.replaceChildren(...ags.filter((a) => !q || matches(a, q)).map(tile))) : null;
-  screen("new", tk, head("New message", "Who to?"), find, ags.length ? grid : blank("No one to message yet", "Add an agent first."));
+  let cuts = [];
+  try { cuts = ME.role === "human" ? await api("GET", "/shortcuts") : []; } catch {}
+  if (!fresh(tk)) return;
+  const shortcuts = cuts.length ? h("section", { class: "facts" }, h("h2", { class: "label", text: "Shortcuts" }),
+    h("div", { class: "group info" }, ...cuts.map((sc) => {
+      const del = h("button", { class: "unpair press", type: "button", "aria-label": `Remove ${sc.title}` }, "Remove");
+      const run = h("button", { class: "grow plain sclink press", type: "button" },
+        h("div", { class: "t", text: sc.title }), h("div", { class: "s", text: `To ${names(sc.mentions)}${sc.uses ? ` · used ${sc.uses}×` : ""}` }));
+      run.addEventListener("click", async () => {
+        if (!confirm(`Send “${sc.text.slice(0, 140)}” to ${names(sc.mentions)}?`)) return;
+        try { const m = await api("POST", `/shortcuts/${enc(sc.id)}/run`); nav(`activity/${m.thread}`, { replace: true, data: sc.mentions }); }
+        catch (x) { alert(x.message); }
+      });
+      const row = h("div", { class: "cell" }, run, del);
+      del.addEventListener("click", async () => { try { await api("DELETE", `/shortcuts/${enc(sc.id)}`); row.remove(); } catch (x) { alert(x.message); } });
+      return row;
+    }))) : null;
+  screen("new", tk, head("New message", shortcuts ? null : "Who to?"), shortcuts,
+    shortcuts && ags.length ? h("h2", { class: "label pickq", text: "Or pick who to" }) : null, find,
+    ags.length ? grid : blank("No one to message yet", "Add an agent first."));
 }
 
 // ------------------------------------------------------------------ the AI apps someone uses (invite asks, stats)
@@ -2680,6 +2791,7 @@ async function thread(id, people) {
   const PAGE = 60;
   const byId = new Map(), painted = new Set();
   const opened = new Set();             // long messages already unfolded stay open when the view repaints
+  const kept = new Set();               // requests saved as shortcuts while this was open
   let shown = "", older = false, loadedOnce = false, justSent = false, unseen = 0, soloApps = false;
   const scroller = () => WIDE ? view : document.scrollingElement;
   const fromEnd = () => { const el = scroller(); return el.scrollHeight - el.scrollTop - el.clientHeight; };
@@ -2722,6 +2834,17 @@ async function thread(id, people) {
     // a long message folds: the conversation stays readable, the whole thing is one tap away
     const long = text.length > 700 || text.split("\n").length > 14;
     const more = long ? h("button", { class: "more press", type: "button", "aria-expanded": "false" }) : null;
+    const keep = !(m.id === threadId && mine && ME.role === "human") ? null : kept.has(m.id)
+      ? h("span", { class: "more saved", text: "Saved · it's in New message" }) : h("button", { class: "more press savesc", type: "button" }, "Save as shortcut");
+    if (keep && keep.tagName === "BUTTON") keep.addEventListener("click", async () => {
+      const title = prompt("Name this shortcut", topic(text));
+      if (title === null) return;
+      try {
+        await api("POST", "/shortcuts", { title: title.trim(), text, mentions: m.mentions || [] });
+        kept.add(m.id);
+        keep.replaceWith(h("span", { class: "more saved", text: "Saved · it's in New message" }));
+      } catch (x) { alert(x.message); }
+    });
     if (more) {
       const set = (open) => {
         bub.classList.toggle("folded", !open); more.setAttribute("aria-expanded", String(open));
@@ -2735,7 +2858,7 @@ async function thread(id, people) {
         if (!open) bub.scrollIntoView({ block: "nearest", behavior: "smooth" });     // folding a long one back: stay on it
       });
     }
-    return h("div", { class: "msg" + (mine ? " mine" : "") }, face, h("div", { class: "body" }, who, bub, more));
+    return h("div", { class: "msg" + (mine ? " mine" : "") }, face, h("div", { class: "body" }, who, bub, more, keep));
   }
   function paint(keepPlace) {
     const msgs = [...byId.values()].sort((a, b) => a.id - b.id);

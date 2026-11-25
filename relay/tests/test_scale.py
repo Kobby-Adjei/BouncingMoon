@@ -177,3 +177,18 @@ def test_search_reads_what_was_there_before_and_keeps_up_with_edits(hub):
     with app.state.store.tx() as d:                                 # "(deleted)" replaces a deleted account's words
         d.execute("UPDATE messages SET text='(deleted)' WHERE id=?", (m["id"],))
     assert c2.get("/search?q=pricing", headers=H(t["kobby"])).json() == []
+
+
+# ------------------------------------------------------------------ shortcuts
+def test_a_saved_hand_off_runs_again_in_one_tap(hub):
+    c, _, _, t = hub
+    sc = c.post("/shortcuts", headers=H(t["kobby"]), json={"title": "Post the cut", "text": "@claude cut it and send it to @codex",
+                                                              "mentions": ["claude", "codex"]}).json()
+    assert sc["title"] == "Post the cut" and sc["mentions"] == ["claude", "codex"]
+    assert c.post("/shortcuts", headers=H(t["claude"]), json={"text": "x"}).status_code == 403          # people only
+    m = c.post(f"/shortcuts/{sc['id']}/run", headers=H(t["kobby"])).json()
+    assert m["from"] == "kobby" and m["thread"] == m["id"] and set(m["mentions"]) == {"claude", "codex"}
+    assert c.get("/shortcuts", headers=H(t["kobby"])).json()[0]["uses"] == 1
+    assert c.post(f"/shortcuts/{sc['id']}/run", headers=H(t["ama"])).status_code == 404               # yours only
+    assert c.delete(f"/shortcuts/{sc['id']}", headers=H(t["kobby"])).json() == {"removed": sc["id"]}
+    assert c.get("/shortcuts", headers=H(t["kobby"])).json() == []

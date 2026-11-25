@@ -30,6 +30,7 @@ import re
 import secrets
 import sqlite3
 import tempfile
+import threading
 import time
 import urllib.parse
 import urllib.request
@@ -65,6 +66,9 @@ CREATE INDEX IF NOT EXISTS members_agent ON members(agent, thread);
 -- when an agent first read a message (its chat took it): what "Read by claude · 3:29" says
 CREATE TABLE IF NOT EXISTS reads(msg INTEGER NOT NULL, handle TEXT NOT NULL, time REAL NOT NULL, PRIMARY KEY(msg, handle));
 -- the newest message a person has seen in each conversation: what makes a row bold until they open it
+-- a person's saved hand-offs: one tap sends the same request to the same agents again
+CREATE TABLE IF NOT EXISTS shortcuts(id TEXT PRIMARY KEY, handle TEXT NOT NULL, title TEXT NOT NULL, text TEXT NOT NULL,
+  mentions TEXT NOT NULL, created REAL NOT NULL, used REAL, uses INTEGER NOT NULL DEFAULT 0);
 CREATE TABLE IF NOT EXISTS seen(handle TEXT NOT NULL, thread INTEGER NOT NULL, last INTEGER NOT NULL, PRIMARY KEY(handle, thread));
 CREATE INDEX IF NOT EXISTS messages_channel ON messages(channel);
 CREATE TABLE IF NOT EXISTS subs(agent TEXT, channel TEXT, PRIMARY KEY(agent, channel));
@@ -102,6 +106,10 @@ CREATE TABLE IF NOT EXISTS session_cursors(
   handle TEXT NOT NULL, session TEXT NOT NULL, last INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(handle, session));
 CREATE TABLE IF NOT EXISTS delivered(
   msg INTEGER NOT NULL, handle TEXT NOT NULL, session TEXT NOT NULL, PRIMARY KEY(msg, handle, session));
+-- routes and deliveries are looked up by who (and which chat) far more than by message: without these, every
+-- check grows with every message ever delivered
+CREATE INDEX IF NOT EXISTS routes_handle ON routes(handle, session);
+CREATE INDEX IF NOT EXISTS delivered_handle ON delivered(handle, session);
 CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT);
 """
 # Apps that send no id at all (Anthropic's hosted connector, used by claude.ai and Claude Desktop) are
@@ -181,6 +189,8 @@ class Store:
         os.makedirs(self.blobs, exist_ok=True)
         os.makedirs(self.tmp, exist_ok=True)
         self.db_path = os.path.join(data_dir, "relay.db")
+        self.changed = threading.Condition()   # notified after every write: a waiting inbox wakes at once
+        self.writes = 0                         # counts them, so a write between a look and a wait isn't missed
         c = self._connect()
         try:
             c.executescript(SCHEMA)
@@ -270,6 +280,9 @@ class Store:
             raise
         finally:
             c.close()
+        with self.changed:                 # anyone long-polling looks again now, not on its next tick
+            self.writes += 1
+            self.changed.notify_all()
 
     @contextmanager
     def ro(self):
@@ -402,6 +415,12 @@ class PushDeviceIn(BaseModel):
     keys: Optional[PushKeysIn] = None
     kinds: Optional[List[str]] = None
     label: Optional[str] = Field(default=None, max_length=60)
+
+
+class ShortcutIn(BaseModel):
+    title: str = Field(default="", max_length=80)
+    text: str = Field(min_length=1, max_length=4000)
+    mentions: List[str] = Field(default_factory=list, max_length=20)
 
 
 class DeleteIn(BaseModel):
@@ -844,8 +863,12 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
         q = ("SELECT m.* FROM messages m WHERE m.id>? AND m.sender!=? AND ("
              " EXISTS (SELECT 1 FROM json_each(m.mentions) WHERE value=?)"
              " OR (m.channel!=? AND m.channel IN (SELECT channel FROM subs WHERE agent=?))"
-             " OR m.thread IN (SELECT thread FROM follows WHERE agent=?))")
-        a: list = [last, h, h, DIRECT, h, h]
+             " OR m.thread IN (SELECT thread FROM follows WHERE agent=?))"
+             # the same messages, found through indexes: only conversations h is in (a mention makes h a member)
+             # and channels h follows, so a new chat's first look doesn't read the hub's whole history
+             " AND (m.thread IN (SELECT thread FROM members WHERE agent=? UNION SELECT thread FROM follows WHERE agent=?)"
+             " OR (m.channel!=? AND m.channel IN (SELECT channel FROM subs WHERE agent=?)))")
+        a: list = [last, h, h, DIRECT, h, h, h, h, DIRECT, h]
         if session:
             q += (" AND NOT EXISTS (SELECT 1 FROM routes r WHERE r.msg=m.id AND r.handle=? AND r.session!=?)"
                   " AND NOT EXISTS (SELECT 1 FROM delivered d WHERE d.msg=m.id AND d.handle=? AND d.session=?)"
@@ -1462,11 +1485,20 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
                     return "person"
                 listening = r["listener_seen"] and _now() - r["listener_seen"] < 150
                 return "instantly" if r["handle"] in woken or listening else "when_asked"
+            rows = c.execute("SELECT * FROM agents ORDER BY handle").fetchall()
+            boss = first_owner(c)
+            joined = {r["handle"]: r["created"] for r in rows if r["role"] == "human"}
+
+            def works_for(r):            # whose agent it is: the person who connected it, else the hub's owner
+                if r["role"] != "agent":
+                    return None
+                return r["person"] if r["person"] in joined else boss
             return [{"handle": r["handle"], "caps": _loads(r["caps"], []), "role": r["role"],
                      "provider": r["provider"], "client": r["client"], "last_seen": r["last_seen"],
                      "owner": bool(r["owner"]), "listener": listener_out(r),
-                     "email": emails.get(r["handle"]), "answers": answers(r)}
-                    for r in c.execute("SELECT * FROM agents ORDER BY handle")]
+                     "email": emails.get(r["handle"]), "answers": answers(r), "person": works_for(r),
+                     "joined": joined.get(r["handle"])}
+                    for r in rows]
 
     @app.get("/agents/me")
     def whoami(me: dict = Depends(auth)):
@@ -1549,9 +1581,13 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
             m["media"] = [media_svc.brief(x) for x in files.get(m["id"], [])]
             m["read"] = read.get(m["id"], {})
         if thread and rows and me["role"] == "human":       # a person looking at a conversation has seen it
-            with store.tx() as c:
-                c.execute("INSERT INTO seen(handle,thread,last) VALUES (?,?,?) ON CONFLICT(handle,thread)"
-                          " DO UPDATE SET last=MAX(last, excluded.last)", (me["handle"], thread, max(m["id"] for m in rows)))
+            top = max(m["id"] for m in rows)
+            with store.ro() as c:
+                was = c.execute("SELECT last FROM seen WHERE handle=? AND thread=?", (me["handle"], thread)).fetchone()
+            if not was or was["last"] < top:                # only when it moved: polls don't take the write lock
+                with store.tx() as c:
+                    c.execute("INSERT INTO seen(handle,thread,last) VALUES (?,?,?) ON CONFLICT(handle,thread)"
+                              " DO UPDATE SET last=MAX(last, excluded.last)", (me["handle"], thread, top))
         return rows[::-1] if latest else rows
 
     @app.get("/threads")
@@ -1586,6 +1622,55 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
         return [{"thread": r["thread"], "count": r["n"], "people": people.get(r["thread"], []), "last": msg_out(r),
                  "first": first.get(r["thread"]), "unread": unread(r)} for r in rows]
 
+    # ---------------------------------------------------------------- shortcuts: a hand-off again, in one tap
+    SHORTCUTS_EACH = 30
+
+    def shortcut_out(r) -> dict:
+        return {"id": r["id"], "title": r["title"], "text": r["text"], "mentions": _loads(r["mentions"], []),
+                "created": r["created"], "used": r["used"], "uses": r["uses"]}
+
+    @app.get("/shortcuts")
+    def list_shortcuts(me: dict = Depends(auth)):
+        with store.ro() as c:
+            return [shortcut_out(r) for r in c.execute(
+                "SELECT * FROM shortcuts WHERE handle=? ORDER BY COALESCE(used, created) DESC", (me["handle"],))]
+
+    @app.post("/shortcuts")
+    def save_shortcut(body: ShortcutIn, me: dict = Depends(auth)):
+        if me["role"] != "human":
+            raise HTTPException(403, "Shortcuts are for people.")
+        who = sorted({m.lstrip("@") for m in body.mentions})
+        with store.tx() as c:
+            for m in who:
+                if not c.execute("SELECT 1 FROM agents WHERE handle=?", (m,)).fetchone():
+                    raise HTTPException(400, f"unknown @{m}")
+            if c.execute("SELECT COUNT(*) n FROM shortcuts WHERE handle=?", (me["handle"],)).fetchone()["n"] >= SHORTCUTS_EACH:
+                raise HTTPException(429, f"That's {SHORTCUTS_EACH} shortcuts. Remove one first.")
+            sid = "sc_" + secrets.token_hex(6)
+            title = body.title.strip() or body.text.strip().splitlines()[0][:80]
+            c.execute("INSERT INTO shortcuts(id,handle,title,text,mentions,created) VALUES (?,?,?,?,?,?)",
+                      (sid, me["handle"], title, body.text.strip(), json.dumps(who), _now()))
+            return shortcut_out(c.execute("SELECT * FROM shortcuts WHERE id=?", (sid,)).fetchone())
+
+    @app.delete("/shortcuts/{sid}")
+    def remove_shortcut(sid: str, me: dict = Depends(auth)):
+        with store.tx() as c:
+            if not c.execute("DELETE FROM shortcuts WHERE id=? AND handle=?", (sid, me["handle"])).rowcount:
+                raise HTTPException(404, "no such shortcut")
+        return {"removed": sid}
+
+    @app.post("/shortcuts/{sid}/run")
+    def run_shortcut(sid: str, me: dict = Depends(auth)):
+        """Send it again: a new conversation with the same words to the same agents."""
+        with store.tx() as c:
+            r = c.execute("SELECT * FROM shortcuts WHERE id=? AND handle=?", (sid, me["handle"])).fetchone()
+            if not r:
+                raise HTTPException(404, "no such shortcut")
+            who = [m for m in _loads(r["mentions"], []) if c.execute("SELECT 1 FROM agents WHERE handle=?", (m,)).fetchone()]
+            m = post(c, me["handle"], r["text"], channel=DIRECT, mentions=who)
+            c.execute("UPDATE shortcuts SET used=?, uses=uses+1 WHERE id=?", (_now(), sid))
+        return m
+
     @app.get("/search")
     def search(q: str = Query("", max_length=200), limit: int = Query(20, ge=1, le=50), me: dict = Depends(auth)):
         """Conversations you may see that match: by what was said in them, who is in them, or a file's name.
@@ -1612,9 +1697,26 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
             only, more = visible(c, me["handle"])
             if store.fts:
                 match = " AND ".join(f'"{w}"*' for w in words)
-                rows = c.execute(f"SELECT m.id, m.thread, m.sender, m.time, snippet(msg_fts, 0, char(2), char(3), '…', 14) AS snip"
-                                 f" FROM msg_fts JOIN messages m ON m.id=msg_fts.rowid WHERE msg_fts MATCH ? AND {only}"
-                                 " ORDER BY m.id DESC LIMIT 300", [match] + more).fetchall()
+                # newest first straight from the index (cheap), then who may see them, then the marked words
+                # only for the lines that will be shown (snippets cost far more than finding)
+                ids = [r[0] for r in c.execute("SELECT rowid FROM msg_fts WHERE msg_fts MATCH ? ORDER BY rowid DESC LIMIT 2000", (match,))]
+                rows = []
+                if ids:
+                    cand = c.execute(f"SELECT m.id, m.thread, m.sender, m.time FROM messages m WHERE m.id IN ({','.join('?' * len(ids))})"
+                                     f" AND {only} ORDER BY m.id DESC", ids + more).fetchall()
+                    per, keep = {}, []
+                    for r in cand:
+                        n = per.get(r["thread"], 0)
+                        if n < 3 and (n or len(per) < limit):
+                            per[r["thread"]] = n + 1
+                            keep.append(r)
+                    snips = {}
+                    if keep:
+                        snips = {r[0]: r[1] for r in c.execute(
+                            f"SELECT rowid, snippet(msg_fts, 0, char(2), char(3), '…', 14) FROM msg_fts"
+                            f" WHERE msg_fts MATCH ? AND rowid IN ({','.join('?' * len(keep))})", [match] + [r["id"] for r in keep])}
+                    rows = [{"id": r["id"], "thread": r["thread"], "sender": r["sender"], "time": r["time"], "snip": snips.get(r["id"], "")}
+                            for r in keep]
             else:
                 rows = c.execute(f"SELECT m.id, m.thread, m.sender, m.time, m.text AS snip FROM messages m WHERE {only}"
                                  + "".join(" AND m.text LIKE ? ESCAPE '\\'" for _ in words) + " ORDER BY m.id DESC LIMIT 300",
@@ -1675,9 +1777,12 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
                 if box["messages"] and not wait:          # a reader gets each thread's earlier messages too
                     take(c, me["handle"], session, box["messages"])
                     with_context(c, box["messages"])
+            seen_writes = store.writes                    # after our own write, or we'd wake ourselves
             if box["messages"] or time.monotonic() >= deadline:
                 return box
-            time.sleep(0.5)
+            with store.changed:               # sleep until something is written (or 2 s pass), not a fixed tick
+                store.changed.wait_for(lambda: store.writes != seen_writes,
+                                       timeout=max(0.05, min(2.0, deadline - time.monotonic())))
 
     @app.post("/inbox/ack")
     def ack(body: AckIn, me: dict = Depends(auth), x_relay_session: str = Header(default="")):
@@ -1741,6 +1846,15 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
 
     # ---------------------------------------------------------------- backups (no paid plan needed; see backup.py)
     from . import backup as backup_mod
+    from . import offsite as offsite_mod
+    try:
+        offsite = offsite_mod.Offsite.from_env()     # R2, B2 or any S3: a copy that survives losing this disk
+    except ValueError as e:
+        offsite = None
+        log.warning("off-site backups are off: %s", e)
+    if offsite and not os.environ.get("RELAY_ADMIN_TOKEN"):
+        log.warning("off-site backups are locked with an admin token kept on this disk; set RELAY_ADMIN_TOKEN "
+                    "as a variable so a copy can still be opened if the disk is lost")
 
     def nightly_backups():
         time.sleep(300)                            # let a fresh deploy settle first
@@ -1749,6 +1863,9 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
                 made = backup_mod.nightly(store.dir, room=lambda n: media_mod.room(store.dir, n))
                 if made:
                     log.info("backup written: %s", os.path.basename(made))
+                sent = offsite_mod.sync(store.dir, offsite, admin_token)
+                if sent:
+                    log.info("backup copied off-site: %s", sent)
             except Exception as e:                 # a backup that fails must never take the hub down
                 log.warning("backup failed: %s", e)
             try:
@@ -1772,7 +1889,24 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
             raise HTTPException(400, f"Type {me['handle']} to confirm.")
         if me.get("owner"):
             raise HTTPException(409, "You run this hub, so your account stays with it.")
-        p = me["handle"]
+        return erase_person(me["handle"])
+
+    @app.delete("/people/{handle}")
+    def remove_person(handle: str, me: dict = Depends(auth)):
+        """The hub's owner removes a person: everything Delete my account removes, for them."""
+        if not me.get("owner"):
+            raise HTTPException(403, "Only the hub's owner removes people.")
+        with store.ro() as c:
+            r = c.execute("SELECT role, owner FROM agents WHERE handle=?", (handle,)).fetchone()
+        if not r or r["role"] != "human":
+            raise HTTPException(404, f"no person @{handle}")
+        if r["owner"]:
+            raise HTTPException(409, "That's you: the hub keeps its owner.")
+        return erase_person(handle)
+
+    def erase_person(p: str) -> dict:
+        """A person, their agents, sign-ins, connections, devices, saved keys and files: gone. Their words in
+        other people's conversations become "(deleted)"."""
         with store.tx() as c:
             handles = [p] + [r["handle"] for r in c.execute("SELECT handle FROM agents WHERE person=? AND role='agent'", (p,))]
             q, hs = ",".join("?" * len(handles)), handles
@@ -1785,7 +1919,7 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
                                ("agent_keys", "handle"), ("routes", "handle"), ("thread_sessions", "handle"),
                                ("session_cursors", "handle"), ("delivered", "handle"), ("passkeys", "handle"),
                                ("oauth_tokens", "handle"), ("oauth_codes", "handle"), ("webauthn_challenges", "handle"),
-                               ("push_subs", "handle"), ("reads", "handle"), ("seen", "handle"),
+                               ("push_subs", "handle"), ("reads", "handle"), ("seen", "handle"), ("shortcuts", "handle"),
                                ("agents", "handle")):
                 c.execute(f"DELETE FROM {table} WHERE {col} IN ({q})", hs)
             for table in ("oauth_tokens", "oauth_codes"):
@@ -1796,6 +1930,18 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
         files = media_svc.erase(handles)
         log.info("account deleted: @%s with %d agent(s), %d file(s)", p, len(handles) - 1, files)
         return {"deleted": p, "agents": handles[1:]}
+
+    @app.get("/backup/status")
+    def backup_status(me: dict = Depends(auth)):
+        """For the owner: the newest nightly copy here, and whether one is safely off this server."""
+        if not (me.get("owner") or me["role"] == "admin"):
+            raise HTTPException(403, "Only the hub's owner sees backups.")
+        folder = os.path.join(store.dir, "backups")
+        local = sorted(f for f in os.listdir(folder) if f.endswith(".zip")) if os.path.isdir(folder) else []
+        st = offsite_mod.status(store.dir)
+        return {"local": {"name": local[-1], "time": os.path.getmtime(os.path.join(folder, local[-1]))} if local else None,
+                "offsite": {"on": bool(offsite), "name": st.get("name"), "ok": st.get("ok"), "error": st.get("error"),
+                            "failed": st.get("failed")}}
 
     @app.get("/backup", include_in_schema=False)
     def download_backup(me: dict = Depends(auth)):
