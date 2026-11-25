@@ -480,6 +480,41 @@ async function pickHint(tab) {
   }
   overview(tk);
 }
+// Relay in the middle, your agents around it, a thread to each: solid for the ones connected, dashed for
+// the ones that aren't yet. They spring out of the mark once; tap the mark and they do it again.
+function sky(mine, waiting) {
+  const W = 300, H = 210, cx = W / 2, cy = H / 2, rx = 118, ry = 76, R = 22;
+  const box = h("div", { class: "sky", style: `width:${W}px;height:${H}px` });
+  const lines = document.createElementNS(SVGNS, "svg");
+  lines.setAttribute("class", "links"); lines.setAttribute("viewBox", `0 0 ${W} ${H}`); lines.setAttribute("aria-hidden", "true");
+  const core = h("button", { class: "core press", type: "button", "aria-label": "Play it again", style: `left:${cx - 36}px;top:${cy - 36}px` }, mark());
+  if (waiting) core.append(h("span", { class: "badge", text: String(waiting) }));
+  const shown = mine.slice(0, 6), n = shown.length;
+  const sats = shown.map((a, i) => {
+    const t = (-90 + 360 / n * i + (n === 2 ? 90 : n % 2 ? 0 : 180 / n)) * Math.PI / 180;
+    const x = cx + rx * Math.cos(t), y = cy + ry * Math.sin(t), on = !!a.last_seen;
+    const ln = document.createElementNS(SVGNS, "line");
+    for (const [k, v] of Object.entries({ x1: cx, y1: cy, x2: x, y2: y, class: on ? "linked" : "loose" })) ln.setAttribute(k, v);
+    lines.append(ln);
+    const el = h("span", { class: "sat" + (on ? "" : " far"), style: `left:${x - R}px;top:${y - R}px`, title: a.handle }, avatar(a, R * 2));
+    return { el, ln, x, y };
+  });
+  box.append(lines, ...sats.map((x) => x.el), core);
+  const ease = CSS.supports("transition-timing-function", "linear(0, 1)")
+    ? getComputedStyle(document.documentElement).getPropertyValue("--spring").trim() : "cubic-bezier(.34, 1.45, .55, 1)";
+  const play = () => {
+    if (matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+    core.animate([{ transform: "scale(.55)" }, { transform: "none" }], { duration: 800, easing: ease });
+    sats.forEach((p, i) => {
+      p.el.animate([{ transform: `translate(${cx - p.x}px, ${cy - p.y}px) scale(.25)`, opacity: 0 }, { transform: "none", opacity: 1 }],
+        { duration: 1000, delay: 140 + i * 80, easing: ease, fill: "backwards" });
+      p.ln.animate([{ opacity: 0 }, { opacity: 1 }], { duration: 500, delay: 650 + i * 80, easing: "ease-out", fill: "backwards" });
+    });
+  };
+  core.addEventListener("click", play);
+  requestAnimationFrame(play);
+  return box;
+}
 async function overview(tk) {
   let ags = [], asks = [], wants = [];
   try {
@@ -500,7 +535,7 @@ async function overview(tk) {
   const pill = h("button", { class: "copyurl press", type: "button", title: "Copy" }, h("span", { class: "u", text: url }), h("span", { class: "c", text: "Copy" }));
   pill.addEventListener("click", () => copy(url, pill.querySelector(".c"), "Copy"));
   screen("pick", tk, h("div", { class: "overview" },
-    h("div", { class: "orbit", "aria-hidden": "true" }, h("span", { class: "ghost g1" }), h("span", { class: "ghost g2" }),
+    mine.length ? sky(mine, waiting) : h("div", { class: "orbit", "aria-hidden": "true" }, h("span", { class: "ghost g1" }), h("span", { class: "ghost g2" }),
       h("span", { class: "ghost g3" }), h("span", { class: "ghost g4" }), h("span", { class: "core" }, mark())),
     h("h1", { class: "title", text: waiting ? `${waiting} waiting for you` : mine.length ? "All quiet" : "Nothing here yet" }),
     line, act, h("div", { class: "oaddr" }, pill)));
