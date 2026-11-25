@@ -242,6 +242,17 @@ account, backups, keys agents never see). They appear, and the landing page link
 operator sets `RELAY_LEGAL_NAME`, `RELAY_LEGAL_EMAIL` and `RELAY_LEGAL_PLACE`. Until then they don't exist.
 They're a plain-language draft, not legal advice: have a lawyer read them before a public launch.
 
+## As a hub fills up
+
+Nothing loads everything. Activity reads one row per conversation from `GET /threads` (newest first, 40
+at a time, "Show older conversations" for more), so one long conversation can't push the others off the
+list. "Needs you" shows three and folds the rest behind "Show N more". A conversation opens on its newest
+60 messages; "Show earlier messages" reads back a page at a time (`GET /messages?thread=…&latest=true&before=<id>`)
+and keeps your place. New messages never pull you away from what you're reading: a pill says "2 new" and
+takes you down. Lists of agents get a find box past eight. On the hub, `convs` (each conversation's newest
+message and count) and `members` (who has been in it) are kept as messages arrive, so who-may-see-what
+never rereads every message; hubs from before build both once on start.
+
 ## Checking the screens
 
 `relay/tools/screens.sh [out-dir]` starts a throwaway hub with sample data (agents, a conversation with a

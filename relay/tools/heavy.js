@@ -30,7 +30,7 @@ const MANY = "@claude @codex @muse @chatgptguy @grokguy @claude-code-laptop @gem
   const lines = ["Can you check the deck?", "Done: 12 slides, fixed the typos.", LONG_URL, JSON_BLOB, CODE, ESSAY, MANY,
     "ok", "👍🏾 sounds good", "Uploading the raw clips now", "What's the status on the captions?", "Merged. Deploying in 5."];
   const threads = [];
-  for (let i = 0; i < 36; i++) {
+  for (let i = 0; i < 44; i++) {          // more than the 40 Activity shows at first
     const a = H[i % H.length], b = H[(i * 3 + 1) % H.length] === a ? H[(i + 2) % H.length] : H[(i * 3 + 1) % H.length];
     const starter = i % 4 === 0 ? K : tok[a];
     const first = await api("POST", "/messages", { channel: "direct", text: lines[i % lines.length], mentions: i % 9 === 0 ? H.filter((x) => x !== a) : [b] }, starter);
@@ -43,8 +43,14 @@ const MANY = "@claude @codex @muse @chatgptguy @grokguy @claude-code-laptop @gem
   // spread them over two weeks, as they really happen
   const now = Date.now() / 1000;
   threads.forEach((t, i) => db("UPDATE messages SET time = time - ? WHERE thread=?", i < 6 ? i * 600 : i < 14 ? 86400 + i * 3600 : 86400 * (2 + i % 12), t));
-  // and something waiting for kobby
+  // and things waiting for kobby: more than the three Activity shows before folding the rest
   await api("POST", "/invite-requests", { name: "Abena Owusu-Mensah", contact: "abena.owusu.mensah@a-very-long-company-domain.example.com", note: "Claude and ChatGPT for my shop" });
+  // (straight into the hub: asking is limited to three an hour from one address)
+  ["Kofi Boateng", "Esi Mensah", "Yaw Asante", "Akosua Darko"].forEach((n, i) => db("INSERT INTO invite_requests(id,name,contact,created) VALUES (?,?,?,?)",
+    "ir_" + String(i).padStart(12, "0"), n, n.split(" ")[0].toLowerCase() + "@example.com", Date.now() / 1000 - i * 60));
+  // one conversation that ran long: 150 messages, newest just now
+  const longStart = await api("POST", "/messages", { channel: "direct", text: "@codex let's go through all 150 clips", mentions: ["codex"] }, tok.claude);
+  for (let i = 1; i <= 150; i++) await api("POST", "/messages", { reply_to: longStart.id, text: `Clip ${i}: ${i % 3 ? "trimmed" : "needs a caption"}` }, i % 2 ? tok.codex : tok.claude);
 
   const browser = await chromium.launch();
   const problems = [];
@@ -76,6 +82,35 @@ const MANY = "@claude @codex @muse @chatgptguy @grokguy @claude-code-laptop @gem
       });
       for (const f of found) problems.push(`${name}/${label}: ${f}`);
       await page.screenshot({ path: path.join(OUT, `heavy-${name}-${label}.png`), fullPage: name === "phone" });
+    }
+    // the long conversation: it opens on the newest, older pages keep your place, new ones don't move you
+    if (name === "phone" || name === "desktop") {
+      await page.goto(HUB + "/app#activity/" + longStart.thread); await page.reload(); await page.waitForTimeout(2200);
+      const shown = () => page.evaluate(() => document.querySelectorAll(".chat .msg").length);
+      const n1 = await shown();
+      if (n1 > 70) problems.push(`${name}/long: opened ${n1} messages at once`);
+      if (!(await page.evaluate(() => /Clip 150/.test(document.querySelector(".chat").innerText)))) problems.push(`${name}/long: the newest message isn't there`);
+      const scrollTo = (y) => page.evaluate((y) => { const el = document.querySelector(".detail > .page") && innerWidth >= 960 ? document.querySelector(".detail > .page") : document.scrollingElement; el.scrollTop = y; }, y);
+      await scrollTo(0); await page.waitForTimeout(400);
+      await page.screenshot({ path: path.join(OUT, `heavy-${name}-long-top.png`) });
+      const anchor = await page.evaluate(() => { const b = [...document.querySelectorAll(".chat .msg .bub")].find((x) => x.getBoundingClientRect().top > 0); return b && [b.textContent, b.getBoundingClientRect().top]; });
+      if (await page.$(".earlier")) {
+        await page.click(".earlier"); await page.waitForTimeout(1200);
+        if ((await shown()) <= n1) problems.push(`${name}/long: Show earlier added nothing`);
+        const after = await page.evaluate((t) => { const b = [...document.querySelectorAll(".chat .msg .bub")].find((x) => x.textContent === t); return b && b.getBoundingClientRect().top; }, anchor[0]);
+        if (after === undefined || Math.abs(after - anchor[1]) > 40) problems.push(`${name}/long: Show earlier lost your place (${anchor[1]} → ${after})`);
+      } else problems.push(`${name}/long: no Show earlier at the top`);
+      await api("POST", "/messages", { reply_to: longStart.id, text: `A new one while you read (${name})` }, tok.codex);
+      await page.waitForTimeout(4200);
+      const pill = await page.evaluate(() => { const j = document.querySelector(".jump"); return j && !j.hidden ? j.textContent : null; });
+      if (!pill || !/1 new/.test(pill)) problems.push(`${name}/long: no "1 new" pill while reading further up (${pill})`);
+      await page.screenshot({ path: path.join(OUT, `heavy-${name}-long-newpill.png`) });
+      // Activity: the rest of the reviews fold away; older conversations come on request
+      await page.goto(HUB + "/app#activity"); await page.reload(); await page.waitForTimeout(2200);
+      const rows = await page.evaluate(() => [...document.querySelectorAll(".morerow")].map((b) => b.textContent));
+      if (!rows.some((t) => /Show \d+ more/.test(t))) problems.push(`${name}/activity: Needs you doesn't fold`);
+      if (!rows.some((t) => /Show older conversations/.test(t))) problems.push(`${name}/activity: no Show older conversations`);
+      await page.screenshot({ path: path.join(OUT, `heavy-${name}-activity-folded.png`), fullPage: name === "phone" });
     }
     // the @ picker with every agent in it
     await page.goto(HUB + "/app#activity/" + pick[0]); await page.reload(); await page.waitForTimeout(1500);

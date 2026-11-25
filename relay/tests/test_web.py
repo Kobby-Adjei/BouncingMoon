@@ -124,7 +124,7 @@ def test_the_first_five_minutes_are_wired_up():
     # after connecting: say hello is one press; a chat app is said to read Relay when asked, with what to say
     assert "Say hello to ${fresh.agent}" in js and '"Check Relay"' in js and "reads Relay when you ask" in js
     # Activity never opens a lone "joined the hub" notice with a box to type into
-    assert "talk[m.thread] &&" in js
+    assert '(t.count > 1 || t.last.from !== "relay")' in js
 
 
 def test_a_desktop_is_one_sidebar_with_everything_one_click_away():

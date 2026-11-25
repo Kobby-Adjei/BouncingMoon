@@ -505,15 +505,10 @@ async function pickHint(tab) {
     try {
       const asks = ME.role === "human" ? await api("GET", "/approvals").catch(() => []) : [];
       if (asks.length) return nav(`approve/${asks[0].id}`, { replace: true });
-      const msgs = await api("GET", "/messages?latest=true&limit=100");
-      const count = {}, talk = {};
-      for (const m of msgs) { count[m.thread] = (count[m.thread] || 0) + 1; if (m.from !== "relay") talk[m.thread] = true; }
-      const last = [...msgs].reverse().find((m) => talk[m.thread] && !(count[m.thread] === 1 && /^🔑 Asking /u.test(m.text || "")));
-      if (last) {
-        const people = [...new Set(msgs.filter((m) => m.thread === last.thread).flatMap((m) => [m.from, ...(m.mentions || [])]))]
-          .filter((x) => x !== ME.handle && x !== "relay");
-        return nav(`activity/${last.thread}`, { replace: true, data: people });
-      }
+      const convs = await api("GET", "/threads?limit=20");
+      // a real conversation: not a lone "joined the hub" notice, not a lone "asking for your OK" (that's the Review row)
+      const c = convs.find((t) => (t.count > 1 || t.last.from !== "relay") && !(t.count === 1 && /^🔑 Asking /u.test(t.last.text || "")));
+      if (c) return nav(`activity/${c.thread}`, { replace: true, data: c.people.filter((x) => x !== ME.handle && x !== "relay") });
     } catch {}
   }
   overview(tk);
@@ -924,18 +919,25 @@ async function agents() {
   const tk = ticket();
   const list = h("div", { class: "group people" }, h("div", { class: "empty", text: "Loading…" }));
   const add = canAdd() && !WIDE ? h("button", { class: "btn small press", type: "button", onclick: () => nav("add") }, icon("plus", "2.4"), "Add") : null;
-  const view = screen("agents", { ...tk, tab: "agents" }, head("Agents", null, add), list);
+  let q = "";
+  const find = findBox("Find an agent or person", (v) => { q = v; refresh(); });
+  find.hidden = true;
+  const view = screen("agents", { ...tk, tab: "agents" }, head("Agents", null, add), find, list);
   let first = true;
   async function refresh() {
     try {
       const ags = await api("GET", "/agents");
-      const rows = ags.filter((a) => a.handle !== (ME && ME.handle)).map((a) =>
+      const everyone = ags.filter((a) => a.handle !== (ME && ME.handle));
+      find.hidden = everyone.length <= 8 && !q;
+      const shownAgs = q ? everyone.filter((a) => matches(a, q)) : everyone;
+      const rows = shownAgs.map((a) =>
         h("button", { class: "cell press", type: "button", "data-key": `agents/${enc(a.handle)}`, onclick: () => nav(`agents/${enc(a.handle)}`) },
           avatar(a, 46, true),
           h("div", { class: "grow" }, h("div", { class: "t", text: a.handle }),
             h("div", { class: "s", text: `${PROVIDER_NAMES[providerOf(a)] || "Other"} · ${ago(a.last_seen)}` })),
           chev()));
-      if (rows.length) {
+      if (!rows.length && q) list.replaceChildren(h("div", { class: "empty", text: `No one called “${q}”.` }));
+      else if (rows.length) {
         if (!list.isConnected) view.querySelector(".blank").replaceWith(list);
         list.replaceChildren(...rows);
         if (first) list.classList.add("stagger"); else list.classList.remove("stagger");
@@ -955,6 +957,14 @@ async function agents() {
   every(view, refresh, 5000);
 }
 // nothing connected yet: one thing to do, said plainly, with the button right there
+// a search box for a list that has grown: by name, or by the app it lives in
+const matches = (a, q) => a.handle.includes(q) || (PROVIDER_NAMES[providerOf(a)] || "").toLowerCase().includes(q);
+function findBox(label, onChange) {
+  const input = h("input", { class: "field", type: "search", placeholder: label, "aria-label": label, autocomplete: "off", spellcheck: "false" });
+  let t = null;
+  input.addEventListener("input", () => { clearTimeout(t); t = setTimeout(() => onChange(input.value.trim().toLowerCase()), 120); });
+  return h("div", { class: "findbox" }, input);
+}
 function firstApp() {
   return blank("Connect your first AI", "Claude, ChatGPT, Grok, Muse and more. It takes a minute, and nothing to install.",
     canAdd() ? h("button", { class: "btn press firstbtn", type: "button", onclick: () => nav("add") }, icon("plus", "2.4"), "Connect an app") : null);
@@ -2162,19 +2172,16 @@ async function activity() {
   const neu = ME.role !== "admin" ? h("button", { class: "btn small press", type: "button", onclick: () => nav("activity/new") }, icon("plus", "2.4"), "New") : null;
   const view = screen("activity", { ...tk, tab: "activity" }, head("Activity", null, neu), list);
   let first = true;
+  // It grows without end, so it comes a page at a time: the newest conversations, then "Show older".
+  let pages = 1, more = false, allNeeds = false;
+  const PAGE = 40;
   async function refresh() {
     try {
-      const [msgs, ags, asks, wants] = await Promise.all([api("GET", "/messages?latest=true&limit=200"), api("GET", "/agents"),
+      const [convs, ags, asks, wants] = await Promise.all([api("GET", `/threads?limit=${Math.min(PAGE * pages, 200)}`), api("GET", "/agents"),
         ME.role === "human" ? api("GET", "/approvals").catch(() => []) : [], isOwner() ? api("GET", "/invite-requests").catch(() => []) : []]);
+      more = convs.length >= Math.min(PAGE * pages, 200);
       const by = Object.fromEntries(ags.map((a) => [a.handle, a]));
-      const threads = new Map();
-      for (const m of msgs) {
-        const t = threads.get(m.thread) || { id: m.thread, msgs: [], people: new Set() };
-        t.msgs.push(m);
-        if (m.from !== "relay") t.people.add(m.from);
-        for (const x of m.mentions || []) t.people.add(x);
-        threads.set(m.thread, t);
-      }
+      const threads = new Map(convs.map((c) => [c.thread, { id: c.thread, msgs: [c.last], count: c.count, people: new Set(c.people) }]));
       const oks = asks.map((r) => h("button", { class: "cell jobcell press", type: "button", "data-key": `approve/${r.id}`, onclick: () => nav(`approve/${r.id}`) },
         h("span", { class: "stackav" }, avatar(by[r.agent] || { handle: r.agent }, 44)),
         h("div", { class: "grow" }, h("div", { class: "t", text: `${r.agent} wants to ${VERB[r.method] || r.method}` }),
@@ -2186,11 +2193,16 @@ async function activity() {
           h("div", { class: "s one", text: (w.by ? `via ${w.by} · ` : "") + w.contact })),
         h("span", { class: "btn small", text: "Review" }))));
       // what needs you first, then the conversations newest first, under Today · Yesterday · This week · Earlier
-      const rows = needs.length ? [secthead("Needs you"), ...needs] : [];
+      // a pile of things to review never pushes the conversations off the screen: three, then the rest on request
+      const FOLD = 3;
+      const folded = !allNeeds && needs.length > FOLD + 1;
+      const rows = needs.length ? [secthead(needs.length > FOLD ? `Needs you · ${needs.length}` : "Needs you"), ...(folded ? needs.slice(0, FOLD) : needs)] : [];
+      if (folded) rows.push(h("button", { class: "morerow press", type: "button", onclick: () => { allNeeds = true; refresh(); } },
+        `Show ${needs.length - FOLD} more`, chev()));
       let section = null;
       const sorted = [...threads.values()].sort((x, y) => y.msgs[y.msgs.length - 1].time - x.msgs[x.msgs.length - 1].time)
         // an agent's "asking you to OK" note on its own is the Review row above, said twice: show it once
-        .filter((t) => !(t.msgs.length === 1 && /^🔑 Asking /u.test(t.msgs[0].text || "")));
+        .filter((t) => !(t.count === 1 && /^🔑 Asking /u.test(t.msgs[0].text || "")));
       for (const t of sorted) {
         const last = t.msgs[t.msgs.length - 1];
         const others = [...t.people].filter((p) => p !== ME.handle);
@@ -2206,6 +2218,8 @@ async function activity() {
               h("span", { class: "when tnum", text: whenShort(last.time) })),
             h("div", { class: "s preview", text: who + gist(last.text) }))));
       }
+      if (more && pages * PAGE < 200) rows.push(h("button", { class: "morerow press", type: "button", onclick: (e) => {
+        e.currentTarget.disabled = true; pages++; refresh(); } }, "Show older conversations", chev()));
       if (rows.length) {
         if (!list.isConnected) view.querySelector(".blank").replaceWith(list);
         list.replaceChildren(...rows);
@@ -2228,9 +2242,11 @@ async function newMessage() {
   const tk = ticket();
   let ags = [];
   try { ags = (await api("GET", "/agents")).filter((a) => a.handle !== ME.handle); } catch {}
-  const grid = h("div", { class: "pick stagger" }, ...ags.map((a) => h("button", { class: "opt press", type: "button", onclick: () => nav(`activity/to/${enc(a.handle)}`) },
-    avatar(a, 52, true), h("span", { text: a.handle }), h("span", { class: "sub", text: ago(a.last_seen) }))));
-  screen("new", tk, head("New message", "Who to?"), ags.length ? grid : blank("No one to message yet", "Add an agent first."));
+  const tile = (a) => h("button", { class: "opt press", type: "button", onclick: () => nav(`activity/to/${enc(a.handle)}`) },
+    avatar(a, 52, true), h("span", { text: a.handle }), h("span", { class: "sub", text: ago(a.last_seen) }));
+  const grid = h("div", { class: "pick stagger" }, ...ags.map(tile));
+  const find = ags.length > 8 ? findBox("Find someone", (q) => grid.replaceChildren(...ags.filter((a) => !q || matches(a, q)).map(tile))) : null;
+  screen("new", tk, head("New message", "Who to?"), find, ags.length ? grid : blank("No one to message yet", "Add an agent first."));
 }
 
 // ------------------------------------------------------------------ the AI apps someone uses (invite asks, stats)
@@ -2343,7 +2359,7 @@ async function thread(id, people) {
     const set = new Set();
     let found = -1;
     try {
-      const msgs = await api("GET", `/messages?thread=${id}&limit=200`);
+      const msgs = await api("GET", `/messages?thread=${id}&latest=true&limit=200`);
       found = msgs.length;
       for (const m of msgs) {
         if (m.from !== "relay") set.add(m.from);
@@ -2408,7 +2424,7 @@ async function thread(id, people) {
         faces.replaceChildren(...people.slice(0, 2).map((x) => avatar(by[x] || { handle: x }, WIDE ? 36 : 44, true)));
       }
       if (!threadId && view.isConnected && route.startsWith("activity/to/")) setRoute(`activity/${m.thread}`, people);
-      threadId = m.thread; input.value = ""; input.style.height = "auto"; refresh();
+      threadId = m.thread; input.value = ""; input.style.height = "auto"; justSent = true; refresh();
       if (listRefresh && listPane.dataset.tab === "activity") listRefresh();
     } catch (x) { alert(x.message); }
     send.disabled = false; input.focus(); paintPick(); paintGoes();
@@ -2427,40 +2443,92 @@ async function thread(id, people) {
   const blankNote = list.querySelector(".sysmsg");
   if (!id && blankNote) blankNote.replaceChildren(...helloNote(people.map((x) => by[x]).filter(Boolean)));
   faces.append(...people.slice(0, 2).map((x) => avatar(by[x] || { handle: x }, WIDE ? 36 : 44, true)));
-  let shown = "";
+  // A conversation can run to thousands of messages. It opens on the newest page; older pages come on request
+  // and keep your place. New messages never pull you away from what you're reading: a pill says they came.
+  const PAGE = 60;
+  const byId = new Map(), painted = new Set();
   const opened = new Set();             // long messages already unfolded stay open when the view repaints
+  let shown = "", older = false, loadedOnce = false, justSent = false, unseen = 0;
+  const scroller = () => WIDE ? view : document.scrollingElement;
+  const fromEnd = () => { const el = scroller(); return el.scrollHeight - el.scrollTop - el.clientHeight; };
+  const earlier = h("button", { class: "earlier press", type: "button", onclick: loadEarlier }, "Show earlier messages");
+  const jumpN = h("span", { class: "n" });
+  const jump = h("button", { class: "jump press", type: "button", hidden: "", "aria-label": "Jump to the latest message",
+    onclick: () => { unseen = 0; paintJump(); scrollEnd(view); } },
+    svg("0 0 14 8", [{ d: "M1.5 1.5L7 6.5l5.5-5", fill: "none", stroke: "currentColor", "stroke-width": "2", "stroke-linecap": "round", "stroke-linejoin": "round" }]), jumpN);
+  if (composer) composer.append(jump);
+  function paintJump() {
+    const far = fromEnd() > 400;
+    if (!far && fromEnd() < 160) unseen = 0;
+    jumpN.textContent = unseen ? `${unseen} new` : "";
+    jump.classList.toggle("withn", !!unseen);
+    jump.hidden = !(far || unseen);
+  }
+  const onScroll = () => { if (!view.isConnected) return (WIDE ? view : window).removeEventListener("scroll", onScroll); paintJump(); };
+  (WIDE ? view : window).addEventListener("scroll", onScroll, { passive: true });
+  async function loadEarlier() {
+    const first = Math.min(...byId.keys());
+    earlier.disabled = true; earlier.textContent = "Loading…";
+    try {
+      const page = await api("GET", `/messages?thread=${threadId}&latest=true&limit=${PAGE}&before=${first}`);
+      older = page.length >= PAGE;
+      for (const m of page) { byId.set(m.id, m); painted.add(m.id); }     // older pages arrive without the rise
+      const el = scroller(), keep = el.scrollHeight - el.scrollTop;      // stay on the message you were reading
+      paint(true);
+      el.scrollTop = el.scrollHeight - keep;
+    } catch {}
+    earlier.disabled = false; earlier.textContent = "Show earlier messages";
+  }
+  function bubble(m, prev) {
+    if (m.from === "relay") return h("div", { class: "sysmsg", text: plain(m.text) });
+    const mine = m.from === ME.handle, run = prev && prev.from === m.from;
+    const who = run ? null : h("div", { class: "who", text: `${mine ? "You" : m.from} · ${clock(m.time)}` });
+    const face = mine ? null : run ? h("span", { class: "ghostav" }) : avatar(by[m.from] || { handle: m.from, role: "agent" }, 32);
+    const text = plain(m.text);
+    const bub = h("div", { class: "bub" }, ...richText(text));
+    if (m.media && m.media.length) bub.append(...m.media.map(fileCard));
+    // a long message folds: the conversation stays readable, the whole thing is one tap away
+    const long = text.length > 700 || text.split("\n").length > 14;
+    const more = long && !opened.has(m.id) ? h("button", { class: "more press", type: "button", onclick: () => {
+      opened.add(m.id); bub.classList.remove("folded"); more.remove(); } }, "Show all") : null;
+    if (more) bub.classList.add("folded");
+    return h("div", { class: "msg" + (mine ? " mine" : "") }, face, h("div", { class: "body" }, who, bub, more));
+  }
+  function paint(keepPlace) {
+    const msgs = [...byId.values()].sort((a, b) => a.id - b.id);
+    const sig = (older ? "+" : "") + msgs.map((m) => m.id + (m.media || []).map((x) => x.status).join()).join("|");   // a file finished being watched: repaint
+    if (sig === shown) return;
+    const near = fromEnd() < 160;
+    const fresh = msgs.filter((m) => !painted.has(m.id));
+    lastId = msgs.length ? msgs[msgs.length - 1].id : threadId;
+    list.replaceChildren(...(older ? [earlier] : []), ...msgs.map((m, i) => {
+      const el = bubble(m, msgs[i - 1] && msgs[i - 1].from !== "relay" ? msgs[i - 1] : null);
+      if (painted.has(m.id)) el.style.animation = "none";
+      return el;
+    }));
+    for (const m of fresh) painted.add(m.id);
+    // you spoke last, to a chat app: it won't see this until you ask it there. Say so, and what to say.
+    const last = msgs[msgs.length - 1];
+    const asleep = last && last.from === ME.handle ? people.map((x) => by[x]).filter((a) => a && a.answers === "when_asked") : [];
+    if (asleep.length) list.append(askNudge(asleep));
+    const firstPaint = !shown;
+    shown = sig;
+    if (keepPlace) return paintJump();
+    if (firstPaint || near || justSent) { justSent = false; unseen = 0; scrollEnd(view, !firstPaint); }
+    else unseen += fresh.filter((m) => m.from !== ME.handle).length;      // reading further up: say they came, don't move
+    paintJump();
+  }
   async function refresh() {
     if (!threadId) return;
     try {
-      const msgs = await api("GET", `/messages?thread=${threadId}&limit=200`);
-      const sig = msgs.map((m) => m.id + (m.media || []).map((x) => x.status).join()).join("|");   // a file finished being watched: repaint
-      if (sig === shown) return;
-      lastId = msgs.length ? msgs[msgs.length - 1].id : threadId;
-      let prev = null;
-      const before = shown ? shown.split("|").length : 0;
-      list.replaceChildren(...msgs.map((m, i) => {
-        const anim = i >= before ? "" : "animation:none";
-        if (m.from === "relay") { prev = null; return h("div", { class: "sysmsg", style: anim, text: plain(m.text) }); }
-        const mine = m.from === ME.handle, run = prev === m.from; prev = m.from;
-        const who = run ? null : h("div", { class: "who", text: `${mine ? "You" : m.from} · ${clock(m.time)}` });
-        const face = mine ? null : run ? h("span", { class: "ghostav" }) : avatar(by[m.from] || { handle: m.from, role: "agent" }, 32);
-        const text = plain(m.text);
-        const bub = h("div", { class: "bub" }, ...richText(text));
-        if (m.media && m.media.length) bub.append(...m.media.map(fileCard));
-        // a long message folds: the conversation stays readable, the whole thing is one tap away
-        const long = text.length > 700 || text.split("\n").length > 14;
-        const more = long && !opened.has(m.id) ? h("button", { class: "more press", type: "button", onclick: () => {
-          opened.add(m.id); bub.classList.remove("folded"); more.remove(); } }, "Show all") : null;
-        if (more) bub.classList.add("folded");
-        return h("div", { class: "msg" + (mine ? " mine" : ""), style: anim }, face, h("div", { class: "body" }, who, bub, more));
-      }));
-      // you spoke last, to a chat app: it won't see this until you ask it there. Say so, and what to say.
-      const last = msgs[msgs.length - 1];
-      const asleep = last && last.from === ME.handle ? people.map((x) => by[x]).filter((a) => a && a.answers === "when_asked") : [];
-      if (asleep.length) list.append(askNudge(asleep));
-      const firstPaint = !shown;
-      shown = sig;
-      scrollEnd(view, !firstPaint);
+      const msgs = await api("GET", `/messages?thread=${threadId}&latest=true&limit=${loadedOnce ? 30 : PAGE}`);
+      if (!loadedOnce) { older = msgs.length >= PAGE; loadedOnce = true; }
+      const top = byId.size ? Math.max(...byId.keys()) : 0;
+      // more than a poll's worth came at once: fetch the gap so nothing in between is skipped
+      if (top && msgs.length === 30 && msgs[0].id > top)
+        for (const m of await api("GET", `/messages?thread=${threadId}&after=${top}&limit=200`)) byId.set(m.id, m);
+      for (const m of msgs) byId.set(m.id, m);
+      paint();
     } catch {}
   }
   await refresh();

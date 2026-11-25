@@ -54,6 +54,14 @@ CREATE TABLE IF NOT EXISTS messages(
   text TEXT NOT NULL, mentions TEXT NOT NULL DEFAULT '[]',
   artifacts TEXT NOT NULL DEFAULT '[]', job TEXT, UNIQUE(sender, idem));
 CREATE INDEX IF NOT EXISTS messages_thread ON messages(thread);
+-- one row per conversation, kept as messages arrive: its newest message and how many it has. The list of
+-- conversations reads this instead of scanning every message ever sent.
+CREATE TABLE IF NOT EXISTS convs(thread INTEGER PRIMARY KEY, last INTEGER NOT NULL, n INTEGER NOT NULL);
+CREATE INDEX IF NOT EXISTS convs_last ON convs(last);
+-- everyone who has been in a conversation (wrote in it or was named in it): who may see it, without
+-- reading the mentions of every message on every request
+CREATE TABLE IF NOT EXISTS members(thread INTEGER NOT NULL, agent TEXT NOT NULL, PRIMARY KEY(thread, agent));
+CREATE INDEX IF NOT EXISTS members_agent ON members(agent, thread);
 CREATE INDEX IF NOT EXISTS messages_channel ON messages(channel);
 CREATE TABLE IF NOT EXISTS subs(agent TEXT, channel TEXT, PRIMARY KEY(agent, channel));
 CREATE TABLE IF NOT EXISTS follows(agent TEXT, thread INTEGER, PRIMARY KEY(agent, thread));
@@ -201,6 +209,15 @@ class Store:
                 # "ready" (press Test) rather than claim the agent never read anything
                 if c.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='wakes'").fetchone():
                     c.execute("UPDATE wakes SET last_fired=NULL, last_status=NULL WHERE last_status LIKE 'ok%'")
+            # hubs from before convs/members: build both once from the messages already there
+            if not c.execute("SELECT 1 FROM meta WHERE key='convs_built'").fetchone():
+                c.execute("INSERT OR REPLACE INTO convs(thread,last,n) SELECT thread, MAX(id), COUNT(*) FROM messages"
+                          " WHERE thread IS NOT NULL GROUP BY thread")
+                c.execute("INSERT OR IGNORE INTO members(thread,agent) SELECT thread, sender FROM messages"
+                          " WHERE thread IS NOT NULL AND sender!='relay'")
+                c.execute("INSERT OR IGNORE INTO members(thread,agent) SELECT x.thread, j.value FROM messages x, json_each(x.mentions) j"
+                          " WHERE x.thread IS NOT NULL")
+                c.execute("INSERT INTO meta(key,value) VALUES ('convs_built', '1')")
             invite_cols = {r["name"] for r in c.execute("PRAGMA table_info(invites)")}
             if "provider" not in invite_cols:
                 c.execute("ALTER TABLE invites ADD COLUMN provider TEXT")
@@ -572,9 +589,8 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
         who = circle(c, h)
         qs = ",".join("?" * len(who))
         return (f"({alias}.channel!=? OR {alias}.thread IN (SELECT thread FROM follows WHERE agent IN ({qs})"
-                f" UNION SELECT thread FROM messages WHERE sender IN ({qs})"
-                f" UNION SELECT x.thread FROM messages x, json_each(x.mentions) j WHERE j.value IN ({qs})))",
-                [DIRECT] + who * 3)
+                f" UNION SELECT thread FROM members WHERE agent IN ({qs})))",
+                [DIRECT] + who * 2)
 
     def can_see(c, h: str, thread: int) -> bool:
         sql, a = visible(c, h)
@@ -718,6 +734,10 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
         if thread is None:
             thread = mid
             c.execute("UPDATE messages SET thread=? WHERE id=?", (mid, mid))
+        c.execute("INSERT INTO convs(thread,last,n) VALUES (?,?,1) ON CONFLICT(thread) DO UPDATE SET last=excluded.last, n=n+1",
+                  (thread, mid))
+        for m in {sender, *mentions} - {SYSTEM}:
+            c.execute("INSERT OR IGNORE INTO members(thread,agent) VALUES (?,?)", (thread, m))
         if sender != SYSTEM:
             c.execute("INSERT OR IGNORE INTO follows(agent,thread) VALUES (?,?)", (sender, thread))
         if session:                    # this chat is in the thread now: later messages in it come back here
@@ -1377,10 +1397,13 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
 
     @app.get("/messages")
     def read(channel: Optional[str] = None, thread: Optional[int] = None,
-             after: int = 0, limit: int = Query(50, ge=1, le=200),
+             after: int = 0, before: int = 0, limit: int = Query(50, ge=1, le=200),
              latest: bool = False, me: dict = Depends(auth)):
-        """Oldest first from `after`; with latest=true, the newest `limit` (still oldest first)."""
+        """Oldest first from `after`; with latest=true, the newest `limit` (still oldest first).
+        `before`: only messages older than that id, so a long conversation can be read back a page at a time."""
         q, a = "SELECT * FROM messages m WHERE id>?", [after]
+        if before:
+            q += " AND id<?"; a.append(before)
         if channel:
             q += " AND channel=?"; a.append(channel)
         if thread:
@@ -1399,6 +1422,26 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
         for m in rows:
             m["media"] = [media_svc.brief(x) for x in files.get(m["id"], [])]
         return rows[::-1] if latest else rows
+
+    @app.get("/threads")
+    def threads(limit: int = Query(40, ge=1, le=200), before: int = 0, me: dict = Depends(auth)):
+        """The conversations I may see, the most recently active first: each one's newest message, how many
+        messages it has and who has been in it. `before` (a newest-message id) gives the next page."""
+        with store.ro() as c:
+            only, more = visible(c, me["handle"])
+            q = f"SELECT t.thread, t.n, m.* FROM convs t JOIN messages m ON m.id=t.last WHERE {only}"
+            a = list(more)
+            if before:
+                q += " AND t.last<?"; a.append(before)
+            rows = c.execute(q + " ORDER BY t.last DESC LIMIT ?", a + [limit]).fetchall()
+            ids = [r["thread"] for r in rows]
+            people: dict = {}
+            if ids:
+                for r in c.execute(f"SELECT thread, agent FROM members WHERE thread IN ({','.join('?' * len(ids))})"
+                                   " ORDER BY rowid", ids):
+                    people.setdefault(r["thread"], []).append(r["agent"])
+        return [{"thread": r["thread"], "count": r["n"], "people": people.get(r["thread"], []), "last": msg_out(r)}
+                for r in rows]
 
     @app.get("/inbox")
     def inbox(limit: int = Query(20, ge=1, le=200), wait: float = Query(0, ge=0, le=50),
