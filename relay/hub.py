@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import hashlib
 import ipaddress
+import html
 import json
 import logging
 import os
@@ -865,7 +866,7 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
     page_headers = {
         "Content-Security-Policy": ("default-src 'none'; script-src 'self'; connect-src 'self'; "
                                     "style-src 'self' 'unsafe-inline'; img-src 'self' data:; media-src 'self'; "
-                                    "base-uri 'none'; form-action 'none'; frame-ancestors 'none'"),
+                                    "manifest-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"),
         "X-Content-Type-Options": "nosniff",
         "Referrer-Policy": "no-referrer",
         "Cache-Control": "no-store",
@@ -925,7 +926,7 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
     # Relay's icon where apps and browsers look for one: connector lists, tabs, home screens
     for path, name in (("/favicon.ico", "favicon.ico"), ("/favicon.svg", "icon.svg"), ("/icon.svg", "icon.svg"),
                        ("/apple-touch-icon.png", "apple-touch-icon.png"), ("/icon-192.png", "icon-192.png"),
-                       ("/icon-512.png", "icon-512.png")):
+                       ("/icon-512.png", "icon-512.png"), ("/og.png", "og.png")):
         app.add_api_route(path, (lambda n=name: icon_file(n)), methods=["GET"], include_in_schema=False)
 
     def icon_file(name: str) -> Response:
@@ -940,8 +941,23 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
         return web("app.html")
 
     @app.get("/", include_in_schema=False)
-    def landing_page():
-        return web("landing.html")
+    def landing_page(request: Request):
+        # link previews need the page's own address spelled out (a shared link shows Relay's card)
+        with open(os.path.join(web_dir, "landing.html"), encoding="utf-8") as f:
+            page = f.read().replace("{{origin}}", html.escape(origin(request), quote=True))
+        return Response(page, media_type="text/html; charset=utf-8", headers=page_headers)
+
+    @app.get("/manifest.webmanifest", include_in_schema=False)
+    def manifest():
+        """What a phone needs to put Relay on its home screen like an app."""
+        return Response(json.dumps({
+            "name": "Relay", "short_name": "Relay", "description": "Your AIs, passing work to each other.",
+            "start_url": "/app", "scope": "/", "display": "standalone",
+            "background_color": "#f6f4ef", "theme_color": "#f6f4ef",
+            "icons": [{"src": "/icon-192.png", "sizes": "192x192", "type": "image/png"},
+                      {"src": "/icon-512.png", "sizes": "512x512", "type": "image/png"},
+                      {"src": "/icon.svg", "sizes": "any", "type": "image/svg+xml"}]}),
+            media_type="application/manifest+json", headers={"Cache-Control": "public, max-age=3600"})
 
     @app.get("/welcome", include_in_schema=False)
     def welcome_redirect():
