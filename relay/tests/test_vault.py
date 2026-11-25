@@ -263,3 +263,13 @@ def test_saved_keys_and_wakeups_move_off_the_admin_token_and_survive_changing_it
     assert app3.state.waker.fernet.decrypt(wake["secret"].encode()) == b"routine-token"
     import os, stat
     assert stat.S_IMODE(os.stat(os.path.join(d, "hub_secret")).st_mode) == 0o600
+
+
+def test_an_object_passed_as_body_goes_out_as_json(hub):
+    c, web, app, t = hub
+    save(c, t["kobby"], ask="never")
+    res = call(c, t["claude"], "call_api", {"key": "instagram", "method": "POST", "url": "https://graph.facebook.com/me/media",
+                                            "body": {"caption": "New drop."}})
+    assert not res["isError"], res
+    sent = web.calls[-1]
+    assert json.loads(sent["body"]) == {"caption": "New drop."} and sent["headers"]["Content-Type"] == "application/json"

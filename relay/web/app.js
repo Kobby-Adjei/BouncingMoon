@@ -132,7 +132,8 @@ function copyBlock(text, label = "Copy") {
   const more = lines > 5 ? h("button", { class: "link sm", type: "button", onclick: () => {
     card.classList.toggle("folded"); more.textContent = card.classList.contains("folded") ? "Show all" : "Fold";
   } }, "Show all") : null;
-  card.append(h("pre", { class: "block", text }), ...(more ? [h("div", { class: "top" }, more)] : []), b);
+  // a one-line command stays on one line (it scrolls): a wrap after "-" would read as part of it
+  card.append(h("pre", { class: "block" + (lines === 1 ? " oneline" : ""), text }), ...(more ? [h("div", { class: "top" }, more)] : []), b);
   return card;
 }
 function seg(options, value, onChange) {
@@ -707,7 +708,7 @@ async function askScreen(id) {
     h("div", { class: "ways" }, way("Not now", async () => { try { await api("DELETE", `/invite-requests/${enc(id)}`); } catch {} if (listRefresh) listRefresh(); nav("activity", { replace: true }); })));
   screen("ask", tk, heroHead(avatar("person", 72), `${r.name} would like an invite`, `Reach them at ${r.contact}`),
     h("div", { class: "stack" }, r.note ? h("p", { class: "why", text: r.note }) : null, form));
-  handle.select();
+  if (WIDE) handle.select();          // on a phone, no keyboard until they tap
 }
 
 // ------------------------------------------------------------------ join (/join#inv_…)
@@ -1998,16 +1999,20 @@ async function activity() {
         h("span", { class: "stackav" }, avatar("person", 44)),
         h("div", { class: "grow" }, h("div", { class: "t", text: `${w.name} would like an invite` }), h("div", { class: "s", text: w.contact })),
         h("span", { class: "btn small", text: "Review" }))));
-      const sorted = [...threads.values()].sort((x, y) => y.msgs[y.msgs.length - 1].id - x.msgs[x.msgs.length - 1].id);
+      const sorted = [...threads.values()].sort((x, y) => y.msgs[y.msgs.length - 1].id - x.msgs[x.msgs.length - 1].id)
+        // an agent's "asking you to OK" note on its own is the Review row above, said twice: show it once
+        .filter((t) => !(t.msgs.length === 1 && /^🔑 Asking /u.test(t.msgs[0].text || "")));
       for (const t of sorted) {
         const last = t.msgs[t.msgs.length - 1];
         const others = [...t.people].filter((p) => p !== ME.handle);
+        // "claude: …" under a title that already says claude is the name twice
+        const who = last.from === ME.handle ? "You: " : last.from === "relay" || (others.length === 1 && others[0] === last.from) ? "" : `${last.from}: `;
         const faces = (others.length ? others : ["relay"]).slice(0, 2).map((x) => avatar(by[x] || { handle: x }, others.length > 1 ? 38 : 46));
         rows.push(h("button", { class: "cell press", type: "button", "data-key": `activity/${t.id}`, onclick: () => nav(`activity/${t.id}`, { data: others }) },
           h("span", { class: "stackav" }, ...faces),
           h("div", { class: "grow" },
             h("div", { class: "spread", style: "gap:8px" }, h("div", { class: "t", text: others.join(", ") || "Relay" }), h("span", { class: "when tnum", text: clock(last.time) })),
-            h("div", { class: "s preview", text: `${last.from === ME.handle ? "You" : last.from}: ${last.text}` }))));
+            h("div", { class: "s preview", text: who + plain(last.text) }))));
       }
       if (rows.length) {
         if (!list.isConnected) view.querySelector(".blank").replaceWith(list);
@@ -2036,6 +2041,8 @@ async function newMessage() {
   screen("new", tk, head("New message", "Who to?"), ags.length ? grid : blank("No one to message yet", "Add an agent first."));
 }
 
+// the hub's notes start with an emoji (🔑 📎 ✋); the app speaks in its own icons, so drop them
+const plain = (text) => String(text || "").replace(/^(?:\u{1F511}|\u{1F4CE}|\u{270B}|\u{1F4F9}|\u{1F5BC})\uFE0F?\s*/u, "");
 // "@claude" in a bubble reads as a name: a little heavier, like the landing page's demo
 function withAts(text) {
   return String(text || "").split(/(@[a-z0-9][a-z0-9_.-]*)/).filter(Boolean)
@@ -2157,11 +2164,11 @@ async function thread(id, people) {
       const before = shown ? shown.split("|").length : 0;
       list.replaceChildren(...msgs.map((m, i) => {
         const anim = i >= before ? "" : "animation:none";
-        if (m.from === "relay") { prev = null; return h("div", { class: "sysmsg", style: anim, text: m.text }); }
+        if (m.from === "relay") { prev = null; return h("div", { class: "sysmsg", style: anim, text: plain(m.text) }); }
         const mine = m.from === ME.handle, run = prev === m.from; prev = m.from;
         const who = run ? null : h("div", { class: "who", text: `${mine ? "You" : m.from} · ${clock(m.time)}` });
         const face = mine ? null : run ? h("span", { class: "ghostav" }) : avatar(by[m.from] || { handle: m.from, role: "agent" }, 32);
-        const bub = h("div", { class: "bub" }, ...withAts(m.text));
+        const bub = h("div", { class: "bub" }, ...withAts(plain(m.text)));
         if (m.media && m.media.length) bub.append(...m.media.map(fileCard));
         return h("div", { class: "msg" + (mine ? " mine" : ""), style: anim }, face, h("div", { class: "body" }, who, bub));
       }));

@@ -214,6 +214,14 @@ The **Relay helper** lets an agent that runs on your computer with your own plan
 Code) answer its messages by itself: one line in a terminal, a background service, signed
 self-updates. How it works and how it was tested: [docs/helper.md](docs/helper.md).
 
+## Checking the screens
+
+`relay/tools/screens.sh [out-dir]` starts a throwaway hub with sample data (agents, a conversation with a
+video, a saved key, an approval waiting, an invite request, a second person) and photographs every screen
+on a phone in light and dark and on a desktop, with contact sheets. It fails nothing by itself but lists
+script errors, pages that scroll sideways and anything that sticks out past the screen's edge. Run it
+before shipping any change people will see. Needs node with Playwright, and Pillow for the sheets.
+
 ## Your own hub
 
 ```bash

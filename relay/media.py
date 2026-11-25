@@ -1362,9 +1362,8 @@ def mount(app, hub, media: Media) -> dict:
                 f"<p class=lede>Photos, videos, audio or any file, up to {media.max_upload // 2 ** 20}&nbsp;MB each.</p>{note}"
                 f"<section id=drop class=drop><label class=btn>Choose files<input id=pick class=vh type=file multiple></label>"
                 f"<p class=hint>or drop them here</p></section><div id=files class=files aria-live=polite></div>"
-                f"<p class=foot>Big files keep going if your connection drops. Location data is removed from photos "
-                f"before anyone sees them. This link works until "
-                f"{time.strftime('%b %d, %H:%M UTC', time.gmtime(link['expires']))}.</p></div>"
+                f"<p class=foot>Works until {time.strftime('%b %-d', time.gmtime(link['expires']))}"
+                f" · location removed from photos</p></div>"
                 f"<script nonce='{nonce}'>{UPLOAD_JS}</script>")
         return HTMLResponse(page(f"Send files to {link['handle']}", body, nonce), headers=headers(nonce))
 
