@@ -345,11 +345,11 @@ class ListenerIn(BaseModel):
 
 
 class MessageIn(BaseModel):
-    text: str
-    channel: Optional[str] = None
+    text: str = Field(max_length=20000)          # the same limit agents have through the connector
+    channel: Optional[str] = Field(default=None, max_length=64)
     reply_to: Optional[int] = None
-    mentions: list[str] = Field(default_factory=list)
-    artifacts: list[str] = Field(default_factory=list)
+    mentions: list[str] = Field(default_factory=list, max_length=20)
+    artifacts: list[str] = Field(default_factory=list, max_length=10)
     media: list[str] = Field(default_factory=list, max_length=10)
     idem: Optional[str] = None
 

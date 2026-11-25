@@ -72,3 +72,11 @@ def test_apps_that_never_finished_signing_in_are_forgotten_after_a_day(hub):
     c.post("/oauth/register", json={"client_name": "y", "redirect_uris": [CB]})
     with app.state.store.ro() as db:
         assert [r["name"] for r in db.execute("SELECT name FROM oauth_clients")] == ["y"]
+
+
+def test_messages_have_a_length_limit(hub):
+    c, app, claude = hub
+    ok = c.post("/messages", headers=H(claude), json={"channel": "direct", "text": "x" * 20000})
+    assert ok.status_code == 200
+    assert c.post("/messages", headers=H(claude), json={"channel": "direct", "text": "x" * 20001}).status_code == 422
+    assert c.post("/messages", headers=H(claude), json={"channel": "c" * 65, "text": "hi"}).status_code == 422
