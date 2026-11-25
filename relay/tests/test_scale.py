@@ -95,3 +95,50 @@ def test_a_hub_from_before_the_index_builds_it_once_on_start(hub):
     c2 = TestClient(create_app(data_dir=str(path), admin_token=ADMIN, caption_threads=False, media_threads=False))
     convs = talk(c2.get("/threads", headers=H(t["kobby"])).json())
     assert len(convs) == 1 and convs[0]["count"] == 2 and set(convs[0]["people"]) == {"kobby", "claude"}
+
+
+# ------------------------------------------------------------------ closing the loop
+def mcp(c, tok, name, args):
+    r = c.post("/mcp", headers={**H(tok), "Accept": "application/json, text/event-stream", "X-Relay-Session": "chat-1"},
+               json={"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": name, "arguments": args}})
+    return r.json()
+
+
+def test_you_see_when_an_agent_read_your_message(hub):
+    c, _, _, t = hub
+    m = say(c, t["kobby"], "@claude can you hear me?", to=["claude"])
+    first = c.get(f"/messages?thread={m['thread']}", headers=H(t["kobby"])).json()
+    assert first[0]["read"] == {}                                   # sent, not read yet
+    mcp(c, t["claude"], "check_replies", {})                       # claude's chat picks it up
+    after = c.get(f"/messages?thread={m['thread']}", headers=H(t["kobby"])).json()
+    assert list(after[0]["read"]) == ["claude"] and after[0]["read"]["claude"] > 0
+
+
+def test_a_listener_waiting_is_not_a_read(hub):
+    c, _, _, t = hub
+    m = say(c, t["kobby"], "@codex ping", to=["codex"])
+    c.get("/inbox?wait=0.1", headers=H(t["codex"]))                 # the helper keeping watch
+    assert c.get(f"/messages?thread={m['thread']}", headers=H(t["kobby"])).json()[0]["read"] == {}
+    c.get("/inbox", headers={**H(t["codex"]), "X-Relay-Session": "s1"})   # codex itself reading
+    assert "codex" in c.get(f"/messages?thread={m['thread']}", headers=H(t["kobby"])).json()[0]["read"]
+
+
+def test_new_conversations_stay_bold_until_you_open_them(hub):
+    c, _, _, t = hub
+    m = say(c, t["kobby"], "@claude draft the launch post", to=["claude"])
+    row = lambda: next(x for x in c.get("/threads", headers=H(t["kobby"])).json() if x["thread"] == m["thread"])
+    assert row()["unread"] is False                                # the newest is yours
+    say(c, t["claude"], "Here's a draft", reply_to=m["id"])
+    assert row()["unread"] is True                                  # an answer came
+    c.get(f"/messages?thread={m['thread']}&latest=true", headers=H(t["kobby"]))   # you open it
+    assert row()["unread"] is False
+    assert row()["first"] == {"from": "kobby", "text": "@claude draft the launch post"}   # what it's named after
+
+
+def test_what_was_there_before_the_update_isnt_all_new(hub):
+    c, app, path, t = hub
+    m = say(c, t["kobby"], "@claude old work", to=["claude"])
+    say(c, t["claude"], "done", reply_to=m["id"])
+    db = sqlite3.connect(str(path / "relay.db")); db.execute("DELETE FROM meta WHERE key='seen_floor'"); db.commit(); db.close()
+    c2 = TestClient(create_app(data_dir=str(path), admin_token=ADMIN, caption_threads=False, media_threads=False))
+    assert not any(x["unread"] for x in c2.get("/threads", headers=H(t["kobby"])).json())

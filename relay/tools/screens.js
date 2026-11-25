@@ -109,6 +109,22 @@ async function seed() {
         return hits.slice(0, 3);
       });
       for (const o of out) problems.push(`${variant}/${name}: sticks out: ${o}`);
+      // a button's words must fit inside it, with room to spare: phones use wider fonts than this browser
+      // (an iPhone showed "Instant replies" spilling out of its tile), so check with letters 6% wider too
+      const spill = await page.evaluate(() => {
+        const st = document.createElement("style");
+        st.textContent = "button, .btn, .q { letter-spacing: .06em !important; }";
+        document.head.append(st);
+        const hits = [];
+        for (const b of document.querySelectorAll("button, .btn")) {
+          const cs = getComputedStyle(b), r = b.getBoundingClientRect();
+          if (!r.width || cs.visibility === "hidden" || cs.overflow === "hidden" || b.closest("[aria-hidden=true], .chat, .sky")) continue;     // the overview's count badge sits on its corner on purpose
+          if (b.scrollWidth > b.clientWidth + 1) hits.push(`"${(b.textContent || "").trim().slice(0, 24)}" (${b.scrollWidth - b.clientWidth}px)`);
+        }
+        st.remove();
+        return hits.slice(0, 4);
+      });
+      for (const o of spill) problems.push(`${variant}/${name}: words spill out of a button with a wider font: ${o}`);
       await page.screenshot({ path: path.join(OUT, `${variant}--${name}.png`) });
       // every button's size, so sizes can be checked against the scale (buttons.json; tools/sizes.py reads it)
       buttons.push(...(await page.evaluate(() => [...document.querySelectorAll("button, a.btn, .btn, [role=button], input[type=submit]")].map((b) => {

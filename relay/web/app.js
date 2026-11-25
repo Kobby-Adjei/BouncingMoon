@@ -50,6 +50,7 @@ const ICONS = {
   share: "M12 3.5v11M8 7l4-3.5L16 7M7 11H6a2 2 0 0 0-2 2v6a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-6a2 2 0 0 0-2-2h-1",
   chat: "M4 6.5A2.5 2.5 0 0 1 6.5 4h11A2.5 2.5 0 0 1 20 6.5v8a2.5 2.5 0 0 1-2.5 2.5H10l-4.5 3.5V17H6.5A2.5 2.5 0 0 1 4 14.5z",
   bell: "M12 3a6 6 0 0 0-6 6v3.5L4.5 15h15L18 12.5V9a6 6 0 0 0-6-6zM9.5 18a2.5 2.5 0 0 0 5 0",
+  reply: "M9.5 6.5L4.5 11.5l5 5M4.5 11.5h9.5a5.5 5.5 0 0 1 5.5 5.5v1",
   send: "M12 19V5M6 11l6-6 6 6",
   mail: "M4 6.5h16v11H4zM4.5 7l7.5 6 7.5-6",
 };
@@ -108,7 +109,7 @@ function reach(a) {
   if (!a.last_seen) return { cls: "off", text: "Not connected yet" };
   return { cls: "asks", text: "Reads when you ask" };
 }
-const seenWords = (t) => { const s = ago(t); return s === "Active now" ? "here now" : `last checked ${s.replace(/ ago$/, " ago")}`; };
+const seenWords = (t) => { const s = ago(t); return s === "Active now" ? "here now" : `checked ${s}`; };
 function presence(t) {
   if (!t) return "off";
   const s = Date.now() / 1000 - t;
@@ -1325,7 +1326,7 @@ async function profile(handle) {
   const p = providerOf(a);
   const quick = h("div", { class: "quick" },
     h("button", { class: "q press", type: "button", onclick: () => nav(`activity/to/${enc(a.handle)}`) }, icon("chat"), "Message"),
-    isOwner() && a.role !== "human" ? h("button", { class: "q press", type: "button", onclick: () => nav(`agents/${enc(a.handle)}/wake`) }, icon("bell"), "Instant replies") : null);
+    isOwner() && a.role !== "human" ? h("button", { class: "q press", type: "button", onclick: () => nav(`agents/${enc(a.handle)}/wake`) }, icon("reply"), "Instant replies") : null);      // a plain reply arrow, no "AI"-style symbols; a bell read as "notify me"
   const info = h("div", { class: "group info" },
     a.role !== "human" ? runsOn(a) : null,
     (a.caps || []).length ? h("div", { class: "cell" }, h("div", { class: "grow t plain" }, "Does work"), h("span", { class: "v", text: a.caps.join(", ") })) : null,
@@ -2247,7 +2248,8 @@ async function activity() {
         ME.role === "human" ? api("GET", "/approvals").catch(() => []) : [], isOwner() ? api("GET", "/invite-requests").catch(() => []) : []]);
       more = convs.length >= Math.min(PAGE * pages, 200);
       const by = Object.fromEntries(ags.map((a) => [a.handle, a]));
-      const threads = new Map(convs.map((c) => [c.thread, { id: c.thread, msgs: [c.last], count: c.count, people: new Set(c.people) }]));
+      const threads = new Map(convs.map((c) => [c.thread, { id: c.thread, msgs: [c.last], count: c.count, people: new Set(c.people),
+        first: c.first, unread: c.unread }]));
       const oks = asks.map((r) => h("button", { class: "cell jobcell press", type: "button", "data-key": `approve/${r.id}`, onclick: () => nav(`approve/${r.id}`) },
         h("span", { class: "stackav" }, avatar(by[r.agent] || { handle: r.agent }, 44)),
         h("div", { class: "grow" }, h("div", { class: "t", text: `${r.agent} wants to ${VERB[r.method] || r.method}` }),
@@ -2278,12 +2280,17 @@ async function activity() {
         const faces = (others.length ? others : ["relay"]).slice(0, 2).map((x) => avatar(by[x] || { handle: x }, others.length > 1 ? 38 : 46));
         const sec = dayGroup(last.time);
         if (sec !== section) { rows.push(secthead(sec)); section = sec; }
-        rows.push(h("button", { class: "cell press", type: "button", "data-key": `activity/${t.id}`, onclick: () => nav(`activity/${t.id}`, { data: others }) },
+        // named after what it's about (the request that started it), with who's in it under that
+        const about = t.first && t.first.from !== "relay" ? topic(t.first.text) : "";
+        const title = about || names(others) || "Relay";
+        const line = about ? `${names(others)}${t.count > 1 ? " · " + who + gist(last.text) : ""}` : who + gist(last.text);
+        rows.push(h("button", { class: "cell press" + (t.unread ? " unread" : ""), type: "button", "data-key": `activity/${t.id}`,
+            "aria-label": t.unread ? `${title}, new` : null, onclick: () => nav(`activity/${t.id}`, { data: others }) },
           h("span", { class: "stackav" }, ...faces),
           h("div", { class: "grow" },
-            h("div", { class: "spread", style: "gap:8px" }, h("div", { class: "t one", text: names(others) || "Relay", title: others.join(", ") }),
-              h("span", { class: "when tnum", text: whenShort(last.time) })),
-            h("div", { class: "s preview", text: who + gist(last.text) }))));
+            h("div", { class: "spread", style: "gap:8px" }, h("div", { class: "t one", text: title, title: others.join(", ") }),
+              h("span", { class: "when tnum" }, t.unread ? h("span", { class: "newdot", "aria-hidden": "true" }) : null, whenShort(last.time))),
+            h("div", { class: "s preview", text: line }))));
       }
       if (more && pages * PAGE < 200) rows.push(h("button", { class: "morerow press", type: "button", onclick: (e) => {
         e.currentTarget.disabled = true; pages++; refresh(); } }, "Show older conversations", chev()));
@@ -2344,6 +2351,11 @@ const names = (list) => list.length <= 2 ? list.join(", ") : `${list.slice(0, 2)
 const shortUrl = (u) => { try { const x = new URL(u); const tail = x.pathname.split("/").filter(Boolean).pop() || "";
   return x.hostname.replace(/^www\./, "") + (tail ? "/…/" + (tail.length > 18 ? tail.slice(0, 17) + "…" : tail) : ""); } catch { return u; } };
 // a preview in words: the first line, links as their site, raw data and code named rather than shown
+// what a conversation is about: its first request, without the @names at the front
+function topic(text) {
+  const t = gist(String(text || "").replace(/^(?:\s*@[a-z0-9._-]+[,:]?)+\s*/i, ""));
+  return t.length > 80 ? t.slice(0, 78).trimEnd() + "…" : t;
+}
 function gist(text) {
   const t = plain(text).trim();
   if (t.startsWith("```")) return "Code";
@@ -2410,6 +2422,17 @@ function helloNote(to) {
   if (later.length) return [`Say hello. Then, in ${appOf(later[0])}, say `, h("b", { text: "Check Relay" }), ` and ${later[0].handle} answers here.`];
   if (now.length) return [`Say hello. ${now[0].handle} answers right away.`];
   return ["Say hello."];
+}
+// after the first answer, when only one app is connected: one card, once, to make it two
+const twoLater = () => { try { return localStorage.getItem("relay_two_later") === "1"; } catch { return false; } };
+function secondApp(who) {
+  const card = h("div", { class: "asknudge twocard", role: "status" },
+    h("span", { class: "grow" }, h("b", { text: `${who} is set up` }),
+      h("span", { text: "Relay gets useful with two: connect another app and they can hand work to each other." }),
+      h("span", { class: "say" },
+        h("button", { class: "btn small press", type: "button", onclick: () => nav("add") }, "Connect another app"),
+        h("button", { class: "way press", type: "button", onclick: () => { try { localStorage.setItem("relay_two_later", "1"); } catch {} card.remove(); } }, "Not now"))));
+  return card;
 }
 function askNudge(asleep) {
   const a = asleep[0];
@@ -2516,7 +2539,7 @@ async function thread(id, people) {
   const PAGE = 60;
   const byId = new Map(), painted = new Set();
   const opened = new Set();             // long messages already unfolded stay open when the view repaints
-  let shown = "", older = false, loadedOnce = false, justSent = false, unseen = 0;
+  let shown = "", older = false, loadedOnce = false, justSent = false, unseen = 0, soloApps = false;
   const scroller = () => WIDE ? view : document.scrollingElement;
   const fromEnd = () => { const el = scroller(); return el.scrollHeight - el.scrollTop - el.clientHeight; };
   const earlier = h("button", { class: "earlier press", type: "button", onclick: loadEarlier }, "Show earlier messages");
@@ -2575,7 +2598,7 @@ async function thread(id, people) {
   }
   function paint(keepPlace) {
     const msgs = [...byId.values()].sort((a, b) => a.id - b.id);
-    const sig = (older ? "+" : "") + msgs.map((m) => m.id + (m.media || []).map((x) => x.status).join()).join("|");   // a file finished being watched: repaint
+    const sig = (older ? "+" : "") + msgs.map((m) => m.id + (m.media || []).map((x) => x.status).join() + Object.keys(m.read || {}).join()).join("|");   // a file was watched, or someone read: repaint
     if (sig === shown) return;
     const near = fromEnd() < 160;
     const fresh = msgs.filter((m) => !painted.has(m.id));
@@ -2586,10 +2609,26 @@ async function thread(id, people) {
       return el;
     }));
     for (const m of fresh) painted.add(m.id);
-    // you spoke last, to a chat app: it won't see this until you ask it there. Say so, and what to say.
+    // you spoke last: say who has read it ("Read by claude · 3:29"), and for a chat app that hasn't yet,
+    // that it reads Relay when you ask it there, and what to say
     const last = msgs[msgs.length - 1];
-    const asleep = last && last.from === ME.handle ? people.map((x) => by[x]).filter((a) => a && a.answers === "when_asked") : [];
+    let asleep = [];
+    if (last && last.from === ME.handle) {
+      const read = last.read || {};
+      const agentsTo = people.map((x) => by[x]).filter((a) => a && a.role !== "human");
+      const readers = agentsTo.filter((a) => read[a.handle]), waiting = agentsTo.filter((a) => !read[a.handle]);
+      const when = readers.length ? clock(Math.max(...readers.map((a) => read[a.handle]))) : "";
+      const body = list.querySelector(".msg.mine:last-of-type .body") || [...list.querySelectorAll(".msg.mine .body")].pop();
+      if (body && agentsTo.length) body.append(h("div", { class: "receipt" + (readers.length ? " read" : ""), "aria-live": "polite" },
+        readers.length ? h("span", { class: "rtick", "aria-hidden": "true" }, tick("tick rt")) : null,
+        readers.length ? `Read by ${names(readers.map((a) => a.handle))} · ${when}` + (waiting.length ? ` · not yet ${names(waiting.map((a) => a.handle))}` : "")
+          : "Sent"));
+      asleep = waiting.filter((a) => a.answers === "when_asked");
+    }
     if (asleep.length) list.append(askNudge(asleep));
+    // the first answer is in and only one app is connected: Relay gets useful with two
+    if (last && last.from !== ME.handle && last.from !== "relay" && by[last.from] && by[last.from].role !== "human" && soloApps && !twoLater())
+      list.append(secondApp(last.from));
     const firstPaint = !shown;
     shown = sig;
     if (keepPlace) return paintJump();
@@ -2600,6 +2639,7 @@ async function thread(id, people) {
   async function refresh() {
     if (!threadId) return;
     try {
+      if (!loadedOnce && ME.role === "human") soloApps = await api("GET", "/oauth/connections").then((x) => x.length === 1).catch(() => false);
       const msgs = await api("GET", `/messages?thread=${threadId}&latest=true&limit=${loadedOnce ? 30 : PAGE}`);
       if (!loadedOnce) { older = msgs.length >= PAGE; loadedOnce = true; }
       const top = byId.size ? Math.max(...byId.keys()) : 0;

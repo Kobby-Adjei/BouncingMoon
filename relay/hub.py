@@ -62,6 +62,10 @@ CREATE INDEX IF NOT EXISTS convs_last ON convs(last);
 -- reading the mentions of every message on every request
 CREATE TABLE IF NOT EXISTS members(thread INTEGER NOT NULL, agent TEXT NOT NULL, PRIMARY KEY(thread, agent));
 CREATE INDEX IF NOT EXISTS members_agent ON members(agent, thread);
+-- when an agent first read a message (its chat took it): what "Read by claude · 3:29" says
+CREATE TABLE IF NOT EXISTS reads(msg INTEGER NOT NULL, handle TEXT NOT NULL, time REAL NOT NULL, PRIMARY KEY(msg, handle));
+-- the newest message a person has seen in each conversation: what makes a row bold until they open it
+CREATE TABLE IF NOT EXISTS seen(handle TEXT NOT NULL, thread INTEGER NOT NULL, last INTEGER NOT NULL, PRIMARY KEY(handle, thread));
 CREATE INDEX IF NOT EXISTS messages_channel ON messages(channel);
 CREATE TABLE IF NOT EXISTS subs(agent TEXT, channel TEXT, PRIMARY KEY(agent, channel));
 CREATE TABLE IF NOT EXISTS follows(agent TEXT, thread INTEGER, PRIMARY KEY(agent, thread));
@@ -218,6 +222,7 @@ class Store:
                 c.execute("INSERT OR IGNORE INTO members(thread,agent) SELECT x.thread, j.value FROM messages x, json_each(x.mentions) j"
                           " WHERE x.thread IS NOT NULL")
                 c.execute("INSERT INTO meta(key,value) VALUES ('convs_built', '1')")
+            c.execute("INSERT OR IGNORE INTO meta(key,value) SELECT 'seen_floor', COALESCE(MAX(id), 0) FROM messages")
             invite_cols = {r["name"] for r in c.execute("PRAGMA table_info(invites)")}
             if "provider" not in invite_cols:
                 c.execute("ALTER TABLE invites ADD COLUMN provider TEXT")
@@ -680,9 +685,15 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
         r = c.execute("SELECT session FROM thread_sessions WHERE thread=? AND handle=?", (thread, h)).fetchone()
         return r["session"] if r else None
 
+    def seen_by(c, h: str, ids) -> None:
+        """Agent `h` has these messages in front of it now (a read, not a listener's long-poll)."""
+        now = _now()
+        c.executemany("INSERT OR IGNORE INTO reads(msg,handle,time) VALUES (?,?,?)", [(i, h, now) for i in ids])
+
     def take(c, h: str, session: Optional[str], msgs: list) -> None:
         """A chat read these: the ones no chat of `h` owned yet are now its own, and so is their thread.
         An old client (no session) claims them as '' so that no chat handles them a second time."""
+        seen_by(c, h, [m["id"] for m in msgs])
         for m in msgs:
             c.execute("INSERT OR IGNORE INTO routes(msg,handle,session) VALUES (?,?,?)", (m["id"], h, session or ""))
             if session and m.get("thread") is not None:     # a released thread moves to the chat taking it
@@ -1419,8 +1430,17 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
                 for r in c.execute(f"SELECT msg, media FROM message_media WHERE msg IN ({','.join('?' * len(ids))})"
                                    " ORDER BY rowid", ids):
                     files.setdefault(r["msg"], []).append(r["media"])
+            read: dict = {}
+            if rows:
+                for r in c.execute(f"SELECT msg, handle, time FROM reads WHERE msg IN ({','.join('?' * len(ids))})", ids):
+                    read.setdefault(r["msg"], {})[r["handle"]] = r["time"]
         for m in rows:
             m["media"] = [media_svc.brief(x) for x in files.get(m["id"], [])]
+            m["read"] = read.get(m["id"], {})
+        if thread and rows and me["role"] == "human":       # a person looking at a conversation has seen it
+            with store.tx() as c:
+                c.execute("INSERT INTO seen(handle,thread,last) VALUES (?,?,?) ON CONFLICT(handle,thread)"
+                          " DO UPDATE SET last=MAX(last, excluded.last)", (me["handle"], thread, max(m["id"] for m in rows)))
         return rows[::-1] if latest else rows
 
     @app.get("/threads")
@@ -1436,12 +1456,24 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
             rows = c.execute(q + " ORDER BY t.last DESC LIMIT ?", a + [limit]).fetchall()
             ids = [r["thread"] for r in rows]
             people: dict = {}
+            first: dict = {}
+            seen: dict = {}
             if ids:
-                for r in c.execute(f"SELECT thread, agent FROM members WHERE thread IN ({','.join('?' * len(ids))})"
-                                   " ORDER BY rowid", ids):
+                qs = ",".join("?" * len(ids))
+                for r in c.execute(f"SELECT thread, agent FROM members WHERE thread IN ({qs}) ORDER BY rowid", ids):
                     people.setdefault(r["thread"], []).append(r["agent"])
-        return [{"thread": r["thread"], "count": r["n"], "people": people.get(r["thread"], []), "last": msg_out(r)}
-                for r in rows]
+                for r in c.execute(f"SELECT id, sender, text FROM messages WHERE id IN ({qs})", ids):
+                    first[r["id"]] = {"from": r["sender"], "text": r["text"]}
+                for r in c.execute(f"SELECT thread, last FROM seen WHERE handle=? AND thread IN ({qs})", [me["handle"]] + ids):
+                    seen[r["thread"]] = r["last"]
+            floor = int((c.execute("SELECT value FROM meta WHERE key='seen_floor'").fetchone() or {"value": 0})["value"])
+
+        def unread(r) -> bool:
+            if r["sender"] in (me["handle"], SYSTEM):
+                return False                     # the newest is yours, or the hub's own note ("ama joined")
+            return r["id"] > seen.get(r["thread"], floor)
+        return [{"thread": r["thread"], "count": r["n"], "people": people.get(r["thread"], []), "last": msg_out(r),
+                 "first": first.get(r["thread"]), "unread": unread(r)} for r in rows]
 
     @app.get("/inbox")
     def inbox(limit: int = Query(20, ge=1, le=200), wait: float = Query(0, ge=0, le=50),
@@ -1906,7 +1938,7 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
     from . import connector
     connector.mount(app, SimpleNamespace(
         store=store, auth=auth, post=post, inbox_for=inbox_for, ack_to=ack_to,
-        take=take, check_session=check_session, CONVERSATION=CONVERSATION, media=media_svc, origin=origin, here=own_origin, no_session=no_session, start_session=start_session,
+        take=take, seen_by=seen_by, check_session=check_session, CONVERSATION=CONVERSATION, media=media_svc, origin=origin, here=own_origin, no_session=no_session, start_session=start_session,
         mark_read=mark_read, msg_out=msg_out, with_context=with_context, now=_now, loads=_loads, handle_re=HANDLE_RE,
         session_state=session_state,
         vault=vault))

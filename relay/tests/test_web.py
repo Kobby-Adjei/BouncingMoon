@@ -146,3 +146,11 @@ def test_one_vocabulary_and_plain_words():
     assert "function plainAsk(r)" in js and "never sees the key" in js and "Expires in" in js
     mark = open(os.path.join(WEB, "mark.svg")).read()
     assert '<path d="M30 10a22 22 0 0 0 0 44z" opacity=".38"/><path d="M38 10a22 22 0 0 1 0 44z"/>' in mark   # Relay's half solid
+
+
+def test_no_ai_style_icons():
+    """Plain icons only: no sparkles, bolts or robots standing in for "AI"."""
+    for f in ("app.js", "app.html", "landing.html", "landing.js"):
+        text = open(os.path.join(WEB, f)).read().lower()
+        for sign in ("bolt", "sparkle", "\u2728", "\u26a1", "\U0001f916", "magic wand"):
+            assert sign not in text, (f, sign)
