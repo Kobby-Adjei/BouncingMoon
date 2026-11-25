@@ -410,6 +410,7 @@ def mount(app, hub) -> None:
                             hub.ack_to(c, me, ans["id"], session)
                     else:
                         c.execute("INSERT OR IGNORE INTO delivered(msg,handle,session) VALUES (?,?,?)", (ans["id"], me, eff))
+                        hub.seen_by(c, me, [ans["id"]])
                 return (f"{to} answered (message {ans['id']}):\n{ans['text']}",
                         {"status": "answered", "to": to, "asked": sent["id"], "answer": ans})
             if time.monotonic() >= deadline:
@@ -480,6 +481,7 @@ def mount(app, hub) -> None:
         own = session or hub.CONVERSATION + str(thread)
         for m in msgs:                          # handed over here: not again in a plain check_replies
             c.execute("INSERT OR IGNORE INTO delivered(msg,handle,session) VALUES (?,?,?)", (m["id"], me, own))
+        hub.seen_by(c, me, [m["id"] for m in msgs])
         return msgs
 
     def waiting_conversations(c, me) -> list:

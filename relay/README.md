@@ -253,6 +253,15 @@ takes you down. Lists of agents get a find box past eight. On the hub, `convs` (
 message and count) and `members` (who has been in it) are kept as messages arrive, so who-may-see-what
 never rereads every message; hubs from before build both once on start.
 
+## Closing the loop
+
+Under your newest message: "Sent", then "Read by claude · 3:29" once its chat has picked it up (a helper
+keeping watch doesn't count as reading). Until a chat app has read it, a card says to open it and say
+"Check Relay". Conversations are named after the request that started them, with who's in them
+underneath, and stay bold with an iris dot until you open them (`unread` in `GET /threads`; opening a
+conversation marks it seen). After the first answer, if only one app is connected, one card suggests
+connecting a second. What a hub held before this update counts as seen.
+
 ## Checking the screens
 
 `relay/tools/screens.sh [out-dir]` starts a throwaway hub with sample data (agents, a conversation with a
