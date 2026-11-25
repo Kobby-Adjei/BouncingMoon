@@ -471,6 +471,19 @@ def mount(app, hub) -> None:
                     " AND NOT EXISTS (SELECT 1 FROM delivered d WHERE d.msg=m.id AND d.handle=r.handle AND d.session=r.session)"
                     " GROUP BY r.session ORDER BY MIN(m.id)", (me, hub.CONVERSATION + "%", me))]
 
+    def held_elsewhere(c, me, session) -> list:
+        """Answers held for another chat of mine that has gone quiet or closed: a chat that reconnected
+        with a new id, or a new chat picking the work up. Listed, not handed over: opening one by its
+        thread is what moves it here."""
+        rows = c.execute(
+            "SELECT m.thread, r.session, COUNT(*) AS n, GROUP_CONCAT(m.sender) AS who FROM routes r"
+            " JOIN messages m ON m.id=r.msg JOIN session_cursors s ON s.handle=r.handle AND s.session=r.session"
+            " WHERE r.handle=? AND r.session!=? AND r.session!='' AND r.session NOT LIKE ? AND m.sender!=? AND m.id>s.last"
+            " AND NOT EXISTS (SELECT 1 FROM delivered d WHERE d.msg=m.id AND d.handle=r.handle AND d.session=r.session)"
+            " GROUP BY m.thread, r.session ORDER BY MIN(m.id)", (me, session, hub.CONVERSATION + "%", me)).fetchall()
+        return [{"thread": r["thread"], "new": r["n"], "from": sorted(set(r["who"].split(",")))}
+                for r in rows if hub.session_state(c, me, r["session"]) != "alive"]
+
     def tool_check_replies(me, args, session=None):
         limit = max(1, min(int(args.get("limit", 20) or 20), 50))
         thread = args.get("thread")
@@ -490,11 +503,13 @@ def mount(app, hub) -> None:
                     hub.ack_to(c, me, box["cursor"], session)    # only the new messages; context is not marked read
             if box["messages"]:
                 hub.with_context(c, box["messages"])
-            waiting = waiting_conversations(c, me) if not session and thread is None else []
+            waiting = [] if thread is not None else held_elsewhere(c, me, session) if session else waiting_conversations(c, me)
         msgs = box["messages"]
         note = []
         if waiting:
-            note = ["Answers are waiting in conversations started from a chat. Open one only if you "
+            note = ["Answers are waiting in conversations started from an earlier chat. Open one only if you "
+                    "are carrying on that work: call check_replies with that thread." if session else
+                    "Answers are waiting in conversations started from a chat. Open one only if you "
                     "started it (in this chat): call check_replies with that thread."]
             note += [f"- thread {w['thread']}: {w['new']} new from {', '.join(w['from'])}" for w in waiting]
         if not msgs:

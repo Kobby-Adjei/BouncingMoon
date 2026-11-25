@@ -411,3 +411,19 @@ def test_a_chat_app_without_a_wake_up_still_gets_the_usual_ten_minutes(woken):
     time.sleep(0.6)                                       # sweeps ran: claude's chat (no wake-up) keeps it
     assert call(c, t["claude"], "check_replies", session="another-chat")["messages"] == []
     assert [m["text"] for m in call(c, t["claude"], "check_replies", session="claude-chat")["messages"]] == ["shorter?"]
+
+
+def test_a_new_chat_is_told_about_answers_held_for_an_earlier_chat_that_went_quiet(quick):
+    c, rec, t = quick
+    asked = ask(c, t, "chat-A", "a caption for the launch?")              # chat-A asks, then goes away
+    call(c, t["muse"], "check_replies", session="muse-1")
+    call(c, t["muse"], "reply", {"message_id": asked["asked"], "text": "New drop."}, "muse-1")
+    fresh = call(c, t["claude"], "check_replies", session="chat-B")       # chat-A still counts as there
+    assert fresh["messages"] == [] and fresh["waiting_conversations"] == []
+    time.sleep(0.7)                                                       # chat-A has gone quiet
+    later = call(c, t["claude"], "check_replies", session="chat-B")
+    assert later["messages"] == []                                        # not handed over by itself
+    assert later["waiting_conversations"] == [{"thread": asked["asked"], "new": 1, "from": ["muse"]}]
+    got = call(c, t["claude"], "check_replies", {"thread": asked["asked"]}, session="chat-B")["messages"]
+    assert [m["text"] for m in got] == ["New drop."]                       # opening it brings it here
+    assert call(c, t["claude"], "check_replies", session="chat-B")["waiting_conversations"] == []

@@ -1752,6 +1752,7 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
         store=store, auth=auth, post=post, inbox_for=inbox_for, ack_to=ack_to,
         take=take, check_session=check_session, CONVERSATION=CONVERSATION, media=media_svc, origin=origin, no_session=no_session, start_session=start_session,
         mark_read=mark_read, msg_out=msg_out, with_context=with_context, now=_now, loads=_loads, handle_re=HANDLE_RE,
+        session_state=session_state,
         vault=vault))
     from . import people
     sb_url = supabase_url or os.environ.get("SUPABASE_URL")
