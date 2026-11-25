@@ -101,7 +101,9 @@ main { overflow-x: clip; }   /* slide-ins must never widen a phone's layout view
 .btn.danger:hover { background: var(--fill); color: var(--red); }   /* red stays AA: no darker fill */
 .btn.danger { color: var(--red); }
 .btn.done, .btn.done:hover { background: var(--green-btn); color: var(--on-green); }
-.btn.small { height: 34px; width: auto; padding: 0 16px; font-size: 14px; border-radius: 999px; gap: 6px; }
+/* one scale for every button: large 48px (a screen's main action), small 36px on a phone, 32px on a computer
+   (app.html), and text-only buttons at least 36px tall to tap */
+.btn.small { height: 36px; width: auto; padding: 0 16px; font-size: 14px; border-radius: 999px; gap: 6px; }
 .btn svg { width: 18px; height: 18px; flex: none; }
 .btn.small svg { width: 16px; height: 16px; }
 .link { border: 0; background: none; color: var(--accent); padding: 8px 4px; cursor: pointer; font-size: 15px; font-weight: 500; border-radius: 6px; }

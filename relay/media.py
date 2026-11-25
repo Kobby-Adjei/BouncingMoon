@@ -1107,8 +1107,8 @@ main{position:relative;z-index:1;min-height:100vh;display:flex;justify-content:c
 .orb.sealed .mk{opacity:0}.orb.sealed .seal{animation:seal .45s var(--spring) .15s both}
 .note{font:500 17px/1.4 var(--display);letter-spacing:-.02em;color:var(--ink);margin:22px 0 0;overflow-wrap:anywhere;text-wrap:pretty}
 /* buttons: pills */
-.btn{appearance:none;display:flex;align-items:center;justify-content:center;gap:10px;width:100%;height:56px;padding:0 26px;border:0;border-radius:999px;
- background:var(--accent);color:var(--on-accent);font:600 17px var(--font);letter-spacing:-.015em;cursor:pointer;text-decoration:none;
+.btn{appearance:none;display:flex;align-items:center;justify-content:center;gap:10px;width:100%;height:48px;padding:0 26px;border:0;border-radius:999px;
+ background:var(--accent);color:var(--on-accent);font:600 16px var(--font);letter-spacing:-.01em;cursor:pointer;text-decoration:none;
  box-shadow:0 1px 0 rgba(255,255,255,.22) inset,0 12px 26px -12px var(--accent);transition:transform .45s var(--spring),background-color .2s,opacity .2s}
 .btn:hover{background:var(--accent-hover)}.btn:active{transform:scale(.96);transition:transform .12s var(--ease)}
 .btn svg{width:20px;height:20px;flex:none}
@@ -1130,7 +1130,7 @@ video,img.full{display:block;width:100%;max-height:72vh;border-radius:20px;box-s
 video{background:#000}img.full{object-fit:contain;background:var(--fill)}
 audio{display:block;width:100%}
 .wait{color:var(--ink2);margin:22px 0 0}
-.actions{margin-top:18px}.actions .btn{width:auto;display:inline-flex;height:52px;font-size:16.5px}
+.actions{margin-top:18px}.actions .btn{width:auto;display:inline-flex;height:48px;font-size:16px}
 .sect{margin-top:40px}
 .sect h2{font:700 20px/1.2 var(--display);letter-spacing:-.03em;margin:0 0 12px}
 .t{display:flex;gap:12px;align-items:baseline;padding:5px 0}

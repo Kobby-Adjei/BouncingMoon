@@ -80,7 +80,7 @@ async function seed() {
   const VARIANTS = [["phone-light", { width: 390, height: 844 }, "light"], ["phone-dark", { width: 390, height: 844 }, "dark"],
     ["desktop", { width: 1280, height: 800 }, "light"]];
   const browser = await chromium.launch();
-  const problems = [], a11y = [];
+  const problems = [], a11y = [], buttons = [];
   for (const [variant, viewport, scheme] of VARIANTS) {
     for (const [name, p, who, desktop] of SCREENS) {
       if (variant === "desktop" && !desktop) continue;
@@ -110,6 +110,13 @@ async function seed() {
       });
       for (const o of out) problems.push(`${variant}/${name}: sticks out: ${o}`);
       await page.screenshot({ path: path.join(OUT, `${variant}--${name}.png`) });
+      // every button's size, so sizes can be checked against the scale (buttons.json; tools/sizes.py reads it)
+      buttons.push(...(await page.evaluate(() => [...document.querySelectorAll("button, a.btn, .btn, [role=button], input[type=submit]")].map((b) => {
+        const r = b.getBoundingClientRect(), cs = getComputedStyle(b);
+        if (!r.width || !r.height || cs.visibility === "hidden" || b.closest("[aria-hidden=true]")) return null;
+        return { cls: (typeof b.className === "string" ? b.className : "").trim(), text: (b.textContent || b.getAttribute("aria-label") || "").trim().slice(0, 30),
+          h: Math.round(r.height), w: Math.round(r.width), font: cs.fontSize, weight: cs.fontWeight, radius: cs.borderTopLeftRadius, bg: cs.backgroundColor };
+      }).filter(Boolean))).map((b) => ({ ...b, screen: `${variant}/${name}` })));
       // RELAY_AXE=<path to axe.min.js>: also check each screen for accessibility problems (axe-core)
       if (process.env.RELAY_AXE) {          // phone and desktop: the sidebar is only on a desktop
         await page.addScriptTag({ path: process.env.RELAY_AXE });
@@ -122,6 +129,7 @@ async function seed() {
   }
   await browser.close();
   fs.writeFileSync(path.join(OUT, "problems.txt"), problems.join("\n") + "\n");
+  fs.writeFileSync(path.join(OUT, "buttons.json"), JSON.stringify(buttons));
   if (process.env.RELAY_AXE) { fs.writeFileSync(path.join(OUT, "a11y.txt"), a11y.join("\n") + "\n"); console.log(`${a11y.length} accessibility finding(s), in a11y.txt`); }
   console.log(problems.length ? `${problems.length} problem(s):\n` + problems.join("\n") : "No script errors, nothing scrolls sideways.");
   process.exit(0);
