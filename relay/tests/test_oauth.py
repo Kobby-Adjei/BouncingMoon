@@ -100,6 +100,13 @@ def test_paste_url_sign_in_allow_and_the_app_is_connected_as_a_new_agent(hub):
     assert agent["provider"] == "claude"                                       # known from the app's name
 
 
+def test_an_app_that_just_connected_shows_as_here_not_as_not_connected_yet(hub):
+    c, owner = hub
+    connect(c, owner, new_agent="claude")
+    agent = next(a for a in c.get("/agents", headers={"Authorization": f"Bearer {owner}"}).json() if a["handle"] == "claude")
+    assert agent["last_seen"] and time.time() - agent["last_seen"] < 30
+
+
 def test_the_allow_page_is_safe_and_mobile_ready(hub):
     c, _ = hub
     cid = register(c)

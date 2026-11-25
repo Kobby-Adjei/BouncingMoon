@@ -111,7 +111,7 @@ async function seed() {
       for (const o of out) problems.push(`${variant}/${name}: sticks out: ${o}`);
       await page.screenshot({ path: path.join(OUT, `${variant}--${name}.png`) });
       // RELAY_AXE=<path to axe.min.js>: also check each screen for accessibility problems (axe-core)
-      if (process.env.RELAY_AXE && variant !== "desktop") {
+      if (process.env.RELAY_AXE) {          // phone and desktop: the sidebar is only on a desktop
         await page.addScriptTag({ path: process.env.RELAY_AXE });
         const v = await page.evaluate(async () => (await axe.run(document, { resultTypes: ["violations"] })).violations
           .map((x) => ({ id: x.id, impact: x.impact, help: x.help, nodes: x.nodes.slice(0, 3).map((n) => n.target.join(" ")) })));

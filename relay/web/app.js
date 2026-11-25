@@ -47,6 +47,7 @@ function mark(cls = "mark") {      // the Relay mark: one half passing to the ot
 const stroke = { fill: "none", stroke: "currentColor", "stroke-width": "1.9", "stroke-linecap": "round", "stroke-linejoin": "round" };
 const ICONS = {
   plus: "M12 5v14M5 12h14",
+  share: "M12 3.5v11M8 7l4-3.5L16 7M7 11H6a2 2 0 0 0-2 2v6a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-6a2 2 0 0 0-2-2h-1",
   chat: "M4 6.5A2.5 2.5 0 0 1 6.5 4h11A2.5 2.5 0 0 1 20 6.5v8a2.5 2.5 0 0 1-2.5 2.5H10l-4.5 3.5V17H6.5A2.5 2.5 0 0 1 4 14.5z",
   bell: "M12 3a6 6 0 0 0-6 6v3.5L4.5 15h15L18 12.5V9a6 6 0 0 0-6-6zM9.5 18a2.5 2.5 0 0 0 5 0",
   send: "M12 19V5M6 11l6-6 6 6",
@@ -105,6 +106,7 @@ function presence(t) {
   return s < 120 ? "on" : s < 86400 ? "recent" : "off";
 }
 const isOwner = () => ME && (ME.owner || ME.role === "admin");
+const canAdd = () => isOwner() || (ME && ME.role === "human");       // a person connects their own apps
 const slug = (input) => input.addEventListener("input", () => { const v = input.value.toLowerCase().replace(/\s+/g, "-"); if (v !== input.value) input.value = v; });
 
 async function copy(text, btn, label = "Copy") {
@@ -122,6 +124,11 @@ function copyField(k, value, { secret = false } = {}) {
   return h("div", { class: "copyfield" },
     h("div", { class: "grow" }, h("div", { class: "k", text: k }),
       h("div", { class: "val", text: secret ? value.slice(0, 10) + "•".repeat(14) : value })), b);
+}
+// where the phone can share (Messages, WhatsApp, Mail…), one press hands the link over
+function shareBtn(text, url) {
+  if (!navigator.share) return null;
+  return h("button", { class: "btn press", type: "button", onclick: () => navigator.share({ text, url }).catch(() => {}) }, icon("share", "2.2"), "Share invite");
 }
 // a long message to paste: folded preview, one big copy button
 function copyBlock(text, label = "Copy") {
@@ -268,21 +275,46 @@ function screen(name, opts, ...kids) {
 const RAIL_ICONS = {
   agents: "M9 11a3.25 3.25 0 1 0 0-6.5A3.25 3.25 0 0 0 9 11zM3 19.5c.5-3.3 2.9-5.3 6-5.3s5.5 2 6 5.3M15.5 4.8a3.1 3.1 0 0 1 0 6M17.5 14.5c1.9.6 3.1 2.3 3.5 5",
   activity: ICONS.chat,
+  "me/keys": "M4 15.5a4 4 0 1 0 8 0a4 4 0 1 0-8 0M10.9 12.6L19.5 4M16.5 7l2.5 2.5M14 9.5l2 2",
 };
-function railItem(tab, label) {
+function railItem(tab, label, extra) {
   return h("button", { class: "railitem press", type: "button", "data-tab": tab, title: label, onclick: () => nav(tab) },
-    h("span", { class: "ic" }, svg("0 0 24 24", [{ d: RAIL_ICONS[tab], ...stroke }])), h("span", { class: "lbl", text: label }));
+    h("span", { class: "ic" }, svg("0 0 24 24", [{ d: RAIL_ICONS[tab], ...stroke }]), extra || null), h("span", { class: "lbl", text: label }));
 }
+// A desktop is an app, not a stretched phone: one sidebar with everything one click away (Relay, Add,
+// Agents, Activity with what's waiting for you, Keys) and you at the bottom. No top bar above it.
 function ensureShell() {
   if (shell && shell.isConnected) return;
+  const waiting = h("span", { class: "rbadge", hidden: "" });
+  const person = ME && ME.role === "human";
   rail = h("nav", { class: "rail", "aria-label": "Relay" },
-    isOwner() ? h("button", { class: "railadd press", type: "button", title: "Add an agent or person", onclick: () => nav("add") },
-      icon("plus", "2.4"), h("span", { class: "lbl", text: "Add" })) : null,
-    railItem("agents", "Agents"), railItem("activity", "Activity"));
+    h("div", { class: "railbrand" }, mark(), h("span", { class: "word", text: "Relay" })),
+    canAdd() ? h("button", { class: "railadd press", type: "button", title: isOwner() ? "Add an agent or person" : "Connect an app", onclick: () => nav("add") },
+      icon("plus", "2.4"), h("span", { class: "lbl", text: isOwner() ? "Add" : "Connect an app" })) : null,
+    railItem("agents", "Agents"), railItem("activity", "Activity", waiting), person ? railItem("me/keys", "Keys") : null,
+    h("div", { class: "railgap" }),
+    ME && ME.role !== "admin" ? h("button", { class: "railme press", type: "button", "data-tab": "me", title: ME.handle, onclick: () => nav("me") },
+      avatar({ handle: ME.handle, role: "human" }, 32),
+      h("span", { class: "lbl" }, h("b", { text: ME.handle }), h("span", { text: ME.owner ? "Owner" : "You" }))) : null);
   listPane = h("section", { class: "listpane", "aria-label": "List" });
   detailPane = h("section", { class: "detail", "aria-label": "Details" });
   shell = h("div", { class: "shell" }, rail, listPane, detailPane);
   app.replaceChildren(shell);
+  // what's waiting for you (an OK to give, someone asking to join), on Activity, kept fresh
+  const count = async () => {
+    const [asks, wants] = await Promise.all([person ? api("GET", "/approvals").catch(() => []) : [],
+      isOwner() ? api("GET", "/invite-requests").catch(() => []) : []]);
+    const n = asks.length + wants.length;
+    waiting.textContent = n > 9 ? "9+" : String(n); waiting.hidden = !n;
+    waiting.closest(".railitem").setAttribute("aria-label", n ? `Activity, ${n} waiting for you` : "Activity");
+  };
+  count(); every(shell, count, 15000);
+}
+// which sidebar item is lit: Keys and You when they're open, else the list beside it
+function markRail() {
+  if (!rail) return;
+  const cur = route.startsWith("me/keys") ? "me/keys" : route.split("/")[0] === "me" ? "me" : (listPane && listPane.dataset.tab) || "agents";
+  for (const b of rail.querySelectorAll("[data-tab]")) b.toggleAttribute("aria-current", b.dataset.tab === cur);
 }
 function backLabel() {
   return h("button", { class: "link sm press paneback", type: "button", onclick: goBack },
@@ -295,7 +327,7 @@ function paneScreen(name, tab, kids) {
   if (tab) {
     listPane.dataset.tab = tab;
     listPane.replaceChildren(view);
-    for (const b of rail.querySelectorAll(".railitem")) b.toggleAttribute("aria-current", b.dataset.tab === tab);
+    markRail();
   } else {
     const up = parentOf(route);
     if (up && up !== "agents" && up !== "activity") view.prepend(backLabel());
@@ -327,7 +359,8 @@ function known(r) {
   if (z !== undefined) return false;
   if (top === "agents") return !y || !!x && (y === "wake" || ONE_TIME.has(y));
   if (top === "activity") return !x || (x === "new" && !y) || (x === "to" && !!y) || (/^\d+$/.test(x) && !y);
-  if (top === "add") return isOwner() && (!y || (y === "withkey" && !!x));
+  if (top === "add") return isOwner() ? (!y || (y === "withkey" && !!x))
+    : !!ME && ME.role === "human" && !y && (!x || APPS.some((a) => a.id === x && a.style === "allow"));
   if (top === "me") return (!x || ((x === "apps" || x === "passkeys" || x === "delete" || x === "friend") && !y) || (x === "keys" && (!y || y === "new" || /^k_[0-9a-f]{12}$/.test(y))))
     && !!ME && ME.role !== "admin";
   if (top === "approve") return !!ME && ME.role === "human" && /^c_[0-9a-f]{16}$/.test(x || "") && !y;
@@ -393,7 +426,7 @@ function render(r) {
       call("list", tab === "activity" ? activity : agents);
     }
     call("detail", ...screenFor(r));
-    markSelected();
+    markSelected(); markRail();
   } else {
     call("app", ...screenFor(r));
   }
@@ -446,7 +479,9 @@ function goTab(fn) {
     depth = (st && st.relay && st.depth) || 0;
     if (r && known(r)) return nav(r, { replace: true });
     history.replaceState({ relay: 1, depth }, "", location.pathname + location.search);   // a bare /app stays bare
-    route = tab; drawMe(); call(WIDE ? "detail" : "app", ...(WIDE ? [pickHint, tab] : [fn]));
+    route = tab; drawMe();
+    if (WIDE) ensureShell();                      // the list pane must exist before either half is drawn
+    call(WIDE ? "detail" : "app", ...(WIDE ? [pickHint, tab] : [fn]));
     if (WIDE) { listPane.dataset.tab = tab; call("list", fn); }
     return;
   }
@@ -456,7 +491,7 @@ back.addEventListener("click", goBack);
 for (const b of topseg.children) b.addEventListener("click", () => goTab(b.dataset.go === "activity" ? activity : agents));
 window.addEventListener("scroll", () => bar.classList.toggle("scrolled", window.scrollY > 8), { passive: true });
 function drawMe() {
-  barRight.replaceChildren(ME && ME.role !== "admin" ? h("button", { class: "mebtn press", type: "button", "aria-label": "You", title: ME.handle, onclick: () => nav("me") },
+  barRight.replaceChildren(ME && ME.role !== "admin" && !WIDE ? h("button", { class: "mebtn press", type: "button", "aria-label": "You", title: ME.handle, onclick: () => nav("me") },
     avatar({ handle: ME.handle, role: "human" }, WIDE ? 36 : 32)) : "");
 }
 // on a desktop, the detail pane when nothing is open
@@ -470,15 +505,10 @@ async function pickHint(tab) {
     try {
       const asks = ME.role === "human" ? await api("GET", "/approvals").catch(() => []) : [];
       if (asks.length) return nav(`approve/${asks[0].id}`, { replace: true });
-      const msgs = await api("GET", "/messages?latest=true&limit=100");
-      const count = {};
-      for (const m of msgs) count[m.thread] = (count[m.thread] || 0) + 1;
-      const last = [...msgs].reverse().find((m) => !(count[m.thread] === 1 && /^🔑 Asking /u.test(m.text || "")));
-      if (last) {
-        const people = [...new Set(msgs.filter((m) => m.thread === last.thread).flatMap((m) => [m.from, ...(m.mentions || [])]))]
-          .filter((x) => x !== ME.handle && x !== "relay");
-        return nav(`activity/${last.thread}`, { replace: true, data: people });
-      }
+      const convs = await api("GET", "/threads?limit=20");
+      // a real conversation: not a lone "joined the hub" notice, not a lone "asking for your OK" (that's the Review row)
+      const c = convs.find((t) => (t.count > 1 || t.last.from !== "relay") && !(t.count === 1 && /^🔑 Asking /u.test(t.last.text || "")));
+      if (c) return nav(`activity/${c.thread}`, { replace: true, data: c.people.filter((x) => x !== ME.handle && x !== "relay") });
     } catch {}
   }
   overview(tk);
@@ -530,18 +560,16 @@ async function overview(tk) {
   const next = asks.length ? `approve/${asks[0].id}` : wants.length ? `ask/${wants[0].id}` : null;
   // one thing to do at most, one quiet line, the address: nothing the sidebar or the list already offers
   const act = next ? h("button", { class: "btn small press", type: "button", onclick: () => nav(next) }, "Review")
-    : !mine.length && isOwner() ? h("button", { class: "btn small press", type: "button", onclick: () => nav("add") }, "Add your first app") : null;
+    : !mine.length && canAdd() ? h("button", { class: "btn small press", type: "button", onclick: () => nav("add") }, "Connect your first app") : null;
   const line = mine.length ? h("p", { class: "oline" },
     now ? h("span", null, h("span", { class: "adot now" }), `${now} answer${now === 1 ? "s" : ""} now`) : null,
     later ? h("span", null, h("span", { class: "adot later" }), `${later} when asked`) : null) : null;
-  const url = location.origin + "/mcp";
-  const pill = h("button", { class: "copyurl press", type: "button", title: "Copy" }, h("span", { class: "u", text: url }), h("span", { class: "c", text: "Copy" }));
-  pill.addEventListener("click", () => copy(url, pill.querySelector(".c"), "Copy"));
   screen("pick", tk, h("div", { class: "overview" },
     mine.length ? sky(mine, waiting) : h("div", { class: "orbit", "aria-hidden": "true" }, h("span", { class: "ghost g1" }), h("span", { class: "ghost g2" }),
       h("span", { class: "ghost g3" }), h("span", { class: "ghost g4" }), h("span", { class: "core" }, mark())),
-    h("h1", { class: "title", text: waiting ? `${waiting} waiting for you` : mine.length ? "All quiet" : "Nothing here yet" }),
-    line, act, h("div", { class: "oaddr" }, pill)));
+    h("h1", { class: "title", text: waiting ? `${waiting} waiting for you` : mine.length ? "All quiet" : "Connect your first AI" }),
+    !mine.length && !waiting ? h("p", { class: "oline", text: "Claude, ChatGPT, Grok, Muse and more. It takes a minute." }) : null,
+    line, act));
 }
 
 function signOut(message) { KEY = null; ME = null; store.clear(); trail.length = 0; clearInterval(timer); timer = null; signin(message); }
@@ -830,7 +858,7 @@ async function joinView(code) {
       const s = await api("POST", "/auth/session/owner", {}, r.token);
       KEY = s.token; ME = await api("GET", "/agents/me", undefined, s.token);
       store.set(s.token, true);
-      history.replaceState(null, "", "/app#me/apps");           // first stop: connect your own Claude
+      history.replaceState(null, "", "/app#add");               // first stop: connect your own AI, step by step
       const into = () => goTab(agents);
       const backup = way("Copy a backup key", null);
       backup.addEventListener("click", () => copy(r.token, backup, "Copy a backup key"));
@@ -887,29 +915,37 @@ function blank(title, sub, action) {
 async function agents() {
   const tk = ticket();
   const list = h("div", { class: "group people" }, h("div", { class: "empty", text: "Loading…" }));
-  const add = isOwner() && !WIDE ? h("button", { class: "btn small press", type: "button", onclick: () => nav("add") }, icon("plus", "2.4"), "Add") : null;
-  const view = screen("agents", { ...tk, tab: "agents" }, head("Agents", null, add), list);
+  const add = canAdd() && !WIDE ? h("button", { class: "btn small press", type: "button", onclick: () => nav("add") }, icon("plus", "2.4"), "Add") : null;
+  let q = "";
+  const find = findBox("Find an agent or person", (v) => { q = v; refresh(); });
+  find.hidden = true;
+  const top = head("Agents", null, add); top.classList.add("tabhead");
+  const view = screen("agents", { ...tk, tab: "agents" }, top, find, list);
   let first = true;
   async function refresh() {
     try {
       const ags = await api("GET", "/agents");
-      const rows = ags.filter((a) => a.handle !== (ME && ME.handle)).map((a) =>
+      const everyone = ags.filter((a) => a.handle !== (ME && ME.handle));
+      find.hidden = everyone.length <= 8 && !q;
+      if (add) add.hidden = !everyone.length;          // empty: the one button is the big one in the middle
+      const shownAgs = q ? everyone.filter((a) => matches(a, q)) : everyone;
+      const rows = shownAgs.map((a) =>
         h("button", { class: "cell press", type: "button", "data-key": `agents/${enc(a.handle)}`, onclick: () => nav(`agents/${enc(a.handle)}`) },
           avatar(a, 46, true),
           h("div", { class: "grow" }, h("div", { class: "t", text: a.handle }),
             h("div", { class: "s", text: `${PROVIDER_NAMES[providerOf(a)] || "Other"} · ${ago(a.last_seen)}` })),
           chev()));
-      if (rows.length) {
+      if (!rows.length && q) list.replaceChildren(h("div", { class: "empty", text: `No one called “${q}”.` }));
+      else if (rows.length) {
         if (!list.isConnected) view.querySelector(".blank").replaceWith(list);
         list.replaceChildren(...rows);
         if (first) list.classList.add("stagger"); else list.classList.remove("stagger");
         markSelected();
       } else if (WIDE) {          // the empty picture goes in the big pane; the list just says so
-        list.replaceChildren(h("div", { class: "empty", text: "No agents yet." }));
-        emptyHint(blank("No agents yet", isOwner() ? "Add one and it gets an address." : null,
-          isOwner() ? h("button", { class: "btn small press", type: "button", onclick: () => nav("add") }, icon("plus", "2.4"), "Add") : null));
+        list.replaceChildren();
+        emptyHint(firstApp());
       } else if (list.isConnected) {
-        list.replaceWith(blank("No agents yet", isOwner() ? "Add one and it gets an address." : null));
+        list.replaceWith(firstApp());
       }
       first = false;
     } catch (x) { if (x.status !== 401) list.replaceChildren(h("div", { class: "empty", text: x.message })); }
@@ -918,6 +954,19 @@ async function agents() {
   if (!view.isConnected) return;
   if (WIDE) listRefresh = refresh;
   every(view, refresh, 5000);
+}
+// nothing connected yet: one thing to do, said plainly, with the button right there
+// a search box for a list that has grown: by name, or by the app it lives in
+const matches = (a, q) => a.handle.includes(q) || (PROVIDER_NAMES[providerOf(a)] || "").toLowerCase().includes(q);
+function findBox(label, onChange) {
+  const input = h("input", { class: "field", type: "search", placeholder: label, "aria-label": label, autocomplete: "off", spellcheck: "false" });
+  let t = null;
+  input.addEventListener("input", () => { clearTimeout(t); t = setTimeout(() => onChange(input.value.trim().toLowerCase()), 120); });
+  return h("div", { class: "findbox" }, input);
+}
+function firstApp() {
+  return blank("Connect your first AI", "Claude, ChatGPT, Grok, Muse and more. It takes a minute, and nothing to install.",
+    canAdd() ? h("button", { class: "btn press firstbtn", type: "button", onclick: () => nav("add") }, icon("plus", "2.4"), "Connect an app") : null);
 }
 // on a desktop, swap the "Pick one" picture for a better one while nothing is open
 function emptyHint(el) {
@@ -974,7 +1023,7 @@ function allowGuide(a) {
   orb.append(h("span", { class: "kseal" }, tick("sealtick")));
   let status = stickyStatus(`Waiting for ${a.label}…`);
   const list = h("ol", { class: "steps" }, ...STEPS[a.id].map((parts) => h("li", null, h("div", null, ...parts))));
-  const done = h("button", { class: "btn ghost press", type: "button", onclick: () => nav("me/apps", { replace: true }) }, "Done");
+  const done = h("button", { class: "btn ghost press", type: "button", onclick: () => nav("me/apps", { replace: true }) }, "Finish later");
   const adv = h("details", { class: "advanced" }, h("summary", { class: "press" }, "Advanced"),
     h("div", { class: "stack tight", style: "padding-top:14px" },
       h("p", { class: "hint", style: "margin:0", text: a.via === "invite"
@@ -982,8 +1031,9 @@ function allowGuide(a) {
         : `If ${a.label} can't sign in, it can use a Relay key instead.` }),
       h("button", { class: "btn ghost small press", type: "button", onclick: () => nav(`add/${a.id}/withkey`) },
         a.via === "invite" ? "Set up instant replies" : "Use a key instead")));
+  const hello = h("div", { class: "hellobox" });
   const view = screen("allow", tk, h("div", { class: "hero" }, orb, h("h1", { class: "title", text: `Add Relay to ${a.label}` })),
-    h("div", { class: "stack" }, status, list, done, adv));
+    h("div", { class: "stack" }, status, list, hello, done, isOwner() ? adv : null));
   let seen = null;
   const t = every(view, async () => {
     try {
@@ -995,7 +1045,12 @@ function allowGuide(a) {
         if (listRefresh) listRefresh();
         orb.classList.add("sealed");
         const s2 = stickyStatus(`${fresh.app || a.label} is connected as ${fresh.agent}`, true); status.replaceWith(s2); status = s2;
-        done.classList.replace("ghost", "done");
+        hello.replaceChildren(h("button", { class: "btn press", type: "button", onclick: () => nav(`activity/to/${enc(fresh.agent)}`) },
+          `Say hello to ${fresh.agent}`));
+        hello.classList.add("in");
+        done.className = "way press donelink"; done.textContent = "Done";
+        list.classList.add("finished");            // the steps are behind them now
+        view.querySelector(".hero .title").textContent = "Connected"; adv.remove();
       }
     } catch {}
   }, 2500);
@@ -1003,11 +1058,11 @@ function allowGuide(a) {
 
 function addPick() {
   const grid = h("div", { class: "pick stagger" });
-  for (const a of APPS) {
+  for (const a of APPS.filter((x) => isOwner() || x.style === "allow")) {
     grid.append(h("button", { class: "opt press", type: "button", onclick: () => nav(`add/${a.id}`) },
       appAvatar(a, 52), h("span", { text: a.label }), h("span", { class: "sub", text: a.sub })));
   }
-  screen("add", ticket(), head("Add", "Where does it live?"), grid);
+  screen("add", ticket(), isOwner() ? head("Add", "Where does it live?") : head("Connect your AI", "Which app do you use? Pick one and follow three steps."), grid);
 }
 
 async function addName(a) {
@@ -1159,7 +1214,8 @@ function inviteGuide(a, inv) {
   const done = h("button", { class: "btn ghost press", type: "button", onclick: finish(handle) }, "Done");
   let status = stickyStatus(`Waiting for ${handle}…`);
   const body = person
-    ? h("div", { class: "stack tight" }, h("p", { class: "hint", style: "margin:0", text: "Send it privately: a message, not a group. It works once, for 3 days. They join with Face ID or a fingerprint, no password." }), copyField("Invite link", link))
+    ? h("div", { class: "stack tight" }, h("p", { class: "hint", style: "margin:0", text: "Send it privately: a message, not a group. It works once, for 3 days. They join with Face ID or a fingerprint, no password." }),
+        copyField("Invite link", link), shareBtn(`Join me on Relay: our AIs can pass work to each other.`, link))
     : h("div", { class: "stack tight" },
         h("p", { class: "hint", style: "margin:0", text: `Paste into a terminal on the computer where ${a.label} is signed in. It answers by itself after that, on your own plan. Works once, for 24 h.` }),
         installBlock(code, a.connect),
@@ -1229,7 +1285,6 @@ async function profile(handle) {
     a.role !== "human" ? runsOn(a) : null,
     (a.caps || []).length ? h("div", { class: "cell" }, h("div", { class: "grow t plain" }, "Does work"), h("span", { class: "v", text: a.caps.join(", ") })) : null,
     a.role === "human" && isOwner() && (AUTH.email || a.email) ? emailRow(a) : null,
-    h("div", { class: "cell" }, h("div", { class: "grow t plain" }, "Address"), h("span", { class: "v", style: "font-family:var(--mono);font-size:.92em;letter-spacing:0", text: a.handle })),
     a.client ? h("div", { class: "cell" }, h("div", { class: "grow t plain" }, "Connected from"), h("span", { class: "v", text: a.client })) : null);
   const danger = isOwner() && a.handle !== ME.handle ? h("div", { class: "spread danger-row" },
     h("button", { class: "link sm press", type: "button", onclick: () => newKey(a) }, "Issue new key"),
@@ -1238,7 +1293,7 @@ async function profile(handle) {
       try { await api("DELETE", `/agents/${encodeURIComponent(a.handle)}`); if (listRefresh) listRefresh(); nav("agents", { replace: true }); } catch (x) { alert(x.message); }
     } }, "Remove")) : null;
   const sub = h("div", { class: "row small", style: "gap:8px" }, h("span", { class: "dot " + presence(a.last_seen) }),
-    h("span", { text: `${a.role === "human" ? "Person" : PROVIDER_NAMES[p] || "Agent"} · ${ago(a.last_seen)}` }));
+    h("span", { text: a.role === "human" ? `Person · ${ago(a.last_seen)}` : ago(a.last_seen) }));
   screen("profile", tk,
     h("div", { class: "profile" }, avatar(a, 88), h("h1", { class: "title", text: a.handle }), sub, quick),
     h("div", { class: "stack" }, h("section", { class: "facts" }, h("h2", { class: "label", text: "Details" }), info), danger));
@@ -1259,7 +1314,7 @@ async function meScreen() {
         miniOrb("claude", "relay", 40), h("span", { class: "grow" }, h("b", { text: "Connected apps" })), chev()),
       h("button", { class: "door press", type: "button", onclick: () => nav("me/passkeys") },
         passOrb(40), h("span", { class: "grow" }, h("b", { text: "Passkeys" })), chev()),
-      h("button", { class: "door press", type: "button", onclick: () => nav("me/keys") },
+      WIDE ? null : h("button", { class: "door press", type: "button", onclick: () => nav("me/keys") },
         keyOrb("", 40), h("span", { class: "grow" }, h("b", { text: "Keys" })), chev()),
       !ME.owner && ME.role === "human" ? friendDoor() : null,
       ME.owner ? h("button", { class: "door press", type: "button", onclick: (e) => saveBackup(e.currentTarget) },
@@ -1372,7 +1427,7 @@ async function appsScreen() {
       api("GET", "/agents").then((all) => Object.fromEntries(all.map((a) => [a.handle, a]))).catch(() => ({}))]);
   } catch (x) { list.replaceChildren(h("p", { class: "err", text: x.message })); return; }
   if (!view.isConnected) return;
-  if (!conns.length) { view.querySelector(".addapp .k").textContent = "Your Relay address"; return list.replaceChildren(emptyApps()); }
+  if (!conns.length) return list.replaceChildren(emptyApps());
   list.replaceChildren(...conns.map((c, i) => pairItem(c, agentsBy[c.agent], i, list)));
 }
 function pairItem(c, agent, i, list) {
@@ -1411,7 +1466,8 @@ function connectHint() {
   const url = location.origin + "/mcp";
   const btn = h("button", { class: "copyurl press", type: "button", title: "Copy" }, h("span", { class: "u", text: url }), h("span", { class: "c", text: "Copy" }));
   btn.addEventListener("click", () => copy(url, btn.querySelector(".c"), "Copy"));
-  return h("div", { class: "addapp" }, h("span", { class: "k", text: "Connect another app" }), btn);
+  return h("div", { class: "addapp" }, canAdd() ? h("button", { class: "btn small press", type: "button", onclick: () => nav("add") }, icon("plus", "2.4"), "Connect an app") : null,
+    h("span", { class: "k", text: "Or paste your Relay address into any MCP app" }), btn);
 }
 
 // ------------------------------------------------------------------ keys: your agents use them, never see them
@@ -2115,21 +2171,19 @@ async function activity() {
   const tk = ticket();
   const list = h("div", { class: "group conv" }, h("div", { class: "empty", text: "Loading…" }));
   const neu = ME.role !== "admin" ? h("button", { class: "btn small press", type: "button", onclick: () => nav("activity/new") }, icon("plus", "2.4"), "New") : null;
-  const view = screen("activity", { ...tk, tab: "activity" }, head("Activity", null, neu), list);
+  const top = head("Activity", null, neu); top.classList.add("tabhead");
+  const view = screen("activity", { ...tk, tab: "activity" }, top, list);
   let first = true;
+  // It grows without end, so it comes a page at a time: the newest conversations, then "Show older".
+  let pages = 1, more = false, allNeeds = false;
+  const PAGE = 40;
   async function refresh() {
     try {
-      const [msgs, ags, asks, wants] = await Promise.all([api("GET", "/messages?latest=true&limit=200"), api("GET", "/agents"),
+      const [convs, ags, asks, wants] = await Promise.all([api("GET", `/threads?limit=${Math.min(PAGE * pages, 200)}`), api("GET", "/agents"),
         ME.role === "human" ? api("GET", "/approvals").catch(() => []) : [], isOwner() ? api("GET", "/invite-requests").catch(() => []) : []]);
+      more = convs.length >= Math.min(PAGE * pages, 200);
       const by = Object.fromEntries(ags.map((a) => [a.handle, a]));
-      const threads = new Map();
-      for (const m of msgs) {
-        const t = threads.get(m.thread) || { id: m.thread, msgs: [], people: new Set() };
-        t.msgs.push(m);
-        if (m.from !== "relay") t.people.add(m.from);
-        for (const x of m.mentions || []) t.people.add(x);
-        threads.set(m.thread, t);
-      }
+      const threads = new Map(convs.map((c) => [c.thread, { id: c.thread, msgs: [c.last], count: c.count, people: new Set(c.people) }]));
       const oks = asks.map((r) => h("button", { class: "cell jobcell press", type: "button", "data-key": `approve/${r.id}`, onclick: () => nav(`approve/${r.id}`) },
         h("span", { class: "stackav" }, avatar(by[r.agent] || { handle: r.agent }, 44)),
         h("div", { class: "grow" }, h("div", { class: "t", text: `${r.agent} wants to ${VERB[r.method] || r.method}` }),
@@ -2141,11 +2195,16 @@ async function activity() {
           h("div", { class: "s one", text: (w.by ? `via ${w.by} · ` : "") + w.contact })),
         h("span", { class: "btn small", text: "Review" }))));
       // what needs you first, then the conversations newest first, under Today · Yesterday · This week · Earlier
-      const rows = needs.length ? [secthead("Needs you"), ...needs] : [];
+      // a pile of things to review never pushes the conversations off the screen: three, then the rest on request
+      const FOLD = 3;
+      const folded = !allNeeds && needs.length > FOLD + 1;
+      const rows = needs.length ? [secthead(needs.length > FOLD ? `Needs you · ${needs.length}` : "Needs you"), ...(folded ? needs.slice(0, FOLD) : needs)] : [];
+      if (folded) rows.push(h("button", { class: "morerow press", type: "button", onclick: () => { allNeeds = true; refresh(); } },
+        `Show ${needs.length - FOLD} more`, chev()));
       let section = null;
       const sorted = [...threads.values()].sort((x, y) => y.msgs[y.msgs.length - 1].time - x.msgs[x.msgs.length - 1].time)
         // an agent's "asking you to OK" note on its own is the Review row above, said twice: show it once
-        .filter((t) => !(t.msgs.length === 1 && /^🔑 Asking /u.test(t.msgs[0].text || "")));
+        .filter((t) => !(t.count === 1 && /^🔑 Asking /u.test(t.msgs[0].text || "")));
       for (const t of sorted) {
         const last = t.msgs[t.msgs.length - 1];
         const others = [...t.people].filter((p) => p !== ME.handle);
@@ -2161,13 +2220,15 @@ async function activity() {
               h("span", { class: "when tnum", text: whenShort(last.time) })),
             h("div", { class: "s preview", text: who + gist(last.text) }))));
       }
+      if (more && pages * PAGE < 200) rows.push(h("button", { class: "morerow press", type: "button", onclick: (e) => {
+        e.currentTarget.disabled = true; pages++; refresh(); } }, "Show older conversations", chev()));
       if (rows.length) {
         if (!list.isConnected) view.querySelector(".blank").replaceWith(list);
         list.replaceChildren(...rows);
         if (first) list.classList.add("stagger"); else list.classList.remove("stagger");
         markSelected();
       } else if (WIDE) {
-        list.replaceChildren(h("div", { class: "empty", text: "No conversations yet." }));
+        list.replaceChildren();
         emptyHint(blank("Quiet so far", "Messages between your agents land here."));
       } else if (list.isConnected) list.replaceWith(blank("Quiet so far", "Messages between your agents land here."));
       first = false;
@@ -2183,9 +2244,11 @@ async function newMessage() {
   const tk = ticket();
   let ags = [];
   try { ags = (await api("GET", "/agents")).filter((a) => a.handle !== ME.handle); } catch {}
-  const grid = h("div", { class: "pick stagger" }, ...ags.map((a) => h("button", { class: "opt press", type: "button", onclick: () => nav(`activity/to/${enc(a.handle)}`) },
-    avatar(a, 52, true), h("span", { text: a.handle }), h("span", { class: "sub", text: ago(a.last_seen) }))));
-  screen("new", tk, head("New message", "Who to?"), ags.length ? grid : blank("No one to message yet", "Add an agent first."));
+  const tile = (a) => h("button", { class: "opt press", type: "button", onclick: () => nav(`activity/to/${enc(a.handle)}`) },
+    avatar(a, 52, true), h("span", { text: a.handle }), h("span", { class: "sub", text: ago(a.last_seen) }));
+  const grid = h("div", { class: "pick stagger" }, ...ags.map(tile));
+  const find = ags.length > 8 ? findBox("Find someone", (q) => grid.replaceChildren(...ags.filter((a) => !q || matches(a, q)).map(tile))) : null;
+  screen("new", tk, head("New message", "Who to?"), find, ags.length ? grid : blank("No one to message yet", "Add an agent first."));
 }
 
 // ------------------------------------------------------------------ the AI apps someone uses (invite asks, stats)
@@ -2275,13 +2338,30 @@ function fileCard(f) {
     : h("span", { class: "filecard" }, ...body);
 }
 
+// A chat app (Claude, ChatGPT, Grok, Muse) can't be woken: it reads Relay when its person asks it to.
+const appOf = (a) => PROVIDER_NAMES[providerOf(a)] || "its app";
+function helloNote(to) {
+  const later = to.filter((a) => a.answers === "when_asked"), now = to.filter((a) => a.answers === "instantly");
+  if (later.length) return [`Say hello. Then, in ${appOf(later[0])}, say `, h("b", { text: "Check Relay" }), ` and ${later[0].handle} answers here.`];
+  if (now.length) return [`Say hello. ${now[0].handle} answers right away.`];
+  return ["Say hello."];
+}
+function askNudge(asleep) {
+  const a = asleep[0];
+  const chip = h("button", { class: "saychip press", type: "button", title: "Copy" }, h("span", { text: "Check Relay" }), h("span", { class: "c", text: "Copy" }));
+  chip.addEventListener("click", () => copy("Check Relay", chip.querySelector(".c"), "Copy"));
+  return h("div", { class: "asknudge", role: "status" },
+    h("span", { class: "zz", "aria-hidden": "true" }, avatar(a, 28)),
+    h("span", { class: "grow" }, h("b", { text: asleep.length > 1 ? `${asleep.map((x) => x.handle).join(", ")} read Relay when you ask` : `${a.handle} reads Relay when you ask` }),
+      h("span", { class: "say" }, h("span", { text: `Open ${appOf(a)} and say` }), chip)));
+}
 async function thread(id, people) {
   const tk = ticket();
   if (!people) {        // opened from the address bar: who is in it comes from the messages
     const set = new Set();
     let found = -1;
     try {
-      const msgs = await api("GET", `/messages?thread=${id}&limit=200`);
+      const msgs = await api("GET", `/messages?thread=${id}&latest=true&limit=200`);
       found = msgs.length;
       for (const m of msgs) {
         if (m.from !== "relay") set.add(m.from);
@@ -2309,10 +2389,11 @@ async function thread(id, people) {
     if (!to.length) { goes.replaceChildren(); return; }
     const now = to.filter((x) => by[x] && by[x].answers === "instantly");
     const later = to.filter((x) => !now.includes(x) && by[x] && by[x].answers !== "person");
-    goes.replaceChildren(h("span", { class: "k", text: "Goes to" }),
-      ...to.map((x) => h("span", { class: "who" }, answersDot(by[x]), h("span", { text: x }))),
-      h("span", { class: "note", text: now.length ? (later.length ? `${now.join(", ")} now · others when asked` : "Answers now")
-        : later.length ? "Replies when asked · @ for now" : "" }));
+    const adding = named().some((x) => !people.includes(x));       // the header already names the people in it
+    goes.replaceChildren(...(adding ? [h("span", { class: "k", text: "Goes to" }),
+      ...to.map((x) => h("span", { class: "who" }, answersDot(by[x]), h("span", { text: x })))] : []),
+      h("span", { class: "note", text: now.length ? (later.length ? `${now.join(", ")} answers now · others when you ask them` : "Answers now")
+        : later.length ? "Reads it when you ask" : "" }));
   }
   function paintPick() {
     const before = input.value.slice(0, input.selectionStart);
@@ -2346,7 +2427,7 @@ async function thread(id, people) {
         faces.replaceChildren(...people.slice(0, 2).map((x) => avatar(by[x] || { handle: x }, WIDE ? 36 : 44, true)));
       }
       if (!threadId && view.isConnected && route.startsWith("activity/to/")) setRoute(`activity/${m.thread}`, people);
-      threadId = m.thread; input.value = ""; input.style.height = "auto"; refresh();
+      threadId = m.thread; input.value = ""; input.style.height = "auto"; justSent = true; refresh();
       if (listRefresh && listPane.dataset.tab === "activity") listRefresh();
     } catch (x) { alert(x.message); }
     send.disabled = false; input.focus(); paintPick(); paintGoes();
@@ -2362,37 +2443,106 @@ async function thread(id, people) {
   if (composer && view.isConnected) (WIDE ? detailPane : app).append(composer);    // phone: outside the sliding page, so "fixed" means the window
   try { for (const a of await api("GET", "/agents")) by[a.handle] = a; } catch {}
   if (composer) paintGoes();
+  const blankNote = list.querySelector(".sysmsg");
+  if (!id && blankNote) blankNote.replaceChildren(...helloNote(people.map((x) => by[x]).filter(Boolean)));
   faces.append(...people.slice(0, 2).map((x) => avatar(by[x] || { handle: x }, WIDE ? 36 : 44, true)));
-  let shown = "";
+  // A conversation can run to thousands of messages. It opens on the newest page; older pages come on request
+  // and keep your place. New messages never pull you away from what you're reading: a pill says they came.
+  const PAGE = 60;
+  const byId = new Map(), painted = new Set();
   const opened = new Set();             // long messages already unfolded stay open when the view repaints
+  let shown = "", older = false, loadedOnce = false, justSent = false, unseen = 0;
+  const scroller = () => WIDE ? view : document.scrollingElement;
+  const fromEnd = () => { const el = scroller(); return el.scrollHeight - el.scrollTop - el.clientHeight; };
+  const earlier = h("button", { class: "earlier press", type: "button", onclick: loadEarlier }, "Show earlier messages");
+  const jumpN = h("span", { class: "n" });
+  const jump = h("button", { class: "jump press", type: "button", hidden: "", "aria-label": "Jump to the latest message",
+    onclick: () => { unseen = 0; paintJump(); scrollEnd(view); } },
+    svg("0 0 14 8", [{ d: "M1.5 1.5L7 6.5l5.5-5", fill: "none", stroke: "currentColor", "stroke-width": "2", "stroke-linecap": "round", "stroke-linejoin": "round" }]), jumpN);
+  if (composer) composer.append(jump);
+  function paintJump() {
+    const far = fromEnd() > 400;
+    if (!far && fromEnd() < 160) unseen = 0;
+    jumpN.textContent = unseen ? `${unseen} new` : "";
+    jump.classList.toggle("withn", !!unseen);
+    jump.hidden = !(far || unseen);
+  }
+  const onScroll = () => { if (!view.isConnected) return (WIDE ? view : window).removeEventListener("scroll", onScroll); paintJump(); };
+  (WIDE ? view : window).addEventListener("scroll", onScroll, { passive: true });
+  async function loadEarlier() {
+    const first = Math.min(...byId.keys());
+    earlier.disabled = true; earlier.textContent = "Loading…";
+    try {
+      const page = await api("GET", `/messages?thread=${threadId}&latest=true&limit=${PAGE}&before=${first}`);
+      older = page.length >= PAGE;
+      for (const m of page) { byId.set(m.id, m); painted.add(m.id); }     // older pages arrive without the rise
+      const el = scroller(), keep = el.scrollHeight - el.scrollTop;      // stay on the message you were reading
+      paint(true);
+      el.scrollTop = el.scrollHeight - keep;
+    } catch {}
+    earlier.disabled = false; earlier.textContent = "Show earlier messages";
+  }
+  function bubble(m, prev) {
+    if (m.from === "relay") return h("div", { class: "sysmsg", text: plain(m.text) });
+    const mine = m.from === ME.handle, run = prev && prev.from === m.from;
+    const who = run ? null : h("div", { class: "who", text: `${mine ? "You" : m.from} · ${clock(m.time)}` });
+    const face = mine ? null : run ? h("span", { class: "ghostav" }) : avatar(by[m.from] || { handle: m.from, role: "agent" }, 32);
+    const text = plain(m.text);
+    const bub = h("div", { class: "bub" }, ...richText(text));
+    if (m.media && m.media.length) bub.append(...m.media.map(fileCard));
+    // a long message folds: the conversation stays readable, the whole thing is one tap away
+    const long = text.length > 700 || text.split("\n").length > 14;
+    const more = long ? h("button", { class: "more press", type: "button", "aria-expanded": "false" }) : null;
+    if (more) {
+      const set = (open) => {
+        bub.classList.toggle("folded", !open); more.setAttribute("aria-expanded", String(open));
+        more.replaceChildren(open ? "Show less" : "Show all", chev());
+      };
+      set(opened.has(m.id));
+      more.addEventListener("click", () => {
+        const open = !opened.has(m.id);
+        open ? opened.add(m.id) : opened.delete(m.id);
+        set(open);
+        if (!open) bub.scrollIntoView({ block: "nearest", behavior: "smooth" });     // folding a long one back: stay on it
+      });
+    }
+    return h("div", { class: "msg" + (mine ? " mine" : "") }, face, h("div", { class: "body" }, who, bub, more));
+  }
+  function paint(keepPlace) {
+    const msgs = [...byId.values()].sort((a, b) => a.id - b.id);
+    const sig = (older ? "+" : "") + msgs.map((m) => m.id + (m.media || []).map((x) => x.status).join()).join("|");   // a file finished being watched: repaint
+    if (sig === shown) return;
+    const near = fromEnd() < 160;
+    const fresh = msgs.filter((m) => !painted.has(m.id));
+    lastId = msgs.length ? msgs[msgs.length - 1].id : threadId;
+    list.replaceChildren(...(older ? [earlier] : []), ...msgs.map((m, i) => {
+      const el = bubble(m, msgs[i - 1] && msgs[i - 1].from !== "relay" ? msgs[i - 1] : null);
+      if (painted.has(m.id)) el.style.animation = "none";
+      return el;
+    }));
+    for (const m of fresh) painted.add(m.id);
+    // you spoke last, to a chat app: it won't see this until you ask it there. Say so, and what to say.
+    const last = msgs[msgs.length - 1];
+    const asleep = last && last.from === ME.handle ? people.map((x) => by[x]).filter((a) => a && a.answers === "when_asked") : [];
+    if (asleep.length) list.append(askNudge(asleep));
+    const firstPaint = !shown;
+    shown = sig;
+    if (keepPlace) return paintJump();
+    if (firstPaint || near || justSent) { justSent = false; unseen = 0; scrollEnd(view, !firstPaint); }
+    else unseen += fresh.filter((m) => m.from !== ME.handle).length;      // reading further up: say they came, don't move
+    paintJump();
+  }
   async function refresh() {
     if (!threadId) return;
     try {
-      const msgs = await api("GET", `/messages?thread=${threadId}&limit=200`);
-      const sig = msgs.map((m) => m.id + (m.media || []).map((x) => x.status).join()).join("|");   // a file finished being watched: repaint
-      if (sig === shown) return;
-      lastId = msgs.length ? msgs[msgs.length - 1].id : threadId;
-      let prev = null;
-      const before = shown ? shown.split("|").length : 0;
-      list.replaceChildren(...msgs.map((m, i) => {
-        const anim = i >= before ? "" : "animation:none";
-        if (m.from === "relay") { prev = null; return h("div", { class: "sysmsg", style: anim, text: plain(m.text) }); }
-        const mine = m.from === ME.handle, run = prev === m.from; prev = m.from;
-        const who = run ? null : h("div", { class: "who", text: `${mine ? "You" : m.from} · ${clock(m.time)}` });
-        const face = mine ? null : run ? h("span", { class: "ghostav" }) : avatar(by[m.from] || { handle: m.from, role: "agent" }, 32);
-        const text = plain(m.text);
-        const bub = h("div", { class: "bub" }, ...richText(text));
-        if (m.media && m.media.length) bub.append(...m.media.map(fileCard));
-        // a long message folds: the conversation stays readable, the whole thing is one tap away
-        const long = text.length > 700 || text.split("\n").length > 14;
-        const more = long && !opened.has(m.id) ? h("button", { class: "more press", type: "button", onclick: () => {
-          opened.add(m.id); bub.classList.remove("folded"); more.remove(); } }, "Show all") : null;
-        if (more) bub.classList.add("folded");
-        return h("div", { class: "msg" + (mine ? " mine" : ""), style: anim }, face, h("div", { class: "body" }, who, bub, more));
-      }));
-      const firstPaint = !shown;
-      shown = sig;
-      scrollEnd(view, !firstPaint);
+      const msgs = await api("GET", `/messages?thread=${threadId}&latest=true&limit=${loadedOnce ? 30 : PAGE}`);
+      if (!loadedOnce) { older = msgs.length >= PAGE; loadedOnce = true; }
+      const top = byId.size ? Math.max(...byId.keys()) : 0;
+      // more than a poll's worth came at once: fetch the gap so nothing in between is skipped
+      if (top && msgs.length === 30 && msgs[0].id > top)
+        for (const m of await api("GET", `/messages?thread=${threadId}&after=${top}&limit=200`)) byId.set(m.id, m);
+      for (const m of msgs) byId.set(m.id, m);
+      paint();
     } catch {}
   }
   await refresh();

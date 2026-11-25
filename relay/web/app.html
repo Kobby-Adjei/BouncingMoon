@@ -26,6 +26,14 @@
 .backbtn svg { width: 10px; height: 17px; }
 .page { max-width: 680px; margin: 0 auto; padding: 8px 16px calc(120px + env(safe-area-inset-bottom)); }
 .head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 12px 0 16px; }
+/* a phone's tab roots: the switch at the top names the tab, so the title is for screen readers only and the
+   action sits on its own small row */
+@media (max-width: 959px) {
+  .tabhead { justify-content: flex-end; margin: 4px 0 8px; min-height: 34px; }
+  .tabhead .title { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+}
+.steps.finished { display: none; }
+.donelink { justify-self: center; }
 .topseg { width: 200px; }
 .topseg:has(> :nth-child(3):not(.hidden)) { width: 252px; }
 .brandmini { display: inline-flex; align-items: center; gap: 8px; font: 650 17px/1 var(--display); letter-spacing: -.02em; }
@@ -87,7 +95,10 @@
 .msg .bub .mlink { color: inherit; text-decoration: underline; text-decoration-color: color-mix(in srgb, currentColor 40%, transparent);
   text-underline-offset: 2px; word-break: break-all; }
 .msg .bub.folded { max-height: 240px; overflow: hidden; -webkit-mask-image: linear-gradient(#000 70%, transparent); mask-image: linear-gradient(#000 70%, transparent); }
-.msg .more { justify-self: start; margin: 4px 0 0 8px; border: 0; background: none; padding: 4px 6px; color: var(--accent); font: 600 13px var(--font); cursor: pointer; }
+.msg .more { justify-self: start; display: inline-flex; align-items: center; gap: 6px; margin: 4px 0 0 8px; border: 0; background: none; padding: 4px 6px;
+  color: var(--accent); font: 600 13px var(--font); cursor: pointer; }
+.msg .more .chev { width: 6px; height: 10px; transform: rotate(90deg); transition: transform .25s var(--ease); }   /* down: opens */
+.msg .more[aria-expanded=true] .chev { transform: rotate(-90deg); }                                             /* up: folds back */
 .msg.mine .more { justify-self: end; margin: 4px 8px 0 0; }
 /* Activity on a busy hub: sections, one-line titles */
 .secthead { font: 650 12px var(--font); letter-spacing: .04em; text-transform: uppercase; color: var(--ink2); padding: 18px 16px 6px; }
@@ -137,10 +148,48 @@
 .msg.mine .filecard .seen.ok { color: inherit; }
 .sysmsg { justify-self: center; font-size: 12px; color: var(--ink2); padding: 4px 12px; margin: 12px 0;
   max-width: 92%; text-align: center; overflow-wrap: anywhere; animation: fade .4s var(--ease) both; }
+.sysmsg b { color: var(--ink); font-weight: 600; }
+/* you spoke last to a chat app: it reads Relay when you ask it there. One card, what to say, a copy chip. */
+.asknudge { justify-self: center; display: flex; align-items: center; gap: 12px; width: min(100%, 420px); margin: 14px 0 4px;
+  padding: 12px 12px 12px 14px; border-radius: 18px; background: var(--raise); box-shadow: var(--shadow); text-align: left;
+  animation: rise .5s var(--ease) .35s both; }
+.asknudge { align-items: flex-start; }
+.asknudge .grow { display: grid; gap: 1px; min-width: 0; font-size: 13px; color: var(--ink2); }
+.asknudge .say { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; margin-top: 6px; }
+.asknudge .grow b { font-size: 14px; font-weight: 600; color: var(--ink); overflow-wrap: anywhere; }
+.asknudge .zz { position: relative; flex: none; display: grid; }
+.asknudge .zz::after { content: ""; position: absolute; inset: -4px; border-radius: 50%; box-shadow: 0 0 0 1.5px var(--accent);
+  opacity: 0; animation: waitring 2.4s var(--ease) 1s infinite; }
+@keyframes waitring { 0% { transform: scale(.85); opacity: .7; } 100% { transform: scale(1.35); opacity: 0; } }
+.saychip { appearance: none; border: 0; flex: none; display: inline-flex; align-items: center; gap: 8px; padding: 7px 7px 7px 12px; border-radius: 999px;
+  background: var(--fill); color: var(--ink); font: 600 13.5px var(--font); cursor: pointer; }
+.saychip .c { padding: 4px 10px; border-radius: 999px; background: var(--accent); color: #fff; font-size: 12px; }
+.firstbtn { margin-top: 6px; }
+@media (prefers-reduced-motion: reduce) { .asknudge, .asknudge .zz::after, .hellobox.in, .jump { animation: none !important; } }
+.hellobox:empty { display: none; }
+.hellobox.in { animation: pop .5s var(--spring) both; }
+.addapp > .btn { margin-bottom: 10px; }
+/* a long conversation: older pages on request; a pill back down to the newest, with a count when new ones came */
+.earlier { appearance: none; border: 0; justify-self: center; margin: 4px 0 14px; padding: 8px 16px; border-radius: 999px; background: var(--fill);
+  color: var(--accent); font: 600 13px var(--font); cursor: pointer; }
+.earlier:hover { background: var(--fill2); } .earlier:disabled { color: var(--ink2); cursor: default; }
+.jump { position: absolute; right: max(16px, calc((100% - 680px) / 2 + 16px)); bottom: calc(100% + 12px); display: inline-flex; align-items: center;
+  justify-content: center; gap: 8px; min-width: 40px; height: 40px; padding: 0 12px; border: 0; border-radius: 999px; cursor: pointer;
+  background: var(--card); color: var(--ink); font: 600 13px var(--font); box-shadow: var(--shadow); animation: pop .4s var(--spring) both; }
+.jump[hidden] { display: none; }
+.jump svg { width: 14px; height: 8px; }
+.jump.withn { background: var(--accent); color: var(--on-accent); padding: 0 14px 0 12px; }
+.jump .n:empty { display: none; }
+/* a list that would grow without end shows its first part and says how to see the rest */
+.morerow { appearance: none; border: 0; display: flex; align-items: center; justify-content: center; gap: 6px; width: 100%; min-height: 44px;
+  margin: 4px 0 8px; border-radius: 14px; background: none; color: var(--accent); font: 600 14px var(--font); cursor: pointer; }
+.findbox { margin: 0 0 10px; } .findbox .field { width: 100%; }
+.morerow:hover { background: var(--fill); } .morerow:disabled { color: var(--ink2); }
+.morerow .chev { width: 7px; height: 12px; transform: rotate(90deg); }
 .composer { position: fixed; left: 0; right: 0; bottom: 0; z-index: 6; background: color-mix(in srgb, var(--bg) 88%, transparent);
   backdrop-filter: saturate(180%) blur(20px); -webkit-backdrop-filter: saturate(180%) blur(20px); 
   padding: 10px 0 calc(10px + env(safe-area-inset-bottom)); animation: rise .45s var(--ease) both; }
-.composer form { max-width: 680px; margin: 0 auto; padding: 0 16px; display: flex; gap: 8px; align-items: flex-end; }
+.composer form { width: 100%; max-width: 680px; margin: 0 auto; padding: 0 16px; display: flex; gap: 8px; align-items: flex-end; }
 .composer textarea { flex: 1; resize: none; min-height: 44px; max-height: 140px; padding: 11px 14px; border: 0; border-radius: 22px; background: var(--fill);
   color: var(--ink); font: 16px/1.4 var(--font); outline: none; box-shadow: inset 0 0 0 1px transparent; transition: box-shadow .2s var(--ease); }
 .composer textarea:focus { box-shadow: inset 0 0 0 1px var(--accent), 0 0 0 3px var(--ring); }
@@ -383,7 +432,7 @@ pre.block.muted { color: var(--ink2); }
    Below 960px none of this applies and the phone layout above is the whole story. */
 .rail, .listpane, .detail { display: none; }
 @media (min-width: 960px) {
-  :root { --barh: 52px; --rail: 76px; --list: clamp(260px, 32vw, 300px); }
+  :root { --barh: 52px; --rail: 76px; --list: clamp(260px, 32vw, 300px); --side: var(--bg2); }
   body:has(.shell) { overflow: hidden; font-size: 14px; }
   .bar { background: var(--bg); backdrop-filter: none; -webkit-backdrop-filter: none; }
   .bar-in { max-width: none; height: var(--barh); margin: 0; padding: 0 16px 0 24px; grid-template-columns: auto 1fr; }
@@ -395,12 +444,26 @@ pre.block.muted { color: var(--ink2); }
   .mebtn { display: grid; border-radius: 50%; transition: box-shadow .25s var(--ease); }
   .mebtn:hover { box-shadow: 0 0 0 3px var(--fill2); }
 
-  .shell { display: grid; grid-template-columns: var(--rail) var(--list) minmax(0, 1fr); height: calc(100vh - var(--barh));
-    height: calc(100dvh - var(--barh)); }
+  /* the sidebar carries Relay's name and you: no bar above the app */
+  body:has(.shell) #bar { display: none; }
+  .shell { display: grid; grid-template-columns: var(--rail) var(--list) minmax(0, 1fr); height: 100vh; height: 100dvh; }
   .rail, .listpane, .detail { display: flex; }
 
-  /* rail: icons with a small label underneath; the full rail comes at 1024px */
-  .rail { flex-direction: column; align-items: center; gap: 2px; padding: 12px 0 16px; }
+  /* rail: icons with a small label underneath; the full sidebar comes at 1024px */
+  .rail { flex-direction: column; align-items: center; gap: 2px; padding: 0 0 14px; background: var(--side); }   /* a shade apart, no hairline */
+  .railbrand { display: flex; align-items: center; gap: 9px; height: 52px; flex: none; font: 650 16px/1 var(--display); letter-spacing: -.02em; color: var(--ink); }
+  .railbrand .mark { width: 24px; height: 24px; }
+  .railbrand .word { display: none; }
+  .railgap { flex: 1; }
+  .railitem .ic { position: relative; }
+  .rbadge { position: absolute; top: -4px; right: 0; min-width: 18px; height: 18px; padding: 0 5px; border-radius: 999px;
+    background: var(--sun); color: var(--on-sun); font: 700 11px/18px var(--font); text-align: center; box-shadow: 0 0 0 2px var(--side);
+    animation: pop .5s var(--spring) both; }
+  .rbadge[hidden] { display: none; }
+  .railme { display: grid; place-items: center; width: 48px; height: 48px; padding: 0; border: 0; border-radius: 50%; background: none; cursor: pointer; color: var(--ink); }
+  .railme .lbl { display: none; }
+  .railme:hover .av, .railme[aria-current] .av { box-shadow: 0 0 0 3px var(--fill2); }
+  .railme .av { transition: box-shadow .2s var(--ease); }
   .railadd { width: 40px; height: 40px; margin-bottom: 14px; border: 0; border-radius: var(--r-btn); background: var(--accent); color: var(--on-accent);
     display: grid; place-items: center; cursor: pointer; font-weight: 600; font-size: 14px; }
   .railadd svg { width: 18px; height: 18px; }
@@ -429,6 +492,7 @@ pre.block.muted { color: var(--ink2); }
   .listpane .cell .s { font-size: 13px; }
   .listpane .people .av { --s: 36px !important; }
   .listpane .chev { display: none; }
+  .listpane .morerow .chev { display: inline-block; }     /* "Show 2 more" keeps its arrow */
   .listpane button.cell:hover { background: var(--fill); }
   .listpane .cell[aria-current], .listpane .cell[aria-current]:hover { background: var(--sel); }
   .listpane .cell[aria-current]::before, .listpane .cell[aria-current] + .cell::before { opacity: 0; }
@@ -485,7 +549,9 @@ pre.block.muted { color: var(--ink2); }
   /* nothing open */
   .detail[data-page=pick] > .page { display: grid; place-items: center; padding-bottom: 96px; }
   .detail[data-page=pick] .blank { padding: 0; }
-  .detail[data-page=pick] .blank .t { font-size: 15px; font-weight: 500; color: var(--ink2); }
+  .detail[data-page=pick] .blank { max-width: 420px; }
+  .detail[data-page=pick] .blank .t { font-size: 24px; font-weight: 700; letter-spacing: -.025em; margin-top: 8px; }
+  .detail .blank .firstbtn { justify-self: center; width: auto; padding: 0 20px; }
   /* the overview where "pick one" used to be: a heading, a quiet line, at most one button, the address */
   .overview { display: grid; justify-items: center; gap: 12px; text-align: center; max-width: 420px; }
   .overview .title { font-size: 24px; margin: 8px 0 0; }
@@ -534,7 +600,7 @@ pre.block.muted { color: var(--ink2); }
   .detail .msg { max-width: 72%; }
   .detail .msg .bub { font-size: 14px; padding: 8px 12px; border-radius: 14px; }
   .detail .msg .who { font-size: 11px; }
-  .detail > .composer { position: static; flex: none; padding: 12px var(--gut) 16px; background: var(--bg); border-top: 0;
+  .detail > .composer { position: relative; flex: none; padding: 12px var(--gut) 16px; background: var(--bg); border-top: 0;
     backdrop-filter: none; -webkit-backdrop-filter: none; animation: fade .3s var(--ease) both; }
   .detail > .composer form { max-width: none; margin: 0; padding: 0; }
   .detail > .composer textarea { min-height: 40px; padding: 10px 16px; font-size: 14px; border-radius: 20px; }
@@ -556,21 +622,37 @@ pre.block.muted { color: var(--ink2); }
   .detail .profile > .title { font-size: 20px; }
 }
 @media (min-width: 1024px) {
-  :root { --rail: 216px; --list: 320px; }
+  :root { --rail: 200px; --list: 320px; }
   .bar-in { padding-left: 20px; }
   .rail { align-items: stretch; padding: 12px 10px 16px; gap: 1px; }
-  .railadd { display: inline-flex; align-self: flex-start; gap: 6px; width: auto; height: 32px; padding: 0 14px 0 10px; margin: 0 0 14px 2px; border-radius: 999px; }
+  .rail { padding: 0 12px 12px; }
+  .railbrand { padding: 0 8px; }
+  .railbrand .word { display: inline; }
+  .railadd { display: flex; justify-content: center; gap: 6px; width: auto; height: 36px; padding: 0 14px 0 10px; margin: 4px 0 18px; border-radius: 999px;
+    box-shadow: 0 8px 18px -10px var(--accent); }
   .railadd svg { width: 16px; height: 16px; }
   .railadd .lbl { display: inline; }
-  .railitem { display: flex; align-items: center; gap: 10px; width: auto; height: 32px; padding: 0 12px; border-radius: 999px; font-size: 14px;
+  .railitem { display: flex; align-items: center; gap: 11px; width: auto; height: 36px; padding: 0 12px; border-radius: 12px; font-size: 14px;
     transition: background-color .2s var(--ease), color .2s var(--ease); }
+  .railitem .ic { display: contents; }          /* icon, name, then the count at the far end */
+  .railitem .rbadge { position: static; order: 2; margin-left: auto; box-shadow: none; }
+  .railitem .lbl { order: 1; flex: 1; text-align: left; }
+  .railitem:has(.rbadge:not([hidden])) .lbl { flex: 0 1 auto; }
+  .railme { display: flex; align-items: center; gap: 10px; width: auto; height: auto; padding: 8px; border-radius: 14px; text-align: left; }
+  .railme .lbl { display: grid; min-width: 0; line-height: 1.25; }
+  .railme .lbl b { font-size: 14px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .railme .lbl span { font-size: 12px; color: var(--ink2); }
+  .railme:hover { background: var(--fill); }
+  .railme[aria-current] { background: var(--fill2); }
+  .railme:hover .lbl span, .railme[aria-current] .lbl span { color: var(--ink); }   /* grey on the lit shade is too faint to read */
+  .railme:hover .av, .railme[aria-current] .av { box-shadow: none; }
   .railitem .ic { width: auto; height: auto; background: none !important; }
   .railitem svg { width: 18px; height: 18px; }
   .railitem:hover { background: var(--fill); }
   .railitem[aria-current] { background: var(--fill2); }
   .railitem[aria-current] .ic { color: var(--accent); }
 }
-@media (min-width: 1280px) { :root { --list: 360px; } }
+@media (min-width: 1280px) { :root { --rail: 216px; --list: 360px; } }
 </style>
 </head>
 <body>
