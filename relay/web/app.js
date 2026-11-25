@@ -50,7 +50,7 @@ const ICONS = {
   share: "M12 3.5v11M8 7l4-3.5L16 7M7 11H6a2 2 0 0 0-2 2v6a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-6a2 2 0 0 0-2-2h-1",
   chat: "M4 6.5A2.5 2.5 0 0 1 6.5 4h11A2.5 2.5 0 0 1 20 6.5v8a2.5 2.5 0 0 1-2.5 2.5H10l-4.5 3.5V17H6.5A2.5 2.5 0 0 1 4 14.5z",
   bell: "M12 3a6 6 0 0 0-6 6v3.5L4.5 15h15L18 12.5V9a6 6 0 0 0-6-6zM9.5 18a2.5 2.5 0 0 0 5 0",
-  bolt: "M13.5 2.5L5 13.5h6.5l-1 8L19 10.5h-6.5z",
+  reply: "M9.5 6.5L4.5 11.5l5 5M4.5 11.5h9.5a5.5 5.5 0 0 1 5.5 5.5v1",
   send: "M12 19V5M6 11l6-6 6 6",
   mail: "M4 6.5h16v11H4zM4.5 7l7.5 6 7.5-6",
 };
@@ -1326,7 +1326,7 @@ async function profile(handle) {
   const p = providerOf(a);
   const quick = h("div", { class: "quick" },
     h("button", { class: "q press", type: "button", onclick: () => nav(`activity/to/${enc(a.handle)}`) }, icon("chat"), "Message"),
-    isOwner() && a.role !== "human" ? h("button", { class: "q press", type: "button", onclick: () => nav(`agents/${enc(a.handle)}/wake`) }, icon("bolt"), "Instant replies") : null);      // a bolt: it answers right away (a bell read as "notify me")
+    isOwner() && a.role !== "human" ? h("button", { class: "q press", type: "button", onclick: () => nav(`agents/${enc(a.handle)}/wake`) }, icon("reply"), "Instant replies") : null);      // a plain reply arrow, no "AI"-style symbols; a bell read as "notify me"
   const info = h("div", { class: "group info" },
     a.role !== "human" ? runsOn(a) : null,
     (a.caps || []).length ? h("div", { class: "cell" }, h("div", { class: "grow t plain" }, "Does work"), h("span", { class: "v", text: a.caps.join(", ") })) : null,
