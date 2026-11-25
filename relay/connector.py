@@ -541,6 +541,8 @@ def mount(app, hub) -> None:
             if m.get("context"):
                 lines.append(f"Earlier in thread {m['thread']} (for context):")
                 lines.extend(f"  [{x['id']}] from {x['from']}: {x['text']}" for x in m["context"])
+                if m.get("context_note"):
+                    lines.append("  " + m["context_note"])
             kind = "reply in your thread" if m["thread"] != m["id"] else "new message"
             lines.append(f"[{m['id']}] from {m['from']} ({kind}): {m['text']}")
             for card in cards.get(m["id"], []):

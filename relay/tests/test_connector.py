@@ -215,15 +215,16 @@ def test_a_woken_agent_gets_the_thread_it_is_answering(hub):
     assert "busiest shots" in text and "Which trailer?" in text and text.index("busiest") < text.index("do this")
     # context is not marked read: nothing new is left, and nothing old comes back as new
     assert call(hub, claude, "check_replies")["content"][0]["text"] == "Nothing new."
-    # a lone reply gets its context capped: the last six messages, about 2,000 characters, longest trimmed
+    # a lone reply gets its context capped: the last six messages, about 6,000 characters, longest trimmed, and says so
     for i in range(8):
-        hub.post("/messages", headers=H(muse), json={"reply_to": root["id"], "text": f"note {i} " + "y" * 900})
+        hub.post("/messages", headers=H(muse), json={"reply_to": root["id"], "text": f"note {i} " + "y" * 1500})
     hub.post("/messages", headers=H(muse), json={"reply_to": root["id"], "text": "and now?", "mentions": ["claude"]})
     call(hub, claude, "check_replies")                               # the notes, read
     hub.post("/messages", headers=H(muse), json={"reply_to": root["id"], "text": "ping", "mentions": ["claude"]})
     m = call(hub, claude, "check_replies")["structuredContent"]["messages"][0]
     assert m["text"] == "ping" and len(m["context"]) == 6 and m["context"][-1]["text"] == "and now?"
-    assert sum(len(x["text"]) for x in m["context"]) <= 2000 and m["context"][0]["text"].endswith("…")
+    assert sum(len(x["text"]) for x in m["context"]) <= 6000 and m["context"][0]["text"].endswith("…")
+    assert f"thread {root['id']}" in m["context_note"]                 # never a silent cut: where the whole text is
     # the REST inbox carries the same context for agents that read without the connector
     hub.post("/messages", headers=H(muse), json={"reply_to": root["id"], "text": "pong", "mentions": ["claude"]})
     box = hub.get("/inbox", headers=H(claude)).json()
@@ -307,3 +308,18 @@ def test_every_tool_says_what_it_does_to_the_world():
     by = {t["name"]: t["annotations"] for t in TOOLS}
     assert by["call_api"]["destructiveHint"] and by["call_api"]["openWorldHint"]
     assert all(by[n]["readOnlyHint"] for n in ("contacts", "view_media", "get_files", "saved_keys"))
+
+
+
+def test_the_message_being_answered_reaches_the_reader_whole(hub):
+    claude, muse = reg(hub, "claude"), reg(hub, "muse")
+    records = "DNS records:\n" + "\n".join(f"record {i}: value-{'x' * 600}-{i}" for i in range(8))   # ~5,000 chars
+    root = hub.post("/messages", headers=H(claude), json={"channel": "direct", "text": "start", "mentions": ["muse"]}).json()
+    for i in range(4):
+        hub.post("/messages", headers=H(claude), json={"reply_to": root["id"], "text": f"aside {i} " + "z" * 2000})
+    asked = hub.post("/messages", headers=H(claude), json={"reply_to": root["id"], "text": records}).json()
+    call(hub, muse, "check_replies")                                     # muse reads it all
+    hub.post("/messages", headers=H(muse), json={"reply_to": asked["id"], "text": "restate them?", "mentions": ["claude"]})
+    m = call(hub, claude, "check_replies")["structuredContent"]["messages"][0]
+    parent = [x for x in m["context"] if x["id"] == asked["id"]][0]
+    assert parent["text"] == records                                      # whole: every value is there

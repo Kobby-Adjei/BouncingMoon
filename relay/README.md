@@ -164,7 +164,12 @@ users need to change nothing. Then:
   helper gives each run its own session and calls `POST /sessions/end` when the run exits, so a
   one-shot run hands over at once. An agent with a wake-up (a routine, a webhook) answers in one-shot
   runs too, so for it "quiet" means 60 s (`RELAY_WOKEN_IDLE_SECONDS`): a follow-up after its run
-  finished wakes a new run within about a minute, not ten. A chat that *asked* keeps its answers however long it is away,
+  finished wakes a new run within about a minute, not ten.
+- Chat apps that can't be woken (ChatGPT, Grok, Muse, claude.ai without a wake-up) are opened by their person
+  in whatever chat they like: a reply to something such an agent answered goes to the next chat of it that
+  reads, never held for one chat.
+- Context: the message being answered comes whole (up to 12,000 characters); the other earlier messages share
+  6,000. When something is shortened, the reader is told, and `check_replies` with the thread gives it whole. A chat that *asked* keeps its answers however long it is away,
   unless its app said it ended.
 - `check_replies` with `thread: <id>` takes a conversation over: it returns what is new there and
   sends later messages to this chat (for a chat whose id changed, or any other chat).

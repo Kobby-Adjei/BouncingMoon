@@ -401,16 +401,18 @@ def test_a_follow_up_that_lands_while_the_run_is_finishing_is_handed_on_within_s
     assert [m["text"] for m in call(c, t["muse"], "check_replies", session="muse-2")["messages"]] == ["and 3?"]
 
 
-def test_a_chat_app_without_a_wake_up_still_gets_the_usual_ten_minutes(woken):
+def test_a_chat_app_gets_a_follow_up_in_whichever_chat_its_person_opens_next(woken):
+    """Chat apps (ChatGPT, Grok, Muse, claude.ai) can't be woken: their person opens a chat and asks. A reply
+    to something they answered goes to that chat, whichever it is, not one held for the chat they closed."""
     c, rec, t = woken
     asked = call(c, t["muse"], "ask", {"to": "claude", "message": "a caption?", "wait_seconds": 0}, "muse-A")
     call(c, t["claude"], "check_replies", session="claude-chat")
     ans = call(c, t["claude"], "reply", {"message_id": asked["asked"], "text": "New drop."}, "claude-chat")
-    time.sleep(0.7)
-    call(c, t["muse"], "reply", {"message_id": ans["id"], "text": "shorter?"}, "muse-A")
-    time.sleep(0.6)                                       # sweeps ran: claude's chat (no wake-up) keeps it
-    assert call(c, t["claude"], "check_replies", session="another-chat")["messages"] == []
-    assert [m["text"] for m in call(c, t["claude"], "check_replies", session="claude-chat")["messages"]] == ["shorter?"]
+    call(c, t["muse"], "reply", {"message_id": ans["id"], "text": "shorter?"}, "muse-A")       # right away
+    got = call(c, t["claude"], "check_replies", session="another-chat")["messages"]     # a new chat, at once
+    assert [m["text"] for m in got] == ["shorter?"]
+    assert call(c, t["claude"], "check_replies", session="claude-chat")["messages"] == []  # and only once
+
 
 
 def test_a_new_chat_is_told_about_answers_held_for_an_earlier_chat_that_went_quiet(quick):

@@ -244,7 +244,7 @@ class Store:
 
 
 # --------------------------------------------------------------------------- shapes
-CONTEXT_MESSAGES, CONTEXT_CHARS = 6, 2000
+CONTEXT_MESSAGES, CONTEXT_CHARS, PARENT_CHARS = 6, 6000, 12000
 
 
 def _fit(texts: list, budget: int) -> list:
@@ -272,9 +272,16 @@ def with_context(c, msgs: list) -> list:
         rows = c.execute("SELECT id, sender, text, time FROM messages WHERE thread=? AND id<? ORDER BY id DESC LIMIT ?",
                          (t, m["id"], CONTEXT_MESSAGES)).fetchall()[::-1]
         if rows:
-            texts = _fit([r["text"] or "" for r in rows], CONTEXT_CHARS)
-            m["context"] = [{"id": r["id"], "from": r["sender"], "time": r["time"], "text": tx}
-                            for r, tx in zip(rows, texts)]
+            # the message being answered stays whole (it's the one a short reply refers to); the rest share a budget
+            parent = m.get("reply_to")
+            rest = [r for r in rows if r["id"] != parent]
+            fitted = dict(zip([r["id"] for r in rest], _fit([r["text"] or "" for r in rest], CONTEXT_CHARS)))
+            for r in rows:
+                if r["id"] == parent:
+                    fitted[r["id"]] = _fit([r["text"] or ""], PARENT_CHARS)[0]
+            m["context"] = [{"id": r["id"], "from": r["sender"], "time": r["time"], "text": fitted[r["id"]]} for r in rows]
+            if any(fitted[r["id"]] != (r["text"] or "") for r in rows):     # never a silent cut: say where the rest is
+                m["context_note"] = f"Some earlier messages are shortened (…). check_replies with thread {t} gives them whole."
     return msgs
 
 
@@ -602,6 +609,13 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
                   " SELECT ?, ?, COALESCE((SELECT last FROM cursors WHERE agent=?), 0)", (h, session, h))
         c.execute("UPDATE session_cursors SET seen=?, ended=NULL WHERE handle=? AND session=?", (_now(), h, session))
 
+    def can_wake(c, h: str) -> bool:
+        """Relay can start `h` the moment a message lands: a wake-up (routine, webhook) or a helper listening now."""
+        if c.execute("SELECT 1 FROM wakes WHERE handle=?", (h,)).fetchone():
+            return True
+        r = c.execute("SELECT listener_seen FROM agents WHERE handle=?", (h,)).fetchone()
+        return bool(r and r["listener_seen"] and _now() - r["listener_seen"] < 150)
+
     def answering(c, h: str, thread: int) -> bool:
         """`h` is answering in this thread (someone else started it), rather than waiting for an answer."""
         r = c.execute("SELECT sender FROM messages WHERE id=?", (thread,)).fetchone()
@@ -718,6 +732,10 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
         wake = set()
         for h in who:
             target = route_for(c, h, thread, reply_to)
+            if target and answering(c, h, thread) and not can_wake(c, h):
+                # a chat app (ChatGPT, Grok, Muse…) answering here can't be woken: its person opens whichever chat
+                # they like next, so the reply goes to that chat, not one held for a chat they may have closed
+                target = None
             if target:
                 state = session_state(c, h, target)
                 if state == "ended" or (state == "idle" and answering(c, h, thread)):
