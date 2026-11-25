@@ -26,6 +26,14 @@
 .backbtn svg { width: 10px; height: 17px; }
 .page { max-width: 680px; margin: 0 auto; padding: 8px 16px calc(120px + env(safe-area-inset-bottom)); }
 .head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 12px 0 16px; }
+/* a phone's tab roots: the switch at the top names the tab, so the title is for screen readers only and the
+   action sits on its own small row */
+@media (max-width: 959px) {
+  .tabhead { justify-content: flex-end; margin: 4px 0 8px; min-height: 34px; }
+  .tabhead .title { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+}
+.steps.finished { display: none; }
+.donelink { justify-self: center; }
 .topseg { width: 200px; }
 .topseg:has(> :nth-child(3):not(.hidden)) { width: 252px; }
 .brandmini { display: inline-flex; align-items: center; gap: 8px; font: 650 17px/1 var(--display); letter-spacing: -.02em; }
@@ -87,7 +95,10 @@
 .msg .bub .mlink { color: inherit; text-decoration: underline; text-decoration-color: color-mix(in srgb, currentColor 40%, transparent);
   text-underline-offset: 2px; word-break: break-all; }
 .msg .bub.folded { max-height: 240px; overflow: hidden; -webkit-mask-image: linear-gradient(#000 70%, transparent); mask-image: linear-gradient(#000 70%, transparent); }
-.msg .more { justify-self: start; margin: 4px 0 0 8px; border: 0; background: none; padding: 4px 6px; color: var(--accent); font: 600 13px var(--font); cursor: pointer; }
+.msg .more { justify-self: start; display: inline-flex; align-items: center; gap: 6px; margin: 4px 0 0 8px; border: 0; background: none; padding: 4px 6px;
+  color: var(--accent); font: 600 13px var(--font); cursor: pointer; }
+.msg .more .chev { width: 6px; height: 10px; transform: rotate(90deg); transition: transform .25s var(--ease); }   /* down: opens */
+.msg .more[aria-expanded=true] .chev { transform: rotate(-90deg); }                                             /* up: folds back */
 .msg.mine .more { justify-self: end; margin: 4px 8px 0 0; }
 /* Activity on a busy hub: sections, one-line titles */
 .secthead { font: 650 12px var(--font); letter-spacing: .04em; text-transform: uppercase; color: var(--ink2); padding: 18px 16px 6px; }
@@ -481,6 +492,7 @@ pre.block.muted { color: var(--ink2); }
   .listpane .cell .s { font-size: 13px; }
   .listpane .people .av { --s: 36px !important; }
   .listpane .chev { display: none; }
+  .listpane .morerow .chev { display: inline-block; }     /* "Show 2 more" keeps its arrow */
   .listpane button.cell:hover { background: var(--fill); }
   .listpane .cell[aria-current], .listpane .cell[aria-current]:hover { background: var(--sel); }
   .listpane .cell[aria-current]::before, .listpane .cell[aria-current] + .cell::before { opacity: 0; }

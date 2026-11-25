@@ -564,15 +564,12 @@ async function overview(tk) {
   const line = mine.length ? h("p", { class: "oline" },
     now ? h("span", null, h("span", { class: "adot now" }), `${now} answer${now === 1 ? "s" : ""} now`) : null,
     later ? h("span", null, h("span", { class: "adot later" }), `${later} when asked`) : null) : null;
-  const url = location.origin + "/mcp";
-  const pill = h("button", { class: "copyurl press", type: "button", title: "Copy" }, h("span", { class: "u", text: url }), h("span", { class: "c", text: "Copy" }));
-  pill.addEventListener("click", () => copy(url, pill.querySelector(".c"), "Copy"));
   screen("pick", tk, h("div", { class: "overview" },
     mine.length ? sky(mine, waiting) : h("div", { class: "orbit", "aria-hidden": "true" }, h("span", { class: "ghost g1" }), h("span", { class: "ghost g2" }),
       h("span", { class: "ghost g3" }), h("span", { class: "ghost g4" }), h("span", { class: "core" }, mark())),
     h("h1", { class: "title", text: waiting ? `${waiting} waiting for you` : mine.length ? "All quiet" : "Connect your first AI" }),
     !mine.length && !waiting ? h("p", { class: "oline", text: "Claude, ChatGPT, Grok, Muse and more. It takes a minute." }) : null,
-    line, act, h("div", { class: "oaddr" }, pill)));
+    line, act));
 }
 
 function signOut(message) { KEY = null; ME = null; store.clear(); trail.length = 0; clearInterval(timer); timer = null; signin(message); }
@@ -922,13 +919,15 @@ async function agents() {
   let q = "";
   const find = findBox("Find an agent or person", (v) => { q = v; refresh(); });
   find.hidden = true;
-  const view = screen("agents", { ...tk, tab: "agents" }, head("Agents", null, add), find, list);
+  const top = head("Agents", null, add); top.classList.add("tabhead");
+  const view = screen("agents", { ...tk, tab: "agents" }, top, find, list);
   let first = true;
   async function refresh() {
     try {
       const ags = await api("GET", "/agents");
       const everyone = ags.filter((a) => a.handle !== (ME && ME.handle));
       find.hidden = everyone.length <= 8 && !q;
+      if (add) add.hidden = !everyone.length;          // empty: the one button is the big one in the middle
       const shownAgs = q ? everyone.filter((a) => matches(a, q)) : everyone;
       const rows = shownAgs.map((a) =>
         h("button", { class: "cell press", type: "button", "data-key": `agents/${enc(a.handle)}`, onclick: () => nav(`agents/${enc(a.handle)}`) },
@@ -943,7 +942,7 @@ async function agents() {
         if (first) list.classList.add("stagger"); else list.classList.remove("stagger");
         markSelected();
       } else if (WIDE) {          // the empty picture goes in the big pane; the list just says so
-        list.replaceChildren(h("div", { class: "empty", text: "No agents yet." }));
+        list.replaceChildren();
         emptyHint(firstApp());
       } else if (list.isConnected) {
         list.replaceWith(firstApp());
@@ -1024,7 +1023,7 @@ function allowGuide(a) {
   orb.append(h("span", { class: "kseal" }, tick("sealtick")));
   let status = stickyStatus(`Waiting for ${a.label}…`);
   const list = h("ol", { class: "steps" }, ...STEPS[a.id].map((parts) => h("li", null, h("div", null, ...parts))));
-  const done = h("button", { class: "btn ghost press", type: "button", onclick: () => nav("me/apps", { replace: true }) }, "Done");
+  const done = h("button", { class: "btn ghost press", type: "button", onclick: () => nav("me/apps", { replace: true }) }, "Finish later");
   const adv = h("details", { class: "advanced" }, h("summary", { class: "press" }, "Advanced"),
     h("div", { class: "stack tight", style: "padding-top:14px" },
       h("p", { class: "hint", style: "margin:0", text: a.via === "invite"
@@ -1049,6 +1048,9 @@ function allowGuide(a) {
         hello.replaceChildren(h("button", { class: "btn press", type: "button", onclick: () => nav(`activity/to/${enc(fresh.agent)}`) },
           `Say hello to ${fresh.agent}`));
         hello.classList.add("in");
+        done.className = "way press donelink"; done.textContent = "Done";
+        list.classList.add("finished");            // the steps are behind them now
+        view.querySelector(".hero .title").textContent = "Connected"; adv.remove();
       }
     } catch {}
   }, 2500);
@@ -1283,7 +1285,6 @@ async function profile(handle) {
     a.role !== "human" ? runsOn(a) : null,
     (a.caps || []).length ? h("div", { class: "cell" }, h("div", { class: "grow t plain" }, "Does work"), h("span", { class: "v", text: a.caps.join(", ") })) : null,
     a.role === "human" && isOwner() && (AUTH.email || a.email) ? emailRow(a) : null,
-    h("div", { class: "cell" }, h("div", { class: "grow t plain" }, "Address"), h("span", { class: "v", style: "font-family:var(--mono);font-size:.92em;letter-spacing:0", text: a.handle })),
     a.client ? h("div", { class: "cell" }, h("div", { class: "grow t plain" }, "Connected from"), h("span", { class: "v", text: a.client })) : null);
   const danger = isOwner() && a.handle !== ME.handle ? h("div", { class: "spread danger-row" },
     h("button", { class: "link sm press", type: "button", onclick: () => newKey(a) }, "Issue new key"),
@@ -1292,7 +1293,7 @@ async function profile(handle) {
       try { await api("DELETE", `/agents/${encodeURIComponent(a.handle)}`); if (listRefresh) listRefresh(); nav("agents", { replace: true }); } catch (x) { alert(x.message); }
     } }, "Remove")) : null;
   const sub = h("div", { class: "row small", style: "gap:8px" }, h("span", { class: "dot " + presence(a.last_seen) }),
-    h("span", { text: `${a.role === "human" ? "Person" : PROVIDER_NAMES[p] || "Agent"} · ${ago(a.last_seen)}` }));
+    h("span", { text: a.role === "human" ? `Person · ${ago(a.last_seen)}` : ago(a.last_seen) }));
   screen("profile", tk,
     h("div", { class: "profile" }, avatar(a, 88), h("h1", { class: "title", text: a.handle }), sub, quick),
     h("div", { class: "stack" }, h("section", { class: "facts" }, h("h2", { class: "label", text: "Details" }), info), danger));
@@ -1313,7 +1314,7 @@ async function meScreen() {
         miniOrb("claude", "relay", 40), h("span", { class: "grow" }, h("b", { text: "Connected apps" })), chev()),
       h("button", { class: "door press", type: "button", onclick: () => nav("me/passkeys") },
         passOrb(40), h("span", { class: "grow" }, h("b", { text: "Passkeys" })), chev()),
-      h("button", { class: "door press", type: "button", onclick: () => nav("me/keys") },
+      WIDE ? null : h("button", { class: "door press", type: "button", onclick: () => nav("me/keys") },
         keyOrb("", 40), h("span", { class: "grow" }, h("b", { text: "Keys" })), chev()),
       !ME.owner && ME.role === "human" ? friendDoor() : null,
       ME.owner ? h("button", { class: "door press", type: "button", onclick: (e) => saveBackup(e.currentTarget) },
@@ -2170,7 +2171,8 @@ async function activity() {
   const tk = ticket();
   const list = h("div", { class: "group conv" }, h("div", { class: "empty", text: "Loading…" }));
   const neu = ME.role !== "admin" ? h("button", { class: "btn small press", type: "button", onclick: () => nav("activity/new") }, icon("plus", "2.4"), "New") : null;
-  const view = screen("activity", { ...tk, tab: "activity" }, head("Activity", null, neu), list);
+  const top = head("Activity", null, neu); top.classList.add("tabhead");
+  const view = screen("activity", { ...tk, tab: "activity" }, top, list);
   let first = true;
   // It grows without end, so it comes a page at a time: the newest conversations, then "Show older".
   let pages = 1, more = false, allNeeds = false;
@@ -2226,7 +2228,7 @@ async function activity() {
         if (first) list.classList.add("stagger"); else list.classList.remove("stagger");
         markSelected();
       } else if (WIDE) {
-        list.replaceChildren(h("div", { class: "empty", text: "No conversations yet." }));
+        list.replaceChildren();
         emptyHint(blank("Quiet so far", "Messages between your agents land here."));
       } else if (list.isConnected) list.replaceWith(blank("Quiet so far", "Messages between your agents land here."));
       first = false;
@@ -2387,8 +2389,9 @@ async function thread(id, people) {
     if (!to.length) { goes.replaceChildren(); return; }
     const now = to.filter((x) => by[x] && by[x].answers === "instantly");
     const later = to.filter((x) => !now.includes(x) && by[x] && by[x].answers !== "person");
-    goes.replaceChildren(h("span", { class: "k", text: "Goes to" }),
-      ...to.map((x) => h("span", { class: "who" }, answersDot(by[x]), h("span", { text: x }))),
+    const adding = named().some((x) => !people.includes(x));       // the header already names the people in it
+    goes.replaceChildren(...(adding ? [h("span", { class: "k", text: "Goes to" }),
+      ...to.map((x) => h("span", { class: "who" }, answersDot(by[x]), h("span", { text: x })))] : []),
       h("span", { class: "note", text: now.length ? (later.length ? `${now.join(", ")} answers now · others when you ask them` : "Answers now")
         : later.length ? "Reads it when you ask" : "" }));
   }
@@ -2489,9 +2492,20 @@ async function thread(id, people) {
     if (m.media && m.media.length) bub.append(...m.media.map(fileCard));
     // a long message folds: the conversation stays readable, the whole thing is one tap away
     const long = text.length > 700 || text.split("\n").length > 14;
-    const more = long && !opened.has(m.id) ? h("button", { class: "more press", type: "button", onclick: () => {
-      opened.add(m.id); bub.classList.remove("folded"); more.remove(); } }, "Show all") : null;
-    if (more) bub.classList.add("folded");
+    const more = long ? h("button", { class: "more press", type: "button", "aria-expanded": "false" }) : null;
+    if (more) {
+      const set = (open) => {
+        bub.classList.toggle("folded", !open); more.setAttribute("aria-expanded", String(open));
+        more.replaceChildren(open ? "Show less" : "Show all", chev());
+      };
+      set(opened.has(m.id));
+      more.addEventListener("click", () => {
+        const open = !opened.has(m.id);
+        open ? opened.add(m.id) : opened.delete(m.id);
+        set(open);
+        if (!open) bub.scrollIntoView({ block: "nearest", behavior: "smooth" });     // folding a long one back: stay on it
+      });
+    }
     return h("div", { class: "msg" + (mine ? " mine" : "") }, face, h("div", { class: "body" }, who, bub, more));
   }
   function paint(keepPlace) {
