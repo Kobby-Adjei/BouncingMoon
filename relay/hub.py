@@ -455,7 +455,7 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
 
     # Moving to a new domain: pages a person opens on the old address go to the new one. Apps keep using the
     # old one (their sign-in, /mcp and the API answer there as before); /app hands a signed-in person over.
-    MOVED_PAGES = re.compile(r"^/(?:join|welcome|m/[^/]+(?:/.*)?|up/[^/]+)?$")
+    MOVED_PAGES = re.compile(r"^/(?:join|welcome|privacy|terms|m/[^/]+(?:/.*)?|up/[^/]+)?$")
 
     async def move_home(request: Request, call_next):
         if public_url and request.method == "GET" and own_origin(request) != public_url and MOVED_PAGES.match(request.url.path):
@@ -960,8 +960,27 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
     def landing_page(request: Request):
         # link previews need the page's own address spelled out (a shared link shows Relay's card)
         with open(os.path.join(web_dir, "landing.html"), encoding="utf-8") as f:
-            page = f.read().replace("{{origin}}", html.escape(origin(request), quote=True))
+            page = f.read().replace("{{origin}}", html.escape(origin(request), quote=True)).replace(
+                "{{legal}}", ' <a href="/privacy">Privacy</a> · <a href="/terms">Terms</a>' if legal_on else "")
         return Response(page, media_type="text/html; charset=utf-8", headers=page_headers)
+
+    # Privacy and terms: written from what Relay really does, with the operator's name, contact and place filled in
+    # from RELAY_LEGAL_NAME, RELAY_LEGAL_EMAIL and RELAY_LEGAL_PLACE. Until all three are set, the pages don't exist.
+    LEGAL_UPDATED = "November 25, 2026"           # change with the text
+    legal = {k: (os.environ.get(f"RELAY_LEGAL_{k.upper()}") or "").strip() for k in ("name", "email", "place")}
+    legal_on = all(legal.values())
+
+    def legal_page(name: str) -> Response:
+        if not legal_on:
+            raise HTTPException(404, "not found")
+        with open(os.path.join(web_dir, name), encoding="utf-8") as f:
+            page = f.read()
+        for k, v in {**legal, "updated": LEGAL_UPDATED}.items():
+            page = page.replace("{{" + k + "}}", html.escape(v, quote=True))
+        return Response(page, media_type="text/html; charset=utf-8", headers=page_headers)
+
+    app.add_api_route("/privacy", lambda: legal_page("privacy.html"), methods=["GET"], include_in_schema=False)
+    app.add_api_route("/terms", lambda: legal_page("terms.html"), methods=["GET"], include_in_schema=False)
 
     @app.get("/manifest.webmanifest", include_in_schema=False)
     def manifest():

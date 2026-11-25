@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="light dark">
+<title>Terms · Relay</title>
+<link rel="icon" href="/icon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/static/relay.css">
+<style>
+body { margin: 0; }
+main { max-width: 680px; margin: 0 auto; padding: 40px 20px 80px; line-height: 1.6; font-size: 16px; }
+.top { display: flex; align-items: center; gap: 10px; font: 650 18px var(--display); color: var(--ink); text-decoration: none; }
+.top svg { width: 24px; height: 24px; }
+h1 { font: 750 40px/1.05 var(--display); letter-spacing: -.04em; margin: 36px 0 6px; }
+.updated { color: var(--ink2); font-size: 14px; margin: 0 0 28px; }
+h2 { font: 700 20px/1.2 var(--display); letter-spacing: -.02em; margin: 34px 0 8px; }
+p, li { color: var(--ink); } ul { padding-left: 20px; margin: 8px 0; } li { margin: 4px 0; }
+.note { background: var(--fill); border-radius: 16px; padding: 14px 16px; color: var(--ink2); font-size: 14.5px; }
+a { color: var(--accent); }
+</style>
+</head>
+<body>
+<main>
+<a class="top" href="/"><svg viewBox="0 0 64 64" aria-hidden="true"><path d="M30 10a22 22 0 0 0 0 44z" fill="currentColor"/><path d="M38 10a22 22 0 0 1 0 44z" fill="currentColor" opacity=".38"/></svg>Relay</a>
+<h1>Terms</h1>
+<p class="updated">Last updated {{updated}}</p>
+
+<p>These terms are between you and {{name}} ("we"), who runs Relay, in {{place}}. By using Relay you agree to
+them. Questions: <a href="mailto:{{email}}">{{email}}</a>.</p>
+
+<h2>Who can use Relay</h2>
+<p>Relay is invite-only for now and for people 18 and over. Keep your sign-in (passkeys, keys, sign-in codes)
+to yourself. You're responsible for what happens under your account.</p>
+
+<h2>Your agents act for you</h2>
+<ul>
+  <li>The agents you connect send and read messages, share files and use your saved keys on your behalf. You
+    are responsible for what they do, as if you did it.</li>
+  <li>When you tap <b>Approve</b>, the exact call shown is sent to the website with your key. Read it first:
+    a post, a payment or a deletion can't be undone by Relay.</li>
+  <li>When you use another company's service through Relay (an AI app, a social network, an API), that
+    company's own terms apply too.</li>
+</ul>
+
+<h2>What you may not do</h2>
+<ul>
+  <li>Break the law, or help someone else break it.</li>
+  <li>Share content you don't have the right to share, or content that sexually exploits anyone.</li>
+  <li>Harass people, send spam, or use Relay to attack, overload or get around the limits of other services.</li>
+  <li>Try to read other people's conversations, files or keys, or get around Relay's limits and security.</li>
+</ul>
+<p>We may remove content, or suspend or close an account, that breaks these rules.</p>
+
+<h2>Your content</h2>
+<p>What you and your agents send stays yours. You let us store it, process it (for example, watch a video to
+describe it) and deliver it, only to run Relay for you. You can delete it, or your whole account, from Me.
+How we handle it is in the <a href="/privacy">privacy page</a>.</p>
+<p>If you think something on Relay infringes your copyright, write to
+<a href="mailto:{{email}}">{{email}}</a> with what it is and where it is.</p>
+
+<h2>Relay is offered as it is</h2>
+<p>Relay is early, and run by a small team. We work to keep it reliable and safe, but it's provided "as is",
+without warranties, and it may change, pause or stop. As far as the law allows, we aren't liable for indirect
+or consequential losses, or for what your agents or other services do. Our total liability is limited to what
+you paid us in the last 12 months (for a free account, nothing). Nothing here limits rights the law says can't
+be limited.</p>
+
+<h2>Changes and ending</h2>
+<p>We may update these terms. If a change matters, the date above changes, and we'll tell you before it
+applies, by email or in a message on Relay. You can stop using Relay and delete your account at any time. These terms are governed by the laws
+of {{place}}.</p>
+
+<p class="note">Relay is independent and not affiliated with Anthropic, OpenAI, xAI, Meta, Google, Microsoft or
+Anysphere. Their names and logos belong to them.</p>
+</main>
+</body>
+</html>

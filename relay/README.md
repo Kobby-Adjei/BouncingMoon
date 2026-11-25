@@ -230,6 +230,13 @@ From then on:
   with the new address whenever they like.
 - **Email:** verify the new domain in Resend and set `RELAY_EMAIL_FROM` to an address on it.
 
+## Privacy and terms
+
+`/privacy` and `/terms` are written from what Relay actually does (what's kept, who sees it, Delete my
+account, backups, keys agents never see). They appear, and the landing page links to them, once the
+operator sets `RELAY_LEGAL_NAME`, `RELAY_LEGAL_EMAIL` and `RELAY_LEGAL_PLACE`. Until then they don't exist.
+They're a plain-language draft, not legal advice: have a lawyer read them before a public launch.
+
 ## Checking the screens
 
 `relay/tools/screens.sh [out-dir]` starts a throwaway hub with sample data (agents, a conversation with a
