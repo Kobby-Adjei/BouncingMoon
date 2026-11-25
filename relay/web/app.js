@@ -2338,15 +2338,45 @@ async function activity() {
   const list = h("div", { class: "group conv" }, h("div", { class: "empty", text: "Loading…" }));
   const neu = ME.role !== "admin" ? h("button", { class: "btn small press", type: "button", onclick: () => nav("activity/new") }, icon("plus", "2.4"), "New") : null;
   const top = head("Activity", null, neu); top.classList.add("tabhead");
-  const view = screen("activity", { ...tk, tab: "activity" }, top, list);
+  // search: what was said, who was in it, a file's name. While it has words, the list shows what matches.
+  let q = "", asked = 0;
+  const find = findBox("Search conversations, agents, files", (v) => { q = v; if (q.length >= 2) runSearch(); else { asked++; refresh(); } });
+  find.classList.add("searchbox");
+  const view = screen("activity", { ...tk, tab: "activity" }, top, find, list);
   let first = true;
+  async function runSearch() {
+    const mine = ++asked;
+    let got = [], ags = [];
+    try { [got, ags] = await Promise.all([api("GET", `/search?q=${enc(q)}`), api("GET", "/agents")]); }
+    catch (x) { if (mine === asked) list.replaceChildren(h("div", { class: "empty", text: x.message })); return; }
+    if (mine !== asked || q.length < 2 || !view.isConnected) return;
+    const by = Object.fromEntries(ags.map((a) => [a.handle, a]));
+    if (!got.length) return list.replaceChildren(h("div", { class: "empty", text: `Nothing matches “${q}”.` }));
+    list.replaceChildren(secthead(got.length === 1 ? "1 conversation" : `${got.length} conversations`), ...got.map((t) => {
+      const others = t.people.filter((x) => x !== ME.handle && x !== "relay");
+      const about = t.first && t.first.from !== "relay" ? topic(t.first.text) : "";
+      const hit = t.hits[0];
+      const who = hit ? (hit.from === ME.handle ? "You: " : hit.from === "relay" ? "" : `${hit.from}: `) : "";
+      const line = hit && hit.file ? [`${who}`, h("mark", { text: hit.file })] : hit ? [who, ...marked(hit.text)] : [`With ${names(others)}`];
+      return h("button", { class: "cell press", type: "button", "data-key": `activity/${t.thread}`, onclick: () => nav(`activity/${t.thread}`, { data: others }) },
+        h("span", { class: "stackav" }, ...(others.length ? others : ["relay"]).slice(0, 2).map((x) => avatar(by[x] || { handle: x }, others.length > 1 ? 38 : 46))),
+        h("div", { class: "grow" },
+          h("div", { class: "spread", style: "gap:8px" }, h("div", { class: "t one", text: about || names(others) || "Relay" }),
+            h("span", { class: "when tnum", text: whenShort((hit || t.last).time) })),
+          h("div", { class: "s preview" }, ...line)));
+    }));
+    markSelected();
+  }
   // It grows without end, so it comes a page at a time: the newest conversations, then "Show older".
   let pages = 1, more = false, allNeeds = false;
   const PAGE = 40;
   async function refresh() {
+    if (q.length >= 2) return;              // searching: the list is the results until the box is cleared
+    const mine = asked;
     try {
       const [convs, ags, asks, wants] = await Promise.all([api("GET", `/threads?limit=${Math.min(PAGE * pages, 200)}`), api("GET", "/agents"),
         ME.role === "human" ? api("GET", "/approvals").catch(() => []) : [], isOwner() ? api("GET", "/invite-requests").catch(() => []) : []]);
+      if (mine !== asked || q.length >= 2) return;      // a search started while this was on its way
       more = convs.length >= Math.min(PAGE * pages, 200);
       const by = Object.fromEntries(ags.map((a) => [a.handle, a]));
       const threads = new Map(convs.map((c) => [c.thread, { id: c.thread, msgs: [c.last], count: c.count, people: new Set(c.people),
@@ -2393,6 +2423,7 @@ async function activity() {
               h("span", { class: "when tnum" }, t.unread ? h("span", { class: "newdot", "aria-hidden": "true" }) : null, whenShort(last.time))),
             h("div", { class: "s preview", text: line }))));
       }
+      find.hidden = !rows.length;                     // nothing to search yet: no box
       if (more && pages * PAGE < 200) rows.push(h("button", { class: "morerow press", type: "button", onclick: (e) => {
         e.currentTarget.disabled = true; pages++; refresh(); } }, "Show older conversations", chev()));
       if (rows.length) {
@@ -2453,6 +2484,15 @@ const shortUrl = (u) => { try { const x = new URL(u); const tail = x.pathname.sp
   return x.hostname.replace(/^www\./, "") + (tail ? "/…/" + (tail.length > 18 ? tail.slice(0, 17) + "…" : tail) : ""); } catch { return u; } };
 // a preview in words: the first line, links as their site, raw data and code named rather than shown
 // what a conversation is about: its first request, without the @names at the front
+// the words a search found, marked: the hub wraps them in \x02 … \x03
+function marked(text) {
+  const out = []; let on = false;
+  for (const part of String(text || "").split(/([\x02\x03])/)) {
+    if (part === "\x02") on = true; else if (part === "\x03") on = false;
+    else if (part) out.push(on ? h("mark", { text: part }) : part);
+  }
+  return out;
+}
 function topic(text) {
   const t = gist(String(text || "").replace(/^(?:\s*@[a-z0-9._-]+[,:]?)+\s*/i, ""));
   return t.length > 80 ? t.slice(0, 78).trimEnd() + "…" : t;

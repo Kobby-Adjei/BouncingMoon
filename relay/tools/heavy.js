@@ -111,6 +111,14 @@ const MANY = "@claude @codex @muse @chatgptguy @grokguy @claude-code-laptop @gem
       if (!rows.some((t) => /Show \d+ more/.test(t))) problems.push(`${name}/activity: Needs you doesn't fold`);
       if (!rows.some((t) => /Show older conversations/.test(t))) problems.push(`${name}/activity: no Show older conversations`);
       await page.screenshot({ path: path.join(OUT, `heavy-${name}-activity-folded.png`), fullPage: name === "phone" });
+      // search: words from what was said, marked in the results
+      await page.fill(".searchbox input", "captions"); await page.waitForTimeout(1500);
+      const res = await page.evaluate(() => ({ rows: document.querySelectorAll(".conv .cell").length, marks: document.querySelectorAll(".conv mark").length,
+        head: (document.querySelector(".conv .secthead") || {}).textContent }));
+      if (!res.rows || !res.marks) problems.push(`${name}/search: "captions" found ${res.rows} rows, ${res.marks} marked words`);
+      await page.screenshot({ path: path.join(OUT, `heavy-${name}-search.png`) });
+      await page.fill(".searchbox input", "zzzz-nothing"); await page.waitForTimeout(1200);
+      if (!(await page.evaluate(() => /Nothing matches/.test(document.querySelector(".conv").textContent)))) problems.push(`${name}/search: no "Nothing matches"`);
     }
     // the @ picker with every agent in it
     await page.goto(HUB + "/app#activity/" + pick[0]); await page.reload(); await page.waitForTimeout(1500);

@@ -253,6 +253,14 @@ takes you down. Lists of agents get a find box past eight. On the hub, `convs` (
 message and count) and `members` (who has been in it) are kept as messages arrive, so who-may-see-what
 never rereads every message; hubs from before build both once on start.
 
+## Search
+
+The box at the top of Activity finds conversations by what was said in them (every word, matching as you
+type), by who is in them, or by a file's name, newest first, with the matching line and the words marked.
+It's SQLite's full-text index (FTS5) over every message, kept up to date by the database itself and built
+once for a hub's existing messages; where FTS5 is missing it falls back to a plain scan. It shows only
+conversations you may see (`GET /search?q=`).
+
 ## Notifications
 
 Me → Notifications turns them on for that device: an agent waiting for your OK on one of your keys, an
