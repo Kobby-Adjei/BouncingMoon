@@ -490,23 +490,20 @@ async function overview(tk) {
   const now = mine.filter((a) => a.answers === "instantly").length, later = mine.length - now;
   const waiting = asks.length + wants.length;
   const next = asks.length ? `approve/${asks[0].id}` : wants.length ? `ask/${wants[0].id}` : null;
-  const chip = (dot, text, go) => h(go ? "button" : "span", { class: "ochip" + (go ? " press go" : ""), type: go ? "button" : null, onclick: go || null },
-    dot ? h("span", { class: "adot " + dot }) : null, h("span", { text }));
+  // one thing to do at most, one quiet line, the address: nothing the sidebar or the list already offers
+  const act = next ? h("button", { class: "btn small press", type: "button", onclick: () => nav(next) }, "Review")
+    : !mine.length && isOwner() ? h("button", { class: "btn small press", type: "button", onclick: () => nav("add") }, "Add your first app") : null;
+  const line = mine.length ? h("p", { class: "oline" },
+    now ? h("span", null, h("span", { class: "adot now" }), `${now} answer${now === 1 ? "s" : ""} now`) : null,
+    later ? h("span", null, h("span", { class: "adot later" }), `${later} when asked`) : null) : null;
   const url = location.origin + "/mcp";
   const pill = h("button", { class: "copyurl press", type: "button", title: "Copy" }, h("span", { class: "u", text: url }), h("span", { class: "c", text: "Copy" }));
   pill.addEventListener("click", () => copy(url, pill.querySelector(".c"), "Copy"));
   screen("pick", tk, h("div", { class: "overview" },
     h("div", { class: "orbit", "aria-hidden": "true" }, h("span", { class: "ghost g1" }), h("span", { class: "ghost g2" }),
       h("span", { class: "ghost g3" }), h("span", { class: "ghost g4" }), h("span", { class: "core" }, mark())),
-    h("h1", { class: "title", text: waiting ? `${waiting} waiting for you` : "All quiet" }),
-    h("div", { class: "ochips" },
-      now ? chip("now", `${now} answer${now === 1 ? "s" : ""} now`) : null,
-      later ? chip("later", `${later} when asked`) : null,
-      next ? chip(null, "Review", () => nav(next)) : null),
-    h("div", { class: "oacts" },
-      h("button", { class: "btn small press" + (next ? " ghost" : ""), type: "button", onclick: () => nav("activity/new") }, "Message"),
-      isOwner() ? h("button", { class: "btn small ghost press", type: "button", onclick: () => nav("add") }, icon("plus", "2.4"), "Add") : null),
-    h("div", { class: "oaddr" }, h("span", { class: "k", text: "Your Relay address" }), pill)));
+    h("h1", { class: "title", text: waiting ? `${waiting} waiting for you` : mine.length ? "All quiet" : "Nothing here yet" }),
+    line, act, h("div", { class: "oaddr" }, pill)));
 }
 
 function signOut(message) { KEY = null; ME = null; store.clear(); trail.length = 0; clearInterval(timer); timer = null; signin(message); }
