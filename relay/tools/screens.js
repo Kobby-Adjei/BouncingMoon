@@ -85,7 +85,8 @@ async function seed() {
   for (const [variant, viewport, scheme] of VARIANTS) {
     for (const [name, p, who, desktop] of SCREENS) {
       if (variant === "desktop" && !desktop) continue;
-      const page = await browser.newPage({ viewport, colorScheme: scheme, bypassCSP: !!process.env.RELAY_AXE });
+      // RELAY_DPR=2: sharp enough for the landing page's phones
+      const page = await browser.newPage({ viewport, colorScheme: scheme, bypassCSP: !!process.env.RELAY_AXE, deviceScaleFactor: Number(process.env.RELAY_DPR || 1) });
       page.on("pageerror", (e) => problems.push(`${variant}/${name}: ${e.message}`));
       page.on("console", (m) => { if (m.type() === "error") problems.push(`${variant}/${name}: console: ${m.text()}`); });
       await page.goto(HUB + "/app");

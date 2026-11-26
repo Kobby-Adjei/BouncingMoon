@@ -141,3 +141,14 @@ if (!("IntersectionObserver" in window)) { play(); return; }
 const seen = new IntersectionObserver((es) => { if (es.some((e) => e.isIntersecting)) { seen.disconnect(); play(); } }, { threshold: 0.35 });
 seen.observe(log);
 })();
+
+// "You stay in charge": the two phones rise into place once, the first time they're in view
+(() => {
+  const ph = document.querySelector(".phones");
+  if (!ph || !("IntersectionObserver" in window) || matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+  ph.classList.add("wait");
+  const io = new IntersectionObserver((es) => {
+    if (es.some((e) => e.isIntersecting)) { io.disconnect(); ph.classList.add("in"); }
+  }, { threshold: 0.25 });
+  io.observe(ph);
+})();
