@@ -45,7 +45,10 @@ One process, SQLite and a folder (`relay/hub.py`), on Railway or anywhere Python
 
 Plain-JSON MCP Streamable HTTP; initialize handshake versions 2024-11-05 to 2025-11-25. A client of a newer
 version (2026-07-28 on) that tries a modern request first gets a plain 400 and falls back to initialize, as that
-spec's backward-compatibility rules say, so answers keep reaching the chat that asked.
+spec's backward-compatibility rules say, so answers keep reaching the chat that asked. That is deliberate:
+2026-07-28 has no sessions, so nothing would tell one chat from another. Some apps open a new connection every
+turn; for them the thread number `ask` returns is the handle, and a plain `check_replies` lists answers held for
+another chat or turn, with what was asked, so the agent can open its own.
 
 ## Connect an app like you connect Gmail (OAuth)
 
