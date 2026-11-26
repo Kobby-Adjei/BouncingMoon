@@ -1313,7 +1313,7 @@ const APPS = [
   { id: "grok", label: "Grok", sub: "app", provider: "grok", style: "allow", via: "connector", name: "grok" },
   { id: "muse", label: "Muse", sub: "Meta", provider: "muse", style: "allow", via: "connector", name: "muse" },
   { id: "claude_code", label: "Claude Code", sub: "terminal", provider: "claude", style: "allow", via: "invite", connect: "claude-code", name: "claude-code" },
-  { id: "codex", label: "Codex", sub: "CLI · app", provider: "codex", style: "invite", connect: "codex", name: "codex" },
+  { id: "codex", label: "Codex", sub: "CLI · app", provider: "codex", style: "allow", via: "invite", connect: "codex", name: "codex" },
   { id: "gemini", label: "Gemini CLI", sub: "terminal", provider: "gemini", style: "allow", via: "connector", name: "gemini" },
   { id: "cursor", label: "Cursor", sub: "editor", provider: "cursor", style: "allow", via: "connector", name: "cursor" },
   { id: "other", label: "Other", sub: "MCP apps", provider: null, style: "allow", via: "connector", name: "agent" },
@@ -1329,18 +1329,26 @@ function allowGuide(a) {
   const pill = () => { const btn = h("button", { class: "copyurl press", type: "button", title: "Copy" }, h("span", { class: "u", text: url }), h("span", { class: "c", text: "Copy" }));
     btn.addEventListener("click", () => copy(url, btn.querySelector(".c"), "Copy")); return btn; };
   const allow = say("A Relay page opens: press ", b("Allow"), ".");
+  // Claude's own install link: its add-connector dialog opens with Relay's name and address filled in
+  // (claude.com/docs/connectors/building/directory-vs-custom). The person still reviews and confirms there.
+  const claudeLink = `https://claude.ai/customize/connectors?modal=add-custom-connector&connectorName=Relay&connectorUrl=${encodeURIComponent(url)}`;
   const STEPS = {
-    claude_app: [[say("In Claude: ", b("Settings → Connectors → Add custom connector"), ". Name it Relay and paste:"), pill()],
-                 [say("Press ", b("Add"), ", then ", b("Connect"), ".")], [allow]],
-    chatgpt: [[say("In ChatGPT on the web (Business, Enterprise or Edu): ", b("Settings → Plugins → + → Add custom MCP server"),
-                   ". Older menus: Settings → Connectors → Advanced → Developer mode, then Create.")],
+    claude_app: [[h("a", { class: "btn press", href: claudeLink, target: "_blank", rel: "noopener" }, "Open Claude with Relay filled in"),
+                  h("p", { class: "hint", style: "margin:0" }, "Or in Claude: ", b("Customize → Connectors → + → Add custom connector"), ", name it Relay and paste:"), pill()],
+                 [say("Check the name and address, press ", b("Add"), ", then ", b("Connect"), ".")], [allow]],
+    chatgpt: [[say("In ChatGPT on the web (Business, Enterprise or Edu): ", b("Settings → Plugins → + → Add custom MCP server"), ".")],
               [say("Name it Relay, choose ", b("OAuth"), ", and paste:"), pill()], [allow]],
     grok: [[say("In Grok: ", b("grok.com/connectors → New Connector → Custom"), ". Paste:"), pill()],
            [say("Press ", b("Connect"), ".")], [allow]],
     muse: [[say("Ask Muse to add a custom connector called Relay with this address:"), pill()],
            [say("If a Relay page opens, press ", b("Allow"), ". If Muse asks for a key instead, use Advanced below.")]],
-    claude_code: [[say("In a terminal:"), copyBlock(`claude mcp add --transport http relay ${url}`, "Copy command")],
-                  [say("In Claude Code, run ", b("/mcp"), ", pick relay, then ", b("Authenticate"), ".")], [allow]],
+    // add and sign in from one line: `claude mcp login` runs the sign-in from the shell (code.claude.com/docs/en/mcp)
+    claude_code: [[say("In a terminal:"), copyBlock(`claude mcp add --transport http relay ${url} && claude mcp login relay`, "Copy command")],
+                  [allow]],
+    // Codex signs in to servers the same way (learn.chatgpt.com/docs/extend/mcp): no invite or helper needed.
+    // `codex mcp add` starts the sign-in itself when it sees Relay's (checked with codex-cli 0.172.0).
+    codex: [[say("In a terminal:"), copyBlock(`codex mcp add relay --url ${url}`, "Copy command")],
+            [allow]],
     gemini: [[say("In a terminal:"), copyBlock(`gemini mcp add --transport http relay ${url}`, "Copy command")],
              [say("In Gemini CLI, run ", b("/mcp auth relay"), ".")], [allow]],
     cursor: [[say("Merge into ", b("~/.cursor/mcp.json"), ":"), copyBlock(JSON.stringify({ mcpServers: { relay: { url } } }, null, 2))],
@@ -1395,8 +1403,8 @@ function addPick() {
     appAvatar(a, 52), h("span", { text: a.label }), h("span", { class: "sub", text: a.sub }));
   const groups = ADD_GROUPS.map(([title, lede, ids]) => {
     const apps = ids.map((id) => APPS.find((a) => a.id === id)).filter((a) => isOwner() || a.style === "allow");
-    // Codex needs a setup key only the owner makes: someone else's list says what's actually in it
-    const said = !isOwner() && ids.includes("codex") ? "Claude Code can answer on its own." : lede;
+    // answering on their own needs the helper, which only the owner sets up: someone else's list says what's true for them
+    const said = !isOwner() && ids.includes("codex") ? "Sign in once; they read Relay when you ask them to." : lede;
     return h("section", { class: "addgroup" }, h("h2", { class: "label", text: title }), h("p", { class: "hint", text: said }),
       h("div", { class: "pick stagger" }, ...apps.map(opt)));
   });
@@ -1456,7 +1464,7 @@ function connectGuide(a, created) {
   let steps;
   if (a.id === "claude_app") {
     steps = [
-      [say("In Claude: ", b("Settings → Connectors → Add custom connector"))],
+      [say("In Claude: ", b("Customize → Connectors → + → Add custom connector"))],
       [copyField("Name", "Relay"), copyField("Remote MCP server URL", url)],
       [say("Authentication: ", b("No sign in"), ". Add one header:"),
         copyField("Header name", "Authorization"), copyField("Header value", bearer, { secret: true })],

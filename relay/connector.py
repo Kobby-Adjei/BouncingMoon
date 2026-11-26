@@ -860,10 +860,22 @@ def mount(app, hub) -> None:
             body = json.loads(await request.body() or b"null")
         except ValueError:
             return JSONResponse(rpc_error(None, -32700, "parse error"), status_code=400)
+        msgs = body if isinstance(body, list) else [body]
+        # A client of a newer MCP version (2026-07-28 on) tries a modern request first, and falls back to the
+        # initialize handshake only on a 400 with no recognised modern error body (spec: Backward Compatibility).
+        # Until Relay speaks that version, answer exactly that: the client starts a session, so answers keep
+        # coming back to the chat that asked. A JSON-RPC error here would keep the client modern instead.
+        if not any(isinstance(m, dict) and m.get("method") == "initialize" for m in msgs):
+            asked = request.headers.get("mcp-protocol-version") or next((
+                (m.get("params") or {}).get("_meta", {}).get("io.modelcontextprotocol/protocolVersion")
+                for m in msgs if isinstance(m, dict) and isinstance(m.get("params"), dict)
+                and isinstance((m.get("params") or {}).get("_meta"), dict)), None)
+            if asked and asked not in PROTOCOL_VERSIONS:
+                return Response(f"This server speaks MCP {PROTOCOL_VERSIONS[-1]} and earlier. Start with initialize.",
+                                status_code=400, media_type="text/plain")
         session = hub.check_session(request.headers.get("x-relay-session")
                                     or request.headers.get("mcp-session-id"))
         issued = None
-        msgs = body if isinstance(body, list) else [body]
         if not session and any(isinstance(m, dict) and m.get("method") == "initialize" for m in msgs):
             # a chat starting up: give it its own id, which MCP clients send back on every later call
             session = issued = "rs_" + uuid.uuid4().hex
