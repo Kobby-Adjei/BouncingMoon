@@ -132,6 +132,15 @@
 body:has(.composer) .offnote { bottom: calc(112px + env(safe-area-inset-bottom)); }
 @media (prefers-reduced-motion: reduce) { .offnote { transition: none; } }
 .doorhint.bad { color: var(--red); font-weight: 600; }
+.hline { appearance: none; border: 0; background: var(--fill); color: var(--ink2); display: inline-flex; align-items: center; gap: 8px;
+  min-height: 36px; padding: 0 12px 0 14px; margin-top: 10px; border-radius: 999px; font: 500 14px var(--font); cursor: pointer; }
+.hline[hidden] { display: none; }
+.hline .hdot { width: 8px; height: 8px; border-radius: 50%; background: var(--green); }
+.hline.bad { background: var(--red-soft); color: var(--red); font-weight: 600; } .hline.bad .hdot { background: var(--red); }
+.hline .chev { width: 6px; height: 11px; opacity: .7; }
+.cell.dangerrow .t { color: var(--red); }
+.healthdoors { margin-top: 18px; }
+.facts + .facts.acct { margin-top: 26px; }
 .switchrow.paused .switch { opacity: .55; }
 .mailfacts:not(:empty) { margin-top: 26px; }
 .morb .mh.hbad { color: var(--red); }
@@ -708,6 +717,7 @@ pre.block.muted { color: var(--ink2); }
   .detail .profile > .title { grid-column: 2; align-self: end; margin: 0; font-size: 22px; }
   .detail .profile > :nth-child(3) { grid-column: 2; align-self: start; }
   .detail .profile .small { font-size: 13px; }
+  .detail .profile > .hline { grid-column: 3; grid-row: 1 / span 2; align-self: center; margin: 0; }
   .detail .profile > .quick { grid-column: 3; grid-row: 1 / span 2; margin: 0; gap: 8px; align-self: center; }
   .detail .quick .q { display: flex; align-items: center; gap: 6px; min-width: 0; height: 32px; padding: 0 14px 0 12px; border-radius: 999px;
     font-size: 13px; background: var(--fill); color: var(--ink); }

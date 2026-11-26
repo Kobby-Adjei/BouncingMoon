@@ -432,7 +432,7 @@ function known(r) {
   if (top === "activity") return !x || (x === "new" && !y) || (x === "to" && !!y) || (/^\d+$/.test(x) && !y);
   if (top === "add") return isOwner() ? (!y || (y === "withkey" && !!x))
     : !!ME && ME.role === "human" && !y && (!x || APPS.some((a) => a.id === x && a.style === "allow"));
-  if (top === "me") return (!x || ((x === "apps" || x === "passkeys" || x === "delete" || x === "friend" || x === "notify" || x === "health" || (x === "people" && isOwner())) && !y) || (x === "keys" && (!y || y === "new" || /^k_[0-9a-f]{12}$/.test(y))))
+  if (top === "me") return (!x || ((x === "apps" || x === "passkeys" || x === "delete" || x === "friend" || x === "notify" || x === "health" || x === "account" || (x === "people" && isOwner())) && !y) || (x === "keys" && (!y || y === "new" || /^k_[0-9a-f]{12}$/.test(y))))
     && !!ME && ME.role !== "admin";
   if (top === "approve") return !!ME && ME.role === "human" && /^c_[0-9a-f]{16}$/.test(x || "") && !y;
   if (top === "ask") return isOwner() && /^ir_[0-9a-f]{12}$/.test(x || "") && !y;
@@ -472,6 +472,7 @@ function screenFor(r) {
   if (p[0] === "me" && p[1] === "passkeys") return [passkeysScreen];
   if (p[0] === "me" && p[1] === "notify") return [notifyScreen];
   if (p[0] === "me" && p[1] === "health") return [healthScreen];
+  if (p[0] === "me" && p[1] === "account") return [accountScreen];
   if (p[0] === "me" && p[1] === "people") return [peopleScreen];
   if (p[0] === "me" && p[1] === "delete") return [deleteScreen];
   if (p[0] === "me" && p[1] === "friend") return [friendScreen];
@@ -1470,32 +1471,53 @@ function convRow(t, by) {
 // you: your email sign-in and sign out
 async function meScreen() {
   const tk = ticket();
-  let mine = { handle: ME.handle, role: "human", email: null };
-  try { mine = (await api("GET", "/agents")).find((x) => x.handle === ME.handle) || mine; } catch {}
-  const rows = AUTH.email ? h("section", { class: "facts" }, h("h2", { class: "label", text: "Signing in" }),
-    h("div", { class: "group info" }, emailRow(mine, "Email sign-in"))) : null;
+  const door = (orb, label, to, hint) => h("button", { class: "door press", type: "button", onclick: () => nav(to) },
+    orb, h("span", { class: "grow" }, h("b", { text: label })), hint || null, chev());
+  const person = ME.role === "human";
+  // the things used often, one row each; sign-in, your data and leaving live together under Account
   screen("me", tk,
     h("div", { class: "profile" }, avatar({ handle: ME.handle, role: "human" }, 88), h("h1", { class: "title", text: ME.handle }),
-      ME.owner ? h("span", { class: "pill-tag", text: "Owner" }) : null),
+      ME.owner ? h("span", { class: "pill-tag", text: "Owner" }) : null, person ? healthLine() : null),
     ME.owner ? goingCard() : null,
-    h("div", { class: "stack" }, h("div", { class: "doors" }, h("button", { class: "door press", type: "button", onclick: () => nav("me/apps") },
-        miniOrb("claude", "relay", 40), h("span", { class: "grow" }, h("b", { text: "Connected apps" })), chev()),
-      h("button", { class: "door press", type: "button", onclick: () => nav("me/passkeys") },
-        passOrb(40), h("span", { class: "grow" }, h("b", { text: "Passkeys" })), chev()),
-      ME.owner ? h("button", { class: "door press", type: "button", onclick: () => nav("me/people") },
-        h("span", { class: "morb", style: "--s:40px", "aria-hidden": "true" }, h("span", { class: "mh l" }, youGlyph()), h("span", { class: "mh r" }, youGlyph())),
-        h("span", { class: "grow" }, h("b", { text: "People" })), chev()) : null,
-      ME.role === "human" ? h("button", { class: "door press", type: "button", onclick: () => nav("me/notify") },
-        bellOrb(40), h("span", { class: "grow" }, h("b", { text: "Notifications" })), notifyHint(), chev()) : null,
-      ME.role === "human" ? healthDoor() : null,
-      WIDE ? null : h("button", { class: "door press", type: "button", onclick: () => nav("me/keys") },
-        keyOrb("", 40), h("span", { class: "grow" }, h("b", { text: "Keys" })), chev()),
-      !ME.owner && ME.role === "human" ? friendDoor() : null,
-      ME.owner ? h("button", { class: "door press", type: "button", onclick: (e) => saveBackup(e.currentTarget) },
-        backupOrb(40), h("span", { class: "grow" }, h("b", { text: "Download the hub's backup" }), backupLine())) : null),
-      rows, h("button", { class: "btn ghost press signout", type: "button", onclick: userSignOut }, "Sign out"),
-      ME.role !== "human" ? null : ways(way("Download my data", (e) => saveMyData(e.currentTarget))),
-      ME.role !== "human" || ME.owner ? null : ways(Object.assign(way("Delete my account", () => nav("me/delete")), { className: "way danger" }))));
+    h("div", { class: "stack" }, h("div", { class: "doors" },
+      door(miniOrb("claude", "relay", 40), "Connected apps", "me/apps"),
+      WIDE ? null : door(keyOrb("", 40), "Keys", "me/keys"),
+      person ? door(bellOrb(40), "Notifications", "me/notify", notifyHint()) : null,
+      ME.owner ? door(h("span", { class: "morb", style: "--s:40px", "aria-hidden": "true" }, h("span", { class: "mh l" }, youGlyph()),
+        h("span", { class: "mh r" }, youGlyph())), "People", "me/people") : null,
+      !ME.owner && person ? friendDoor() : null,
+      person ? door(passOrb(40), "Account", "me/account", h("span", { class: "doorhint", text: "Sign-in, your data" })) : null),
+      h("button", { class: "btn ghost press signout", type: "button", onclick: userSignOut }, "Sign out")));
+}
+// Account: how you sign in, your data, and leaving. Kept off the main Me screen: used rarely, and carefully.
+async function accountScreen() {
+  const tk = ticket();
+  let mine = { handle: ME.handle, role: "human", email: null };
+  try { mine = (await api("GET", "/agents")).find((x) => x.handle === ME.handle) || mine; } catch {}
+  if (!fresh(tk)) return;
+  const row = (label, sub, onclick, cls) => h("button", { class: "cell press" + (cls ? " " + cls : ""), type: "button", onclick },
+    h("div", { class: "grow" }, h("div", { class: "t", text: label }), sub ? h("div", { class: "s", text: sub }) : null), chev());
+  screen("account", tk, head("Account"),
+    h("section", { class: "facts" }, h("h2", { class: "label", text: "Signing in" }),
+      h("div", { class: "group info" }, row("Passkeys", "Your face or fingerprint, on each device", () => nav("me/passkeys")),
+        AUTH.email ? emailRow(mine, "Email sign-in") : null)),
+    h("section", { class: "facts acct" }, h("h2", { class: "label", text: "Your data" }),
+      h("div", { class: "group info" },
+        row("Download my data", "Every conversation, your agents and settings, as a zip", (e) => saveMyData(e.currentTarget)),
+        ME.owner ? null : row("Delete my account", "You, your agents, keys and files", () => nav("me/delete"), "dangerrow"))));
+}
+// Under your name: everything working, or how many things need fixing. Tapping it opens Health.
+function healthLine() {
+  const b = h("button", { class: "hline press", type: "button", hidden: "", onclick: () => nav("me/health") });
+  api("GET", "/me/health").then(({ checks }) => {
+    if (!checks.length) return;
+    const bad = checks.filter((x) => !x.ok).length;
+    b.classList.toggle("bad", !!bad);
+    b.replaceChildren(h("span", { class: "hdot", "aria-hidden": "true" }),
+      h("span", { text: bad ? (bad === 1 ? "1 thing to fix" : `${bad} things to fix`) : "Everything is working" }), chev());
+    b.hidden = false;
+  }).catch(() => {});
+  return b;
 }
 // How it's going: counted on this hub, shown only to its owner, sent nowhere
 function goingCard() {
@@ -1887,21 +1909,6 @@ function healthOrb(size, bad) {   // a tick on your half when things are fine, "
     h("span", { class: "mh l" + (bad ? " hbad" : "") }, svg("0 0 24 24", [{ d: bad ? "M12 6.5v7M12 17.5h.01" : "M5.5 12.5l4 4 9-9", ...stroke, "stroke-width": bad ? "2.8" : "2.4" }])),
     h("span", { class: "mh r dark" }, h("i", { class: "mk" })));
 }
-// In Me: "All good", or how many things need fixing. Hidden when there's nothing to check yet.
-function healthDoor() {
-  const hint = h("span", { class: "doorhint" });
-  const door = h("button", { class: "door press", type: "button", hidden: "", onclick: () => nav("me/health") },
-    healthOrb(40), h("span", { class: "grow" }, h("b", { text: "Health" })), hint, chev());
-  api("GET", "/me/health").then(({ checks }) => {
-    if (!checks.length) return;
-    const bad = checks.filter((x) => !x.ok).length;
-    hint.textContent = bad ? `${bad} to fix` : "All good";
-    hint.classList.toggle("bad", !!bad);
-    door.setAttribute("aria-label", `Health, ${hint.textContent}`);
-    door.hidden = false;
-  }).catch(() => {});
-  return door;
-}
 async function healthScreen() {
   const tk = ticket();
   let checks = [];
@@ -1916,6 +1923,8 @@ async function healthScreen() {
       !checks.length ? "Nothing to check yet." : bad.length ? (bad.length === 1 ? "One thing needs fixing." : `${bad.length} things need fixing.`)
         : "Everything is working."),
     checks.length ? h("div", { class: "group info" }, ...checks.map(row)) : null,
+    ME.owner ? h("div", { class: "doors healthdoors" }, h("button", { class: "door press", type: "button", onclick: (e) => saveBackup(e.currentTarget) },
+      backupOrb(40), h("span", { class: "grow" }, h("b", { text: "Download the hub's backup" }), backupLine()))) : null,
     h("p", { class: "hint", text: "If something breaks, Relay tells you once a day until it's fixed, with your other notifications." }));
 }
 
