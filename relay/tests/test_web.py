@@ -154,3 +154,14 @@ def test_no_ai_style_icons():
         text = open(os.path.join(WEB, f)).read().lower()
         for sign in ("bolt", "sparkle", "\u2728", "\u26a1", "\U0001f916", "magic wand"):
             assert sign not in text, (f, sign)
+
+
+def test_the_add_guide_uses_claudes_install_link_and_one_line_terminal_setups():
+    import pathlib
+    js = (pathlib.Path(__file__).resolve().parent.parent / "web" / "app.js").read_text()
+    # Claude's documented install link (claude.com/docs/connectors/building/directory-vs-custom), address percent-encoded
+    assert "https://claude.ai/customize/connectors?modal=add-custom-connector&connectorName=Relay&connectorUrl=${encodeURIComponent(url)}" in js
+    assert "Settings → Connectors" not in js and "Older menus" not in js                      # menus that no longer exist
+    assert "claude mcp add --transport http relay ${url} && claude mcp login relay" in js        # checked with Claude Code 2.1.332
+    assert "codex mcp add relay --url ${url}`" in js and "codex mcp login" not in js            # add signs in by itself (codex 0.172.0)
+    assert '{ id: "codex", label: "Codex", sub: "CLI · app", provider: "codex", style: "allow"' in js   # for everyone, not owner-only

@@ -57,3 +57,22 @@ def test_agents_are_told_about_quick_answers_and_short_messages(hub):
     tools = {t["name"]: t for t in c.post("/mcp", headers=H(codex, "chat-1"), json={"jsonrpc": "2.0", "id": 2, "method": "tools/list"}).json()["result"]["tools"]}
     assert "options" in tools["ask"]["inputSchema"]["properties"] and "options" in tools["reply"]["inputSchema"]["properties"]
     assert "options" in tools["reply"]["description"]
+
+
+def test_a_newer_mcp_client_is_told_to_fall_back_and_then_gets_its_own_session(hub):
+    c, kobby, codex = hub
+    modern = {"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {"_meta": {
+        "io.modelcontextprotocol/protocolVersion": "2026-07-28", "io.modelcontextprotocol/clientInfo": {"name": "x", "version": "1"}}}}
+    r = c.post("/mcp", headers={**H(codex), "MCP-Protocol-Version": "2026-07-28"}, json=modern)
+    # 400 with a body that is NOT a JSON-RPC error: per the spec, a dual-era client then falls back to initialize
+    assert r.status_code == 400 and r.headers["content-type"].startswith("text/plain") and "initialize" in r.text
+    r = c.post("/mcp", headers={**H(codex), "MCP-Protocol-Version": "2026-07-28"},
+               json={"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {"_meta": {"io.modelcontextprotocol/protocolVersion": "2026-07-28"}}})
+    assert r.status_code == 400                                                            # body-only signal too
+    init = c.post("/mcp", headers=H(codex), json={"jsonrpc": "2.0", "id": 2, "method": "initialize",
+        "params": {"protocolVersion": "2026-07-28", "capabilities": {}, "clientInfo": {"name": "x", "version": "1"}}})
+    assert init.status_code == 200 and init.headers.get("mcp-session-id", "").startswith("rs_")
+    assert init.json()["result"]["protocolVersion"] == "2025-11-25"                        # it settles on ours
+    ok = c.post("/mcp", headers={**H(codex), "MCP-Protocol-Version": "2025-11-25", "Mcp-Session-Id": init.headers["mcp-session-id"]},
+                json={"jsonrpc": "2.0", "id": 3, "method": "tools/list"})
+    assert ok.status_code == 200 and ok.json()["result"]["tools"]                         # older versions unchanged

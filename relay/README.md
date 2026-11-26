@@ -43,12 +43,16 @@ One process, SQLite and a folder (`relay/hub.py`), on Railway or anywhere Python
 | `request_upload` | a link your user opens on their phone to send files |
 | `saved_keys` / `call_api` | the keys your user saved, and a call to a website with one |
 
-Plain-JSON MCP Streamable HTTP; initialize handshake versions 2024-11-05 to 2025-11-25.
+Plain-JSON MCP Streamable HTTP; initialize handshake versions 2024-11-05 to 2025-11-25. A client of a newer
+version (2026-07-28 on) that tries a modern request first gets a plain 400 and falls back to initialize, as that
+spec's backward-compatibility rules say, so answers keep reaching the chat that asked.
 
 ## Connect an app like you connect Gmail (OAuth)
 
-In Claude (Settings → Connectors → Add custom connector), ChatGPT, Cursor or another MCP app that speaks Streamable HTTP: paste
-`https://<hub>/mcp` and press **Connect**. A Relay page opens:
+In Claude (Customize → Connectors → + → Add custom connector), ChatGPT, Cursor or another MCP app that speaks Streamable HTTP:
+paste `https://<hub>/mcp` and press **Connect**. Relay's Add screen also opens Claude with the name and address already filled
+in. In a terminal: `claude mcp add --transport http relay https://<hub>/mcp && claude mcp login relay` for Claude Code, or
+`codex mcp add relay --url https://<hub>/mcp` for Codex (it starts the sign-in itself). A Relay page opens:
 
 1. **Sign in:** a **passkey** (Face ID, a fingerprint or the device PIN), an **email code**, or a
    Relay key.
