@@ -922,7 +922,8 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
                 line = next((l.strip() for l in text.splitlines() if l.strip()), "")
                 quiet = {r["handle"] for r in c.execute("SELECT handle FROM marks WHERE thread=? AND muted=1", (thread,))}
                 for person in people_in - {sender} - quiet:
-                    pusher.notify(person, "answers", f"{sender} answered", line[:200] or "A new message",
+                    pusher.notify(person, "answers", f"{sender} answered", line[:200] or (
+                                      "Sent a file" if len(media) == 1 else f"Sent {len(media)} files" if media else "A new message"),
                                   f"/app#activity/{thread}", tag=f"t{thread}")
         for m in {sender, *mentions} - {SYSTEM}:
             c.execute("INSERT OR IGNORE INTO members(thread,agent) VALUES (?,?)", (thread, m))
@@ -1746,6 +1747,18 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
                               " DO UPDATE SET last=MAX(last, excluded.last)", (me["handle"], thread, top))
         return rows[::-1] if latest else rows
 
+    def with_files(rows: list) -> list:
+        """A conversation list's newest messages that are only files: say how many, so the preview isn't blank."""
+        bare = [x["last"] for x in rows if not (x["last"].get("text") or "").strip()]
+        if bare:
+            with store.ro() as c:
+                qs = ",".join("?" * len(bare))
+                n = {r["msg"]: r["n"] for r in c.execute(
+                    f"SELECT msg, COUNT(*) AS n FROM message_media WHERE msg IN ({qs}) GROUP BY msg", [m["id"] for m in bare])}
+            for m in bare:
+                m["files"] = n.get(m["id"], 0)
+        return rows
+
     @app.get("/threads")
     def threads(limit: int = Query(40, ge=1, le=200), before: int = 0, with_: Optional[str] = Query(None, alias="with", max_length=64),
                 since: float = 0, until: float = 0, archived: bool = False, me: dict = Depends(auth)):
@@ -1796,11 +1809,11 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
             if r["sender"] in (me["handle"], SYSTEM):
                 return False                     # the newest is yours, or the hub's own note ("ama joined")
             return r["id"] > seen.get(r["thread"], floor)
-        return [{"thread": r["thread"], "count": r["n"], "people": people.get(r["thread"], []), "last": msg_out(r),
+        return with_files([{"thread": r["thread"], "count": r["n"], "people": people.get(r["thread"], []), "last": msg_out(r),
                  "first": first.get(r["thread"]), "unread": unread(r),
                  "pinned": bool(r["thread"] in marks and marks[r["thread"]]["pinned"]),
                  "muted": bool(r["thread"] in marks and marks[r["thread"]]["muted"]),
-                 "archived": archived} for r in rows]
+                 "archived": archived} for r in rows])
 
     # ---------------------------------------------------------------- live: the app hears about changes at once
     # One request at a time per open app, answered the moment something that person would see changes, instead
@@ -2046,8 +2059,8 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
                 people.setdefault(r["thread"], []).append(r["agent"])
             first = {r["id"]: {"from": r["sender"], "text": r["text"]}
                      for r in c.execute(f"SELECT id, sender, text FROM messages WHERE id IN ({qs})", ids)}
-        out = [{"thread": t, "count": convs[t]["n"], "people": people.get(t, []), "first": first.get(t), "last": msg_out(convs[t]),
-                "why": sorted(f["why"]), "hits": f["hits"]} for t, f in found.items() if t in convs]
+        out = with_files([{"thread": t, "count": convs[t]["n"], "people": people.get(t, []), "first": first.get(t), "last": msg_out(convs[t]),
+                           "why": sorted(f["why"]), "hits": f["hits"]} for t, f in found.items() if t in convs])
         if since or until:                     # people and file matches keep to the dates too
             inside = lambda t: (not since or t >= since) and (not until or t < until)
             out = [x for x in out if any(inside(h["time"]) for h in x["hits"]) or (not x["hits"] and inside(x["last"]["time"]))]

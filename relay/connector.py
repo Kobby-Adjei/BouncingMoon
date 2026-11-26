@@ -54,10 +54,11 @@ INSTRUCTIONS = (
     "allows, and answer each one with `reply`. To answer a message, always use `reply` with "
     "its id, never `ask`: `ask` starts a new conversation and the answer would not reach the "
     "chat that asked. To share a video, image, audio or any file, pass `attach` to ask or reply: "
-    "a link to it, or a media id (m_…). To get a file from your user, call `request_upload` and "
-    "give them the link it returns. Media in messages arrives already watched by the hub: read "
-    "its card, and call `view_media` to see the picture, the contact sheet, or the frames at a "
-    "moment (`at`). To call a website's API with a key your user saved in Relay, call `saved_keys` to "
+    "a link to it, or a media id (m_…). To send a document you wrote (a plan, notes, a table), pass "
+    "`files` with its name and text instead of pasting it into the message. To get a file from your "
+    "user, call `request_upload` and give them the link it returns. Media and documents in messages "
+    "arrive already watched or read by the hub: read the card, and call `view_media` to read a "
+    "document in full, or to see the picture, the contact sheet, or the frames at a moment (`at`). To call a website's API with a key your user saved in Relay, call `saved_keys` to "
     "see which keys you may use and for which websites, then `call_api`: the hub adds the key, so you "
     "never see or handle it, and anything that changes something waits for your user's OK. "
     "People read Relay on their phone: when you write to a person, keep it short and plain (lead with the "
@@ -94,6 +95,14 @@ TOOLS = [
 "attach": {"type": "array", "maxItems": 5, "items": {"type": "string"},
                            "description": "Videos, images, audio or files to send with it: links (https://…) "
                                           "or media ids (m_…). The hub fetches links and watches videos itself."},
+                "files": {"type": "array", "maxItems": 5, "items": {"type": "object", "properties": {
+                    "name": {"type": "string", "description": "File name with its type, e.g. plan.md, budget.csv, notes.txt"},
+                    "content": {"type": "string", "description": "The whole text of the file"}},
+                    "required": ["name", "content"], "additionalProperties": False},
+                    "description": "Documents you wrote, sent as real files (Markdown, text, CSV, JSON, HTML…), "
+                                   "not pasted into the message. People see a file they can open and download; "
+                                   "agents read it with view_media. Use this for anything longer than a few "
+                                   "paragraphs, or anything meant to be saved."},
                 "options": {"type": "array", "maxItems": 6, "items": {"type": "string", "maxLength": 60},
                             "description": "Short answers a person can tap instead of typing, e.g. [\"Post now\", "
                                            "\"Tonight\", \"Not yet\"]. Only when the question has a few clear answers; "
@@ -137,6 +146,14 @@ TOOLS = [
                 "attach": {"type": "array", "maxItems": 5, "items": {"type": "string"},
                            "description": "Videos, images, audio or files to send with it: links (https://…) "
                                           "or media ids (m_…). The hub fetches links and watches videos itself."},
+                "files": {"type": "array", "maxItems": 5, "items": {"type": "object", "properties": {
+                    "name": {"type": "string", "description": "File name with its type, e.g. plan.md, budget.csv, notes.txt"},
+                    "content": {"type": "string", "description": "The whole text of the file"}},
+                    "required": ["name", "content"], "additionalProperties": False},
+                    "description": "Documents you wrote, sent as real files (Markdown, text, CSV, JSON, HTML…), "
+                                   "not pasted into the message. People see a file they can open and download; "
+                                   "agents read it with view_media. Use this for anything longer than a few "
+                                   "paragraphs, or anything meant to be saved."},
                 "options": {"type": "array", "maxItems": 6, "items": {"type": "string", "maxLength": 60},
                             "description": "Short answers a person can tap instead of typing, e.g. [\"Post now\", "
                                            "\"Tonight\", \"Not yet\"]. Only when the question has a few clear answers; "
@@ -149,14 +166,16 @@ TOOLS = [
     {
         "name": "view_media",
         "title": "Look at media",
-        "description": "Look at a video, image or audio clip someone shared (by its media id, m_…). The hub has "
-                       "already watched it: you get its full transcript with times, its shots, how loud it is, and a "
-                       "picture: the contact sheet of a video (one labelled frame per shot) or the image itself. Pass "
-                       "`at` (seconds or m:ss) to see three frames around that moment of a video. Also gives a private "
-                       "link a person can open on any phone to watch it.",
+        "description": "Look at a video, image, audio clip or document someone shared (by its media id, m_…). The hub "
+                       "has already watched or read it. A video or audio clip: its full transcript with times, its shots, "
+                       "how loud it is, and the contact sheet (one labelled frame per shot). An image: the image itself. "
+                       "A document (PDF, Word, PowerPoint, text, CSV…): its text, and a picture of a PDF's first page; "
+                       "a long one comes in parts. Pass `at`: for a video, a moment (seconds or m:ss) to see three frames "
+                       "around it; for a document, where to go on reading (the number the previous part gave). Also gives "
+                       "a private link a person can open on any phone.",
         "inputSchema": {"type": "object", "properties": {
             "id": {"type": "string", "description": "The media id, m_…"},
-            "at": {"type": "string", "description": "A moment in a video to look at closely, e.g. \"3\" or \"1:15\""}},
+            "at": {"type": "string", "description": "A video: a moment, e.g. \"3\" or \"1:15\". A document: where to go on reading, e.g. \"20000\""}},
             "required": ["id"], "additionalProperties": False},
         "annotations": {"readOnlyHint": True},
     },
@@ -372,6 +391,8 @@ def mount(app, hub) -> None:
             out = save(c, me, str(args.get("name", "")), str(args.get("address", "")))
         return f"Saved: {out['name']} → {out['address']}", out
 
+    FILE_TEXT_MAX = 2 * 2**20                # a document an agent writes out: 2 MB of text
+
     def attachments(me, args) -> list:
         """attach: links (fetched and watched by the hub), media ids the caller may see, or hub file ids."""
         items = args.get("attach") or []
@@ -389,6 +410,19 @@ def mount(app, hub) -> None:
                     out.append(hub.media.check_access(me, it)["id"])
             except Exception as e:
                 raise ToolError(f"Can't attach {it[:80]}: {e}")
+        files = args.get("files") or []
+        if not isinstance(files, list) or len(files) > 5:
+            raise ToolError("files takes up to 5 documents, each a name and its content.")
+        for f in files:
+            if not isinstance(f, dict) or not str(f.get("name") or "").strip() or not isinstance(f.get("content"), str):
+                raise ToolError("Each file needs a name (like plan.md) and its content as text.")
+            if len(f["content"].encode()) > FILE_TEXT_MAX:
+                raise ToolError(f"{str(f['name'])[:60]} is too long to send as text (over {FILE_TEXT_MAX // 2**20} MB). "
+                                "Split it, or ask your person to upload it with request_upload.")
+        if len(out) + len(files) > 10:
+            raise ToolError("Up to 10 attachments and files per message.")
+        for f in files:
+            out.append(hub.media.from_text(me, str(f["name"]), f["content"])["id"])
         return out
 
     def tool_ask(me, args, session=None):
@@ -649,6 +683,8 @@ def mount(app, hub) -> None:
         link = hub.media.link(mid)
         d = m["digest"]
         lines = [hub.media.card(m, link, transcript_chars=0).split("\n")[0]]
+        if m["kind"] == "document" and m["status"] == "ready":
+            return read_part(m, d, link, at)
         if m["status"] in ("queued", "working"):
             return (f"{lines[0]}\nStill being processed ({m['stage']}). Call view_media {mid} again in a minute.",
                     {**m, "link": link}, [])
@@ -676,6 +712,35 @@ def mount(app, hub) -> None:
                                         else "the image (location data removed)."))
         lines.append(f"Watch/open (for a person, works on any phone): {link}")
         return "\n".join(lines), {**m, "link": link}, pics
+
+    DOC_PART = 20_000                     # characters of a document per view_media call
+
+    def read_part(m, d, link, at):
+        """A document's text from `at` (a character offset), DOC_PART at a time, cut at a line where it can be."""
+        head = hub.media.card(m, link, transcript_chars=0).split("\n")[0]
+        text = hub.media.doc_text(m["id"])
+        if not text:
+            return (f"{head}\nNo text in this document (a scan or pictures only). A person can open it: {link}",
+                    {**m, "link": link}, hub.media.pictures(m["id"]))
+        try:
+            start = max(0, int(float(at))) if at not in (None, "") else 0
+        except (TypeError, ValueError):
+            raise ToolError("at is where to go on reading, a number such as \"20000\".")
+        end = min(len(text), start + DOC_PART)
+        if end < len(text):
+            cut = text.rfind("\n", start + DOC_PART // 2, end)
+            end = cut + 1 if cut > 0 else end
+        part = text[start:end]
+        what = {"pdf": "PDF", "word": "Word document", "slides": "slides", "text": "text"}.get(d.get("doc"), "document")
+        size = ", ".join(x for x in (f"{d['pages']} {'slides' if d.get('doc') == 'slides' else 'pages'}" if d.get("pages") else None,
+                                     f"{d.get('words', 0):,} words") if x)
+        lines = [head, f"A {what} ({size}). Characters {start:,}–{end:,} of {len(text):,}:", "", part]
+        if end < len(text):
+            lines += ["", f"More: call view_media {m['id']} with at \"{end}\"."]
+        elif d.get("text_cut"):
+            lines += ["", "That is all the text the hub kept; the document goes on. A person can open the whole file."]
+        lines.append(f"Open/download (for a person, works on any phone): {link}")
+        return "\n".join(lines), {**m, "link": link}, hub.media.pictures(m["id"]) if start == 0 else []
 
     def tool_request_upload(me, args, session=None):
         note = str(args.get("note") or "").strip()[:300]

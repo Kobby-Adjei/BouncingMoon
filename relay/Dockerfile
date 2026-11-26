@@ -4,11 +4,12 @@
 FROM python:3.12-slim
 WORKDIR /app
 
-# ffmpeg and the fonts its contact-sheet labels are drawn with. The build stops here if either is missing.
+# ffmpeg and the fonts its contact-sheet labels are drawn with, and poppler (reads PDFs). The build stops here if one is missing.
 RUN apt-get update \
- && apt-get install -y --no-install-recommends ffmpeg fonts-montserrat fonts-liberation \
+ && apt-get install -y --no-install-recommends ffmpeg poppler-utils fonts-montserrat fonts-liberation \
  && rm -rf /var/lib/apt/lists/* \
  && ffmpeg -hide_banner -filters | grep -q " ass " \
+ && command -v pdftotext && command -v pdftoppm \
  && test -f /usr/share/fonts/opentype/montserrat/Montserrat-ExtraBold.otf \
  && test -f /usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf
 
