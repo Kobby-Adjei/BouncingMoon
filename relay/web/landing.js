@@ -146,7 +146,7 @@ seen.observe(log);
 (() => {
   const ph = document.querySelector(".phones");
   if (!ph || !("IntersectionObserver" in window) || matchMedia("(prefers-reduced-motion: reduce)").matches) return;
-  ph.classList.add("wait");
+  ph.classList.add("rising");
   const io = new IntersectionObserver((es) => {
     if (es.some((e) => e.isIntersecting)) { io.disconnect(); ph.classList.add("in"); }
   }, { threshold: 0.25 });

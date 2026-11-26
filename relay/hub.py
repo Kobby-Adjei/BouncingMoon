@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import functools
 import hashlib
+import hmac
 import ipaddress
 import html
 import io
@@ -438,6 +439,7 @@ class MarkIn(BaseModel):
 
 class PrefsIn(BaseModel):
     digest: Optional[bool] = None
+    tz: Optional[int] = Field(default=None, ge=-720, le=840)     # minutes east of UTC: the daily email comes in your morning
 
 
 class DeleteIn(BaseModel):
@@ -1968,11 +1970,24 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
     # ---------------------------------------------------------------- delete my account
     # ---------------------------------------------------------------- download my data
     EXPORT_NOTE = ("Your data from Relay.\n\n"
-                   "me.json: your account. agents.json: your agents. conversations/: every conversation you or your agents\n"
-                   "are in, one file each, every message in order. shortcuts.json, keys.json (names and websites only:\n"
-                   "the keys themselves never leave the hub), approvals.json (what your agents asked to do with them, and\n"
-                   "what you said), devices.json (passkeys and notification devices, by name).\n"
-                   "Files people shared are listed in the messages that carried them, not copied here.\n")
+                   "Open index.html to read everything: every conversation, in order, with dates. Each conversation is also "
+                   "a plain text file in the conversations folder.\n\n"
+                   "The .json files are the same data for other apps: me.json (your account), agents.json (your agents), "
+                   "conversations/*.json, shortcuts.json, keys.json (names and websites only: the keys themselves never "
+                   "leave the hub), approvals.json (what your agents asked to do with them, and what you said), "
+                   "devices.json (passkeys and notification devices, by name).\n\n"
+                   "Videos and files you shared are not in this download, only their names. Save the ones you want from "
+                   "Relay before you delete your account.\n")
+
+    def when_iso(t) -> Optional[str]:
+        return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(t)) if t else None
+
+    def when_read(t) -> str:
+        return time.strftime("%a %d %b %Y, %H:%M UTC", time.gmtime(t)) if t else ""
+
+    def file_safe(text: str, n: int = 48) -> str:
+        words = re.sub(r"[^\w\s.,'-]", "", re.sub(r"@\S+", "", text or "")).split()
+        return " ".join(words)[:n].strip(" .,-") or "Conversation"
 
     @app.get("/me/export")
     def export_me(me: dict = Depends(auth)):
@@ -2002,9 +2017,37 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
                                                   "muted_conversations": [r["thread"] for r in c.execute(
                                                       "SELECT thread FROM marks WHERE handle=? AND muted=1", (h,))]}, indent=2))
                 z.writestr("agents.json", json.dumps(agents_out, indent=2))
+                index = []
                 for t in threads_:
                     msgs = [msg_out(r) for r in c.execute("SELECT * FROM messages WHERE thread=? ORDER BY id LIMIT 20000", (t,))]
+                    for m in msgs:
+                        m["when"] = when_iso(m.get("time"))
                     z.writestr(f"conversations/{t}.json", json.dumps(msgs, indent=1))
+                    if not msgs:
+                        continue
+                    who = sorted(({m["from"] for m in msgs} | {x for m in msgs for x in (m.get("mentions") or [])}) - {SYSTEM})
+                    start = msgs[0]
+                    title = file_safe(start.get("text", ""))
+                    name = f"{time.strftime('%Y-%m-%d', time.gmtime(start['time']))} {title} ({', '.join(who)[:60]}) {t}.txt"
+                    z.writestr(f"conversations/{name}", "\n\n".join(
+                        f"{when_read(m['time'])} · {m['from']}:\n{m.get('text') or ''}"
+                        + "".join(f"\n[file: {f.get('name') or f.get('id')}]" for f in (m.get("media") or []) if isinstance(f, dict))
+                        for m in msgs) + "\n")
+                    index.append((start["time"], title, who, name, msgs))
+                index.sort(key=lambda x: -x[0])
+                esc = html.escape
+                page = ["<!doctype html><meta charset=utf-8><meta name=viewport content='width=device-width,initial-scale=1'>",
+                        f"<title>Your Relay data</title><body style=\"font:16px/1.5 -apple-system,system-ui,sans-serif;max-width:720px;"
+                        f"margin:0 auto;padding:24px 16px;color:#18171d;background:#f6f4ef\"><h1>Your Relay data</h1>",
+                        f"<p>{esc(h)} · downloaded {esc(when_read(time.time()))} · {len(index)} conversation{'s' if len(index) != 1 else ''}</p>"]
+                for t0, title, who, name, msgs in index:
+                    page.append(f"<details style=\"background:#fff;border-radius:14px;padding:12px 16px;margin:10px 0\"><summary><b>{esc(title)}</b>"
+                                f"<br><small>{esc(when_read(t0))} · {esc(', '.join(who))} · {len(msgs)} message{'s' if len(msgs) != 1 else ''}</small></summary>")
+                    for m in msgs:
+                        page.append(f"<p><small>{esc(when_read(m['time']))}</small><br><b>{esc(m['from'])}</b>: "
+                                    f"{esc(m.get('text') or '').replace(chr(10), '<br>')}</p>")
+                    page.append("</details>")
+                z.writestr("index.html", "\n".join(page))
                 z.writestr("shortcuts.json", json.dumps([{"title": r["title"], "text": r["text"], "to": _loads(r["mentions"], []),
                                                           "uses": r["uses"]} for r in c.execute("SELECT * FROM shortcuts WHERE handle=?", (h,))], indent=2))
                 z.writestr("keys.json", json.dumps([{"name": r["name"], "websites": _loads(r["hosts"], []), "ask": r["ask"],
@@ -2528,7 +2571,7 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
                                       new_session=lambda h: new_session(h), tell_owner=tell_owner), supabase, resend)
 
     # ---------------------------------------------------------------- the daily email: for people without notifications
-    DIGEST_GAP = 20 * 3600                       # once a day at most
+    DIGEST_GAP = 24 * 3600 - 1800                # once a day at most (the loop runs every half hour)
 
     def pref(c, h: str, key: str) -> Optional[str]:
         r = c.execute("SELECT value FROM prefs WHERE handle=? AND key=?", (h, key)).fetchone()
@@ -2545,24 +2588,49 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
             "SELECT COUNT(*) FROM convs t JOIN messages m ON m.id=t.last JOIN members mb ON mb.thread=t.thread AND mb.agent=?"
             " LEFT JOIN seen s ON s.handle=? AND s.thread=t.thread"
             " WHERE m.sender NOT IN (?, ?) AND m.id > COALESCE(s.last, ?)"
+            " AND NOT (t.n = 1 AND m.text LIKE '🔑 Asking %')"      # an agent's "asking you to OK" note: the OK itself is listed
             " AND NOT EXISTS (SELECT 1 FROM marks k WHERE k.handle=? AND k.thread=t.thread AND k.muted=1)",
             (h, h, h, SYSTEM, floor, h)).fetchone()[0]
 
     def digest_lines(h: str) -> list:
+        """What waits for this person, for the daily email: OKs to give first (each with its own link and when it
+        expires), then the rest. Each: {text, url, note, ask}."""
         lines = []
         for call in vault.waiting(h)[:5]:
-            host = urllib.parse.urlsplit(call["url"]).hostname or call["url"]
-            verb = {"GET": "read", "POST": "post", "PUT": "change", "PATCH": "change", "DELETE": "delete"}.get(call["method"], call["method"])
-            lines.append(f"{call['agent']} wants to {verb} with your {call['key']} key, on {host}")
+            verb = VERBS.get(call["method"], call["method"])
+            said = None
+            try:
+                body = json.loads(call["body"]) if call["body"] else {}
+                said = next((body[k] for k in ("caption", "text", "message", "title") if isinstance(body, dict)
+                             and isinstance(body.get(k), str) and body[k].strip()), None)
+            except ValueError:
+                pass
+            left = call["created"] + vault_mod.APPROVAL_SECONDS - _now()
+            lines.append({"text": f"{call['agent']} wants to {verb} on {site_of(call['url'])}" + (f": “{said.strip()[:120]}”" if said else ""),
+                          "note": f"Expires in {max(1, round(left / 3600))} h" if left >= 3600 else "Expires within the hour",
+                          "url": f"/app#approve/{call['id']}", "ask": True,
+                          "subject": f"{call['agent']} is waiting for your OK to {verb} on {site_of(call['url'])}"})
         with store.ro() as c:
             if first_owner(c) == h:
                 for r in c.execute("SELECT name FROM invite_requests WHERE status='waiting' ORDER BY created DESC LIMIT 5"):
-                    lines.append(f"{r['name']} would like an invite")
+                    lines.append({"text": f"{r['name']} would like an invite", "url": "/app#activity", "ask": False})
             n = unread_for(c, h)
         if n:
-            lines.append(f"{n} conversation{'s have' if n != 1 else ' has'} something new")
-        lines += [x["title"] for x in health_for(h) if not x["ok"]][:3]
+            lines.append({"text": f"{n} conversation{'s have' if n != 1 else ' has'} something new", "url": "/app#activity", "ask": False})
+        lines += [{"text": x["title"], "url": f"/app#{x['url'] or 'me/health'}", "ask": False} for x in health_for(h) if not x["ok"]][:3]
         return lines
+
+    def stop_token(h: str) -> str:
+        """Stops this person's daily email from the email itself, without signing in. Only does that."""
+        return h + "." + hmac.new(hub_secret.encode(), b"digest-stop:" + h.encode(), hashlib.sha256).hexdigest()[:32]
+
+    def local_day(c, h: str):
+        """(this person's local date, local hour), or None when the app hasn't said which time zone they're in."""
+        tz = pref(c, h, "tz")
+        if tz is None:
+            return None
+        t = _now() + int(tz) * 60
+        return int(t // 86400), int(t % 86400 // 3600)
 
     def send_digests() -> int:
         """Everyone with an email on file, no notifications turned on and the email not switched off, who has
@@ -2573,23 +2641,31 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
         with store.ro() as c:
             people_ = [(r["handle"], r["email"]) for r in c.execute(
                 "SELECT e.handle, e.email FROM people_emails e JOIN agents a ON a.handle=e.handle AND a.role='human'"
-                " WHERE NOT EXISTS (SELECT 1 FROM push_subs p WHERE p.handle=e.handle)")]
+                " WHERE NOT EXISTS (SELECT 1 FROM push_subs p WHERE p.handle=e.handle AND p.kinds LIKE '%\"approvals\"%')")]
         home = public_url or seen_https["origin"] or ""
         for h, email in people_:
             with store.ro() as c:
-                if pref(c, h, "digest") == "off" or _now() - float(pref(c, h, "digest_sent") or 0) < DIGEST_GAP:
+                if pref(c, h, "digest") == "off":
                     continue
+                day = local_day(c, h)
+                if day is None:                    # time zone unknown: a day apart
+                    if _now() - float(pref(c, h, "digest_sent") or 0) < DIGEST_GAP:
+                        continue
+                elif pref(c, h, "digest_day") == str(day[0]) or not (8 <= day[1] < 21):
+                    continue                       # once a local day, in the morning or daytime, never at 3 am
             lines = digest_lines(h)
             if not lines:
                 continue
             try:
-                status, _ = resend.send_digest(email, lines, f"{home}/app#activity" if home else "")
+                status, _ = resend.send_digest(email, lines, home, f"{home}/email/stop?t={stop_token(h)}" if home else "")
             except Exception as e:
                 log.warning("digest to @%s failed: %s", h, e)
                 continue
             if 200 <= status < 300:
                 with store.tx() as c:
                     set_pref(c, h, "digest_sent", str(_now()))
+                    if day is not None:
+                        set_pref(c, h, "digest_day", str(day[0]))
                 sent += 1
         return sent
     app.state.send_digests = send_digests
@@ -2607,10 +2683,23 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
     if os.environ.get("RELAY_DIGEST", "1") != "0" and os.environ.get("RELAY_BACKUPS", "1") != "0":
         threading.Thread(target=digest_loop, name="relay-digest", daemon=True).start()
 
+    def prefs_out(c, h: str) -> dict:
+        """The daily email as the person should see it: on or off, where it goes (half hidden), and whether a
+        device of theirs gets "needs you" notifications, which pauses it."""
+        row = c.execute("SELECT email FROM people_emails WHERE handle=?", (h,)).fetchone()
+        addr = row["email"] if row else None
+        if addr and "@" in addr:
+            name, dom = addr.split("@", 1)
+            addr = f"{name[:1]}{'•' * min(max(len(name) - 1, 2), 6)}@{dom}"
+        dev = c.execute("SELECT label FROM push_subs WHERE handle=? AND kinds LIKE '%\"approvals\"%' ORDER BY last_ok DESC LIMIT 1",
+                        (h,)).fetchone()
+        return {"digest": pref(c, h, "digest") != "off", "email": bool(resend), "address": addr,
+                "paused_by": (dev["label"] or "a device") if dev else None}
+
     @app.get("/me/prefs")
     def my_prefs(me: dict = Depends(auth)):
         with store.ro() as c:
-            return {"digest": pref(c, me["handle"], "digest") != "off", "email": bool(resend)}
+            return prefs_out(c, me["handle"])
 
     @app.put("/me/prefs")
     def set_my_prefs(body: PrefsIn, me: dict = Depends(auth)):
@@ -2619,7 +2708,28 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
         with store.tx() as c:
             if body.digest is not None:
                 set_pref(c, me["handle"], "digest", "on" if body.digest else "off")
-            return {"digest": pref(c, me["handle"], "digest") != "off", "email": bool(resend)}
+            if body.tz is not None:
+                set_pref(c, me["handle"], "tz", str(body.tz))
+            return prefs_out(c, me["handle"])
+
+    # Stop the daily email from the email itself: the link carries a token that can do only that. GET for a
+    # person's click, POST for a mail app's one-click unsubscribe (RFC 8058).
+    @app.api_route("/email/stop", methods=["GET", "POST"], include_in_schema=False)
+    def stop_email(t: str = Query("", max_length=200)):
+        h = t.rsplit(".", 1)[0]
+        ok = bool(h) and hmac.compare_digest(t, stop_token(h))
+        if ok:
+            with store.tx() as c:
+                if c.execute("SELECT 1 FROM agents WHERE handle=? AND role='human'", (h,)).fetchone():
+                    set_pref(c, h, "digest", "off")
+                else:
+                    ok = False
+        msg = ("You won't get Relay's daily email any more. Turn it back on in Relay: Me, Notifications."
+               if ok else "That link didn't work. Turn the daily email off in Relay: Me, Notifications.")
+        page = ("<!doctype html><meta charset=utf-8><meta name=viewport content='width=device-width,initial-scale=1'>"
+                "<title>Relay</title><body style=\"font:17px/1.5 -apple-system,system-ui,sans-serif;background:#f6f4ef;color:#18171d;"
+                f"display:grid;place-items:center;min-height:90vh;margin:0;padding:24px\"><p style=\"max-width:30em\">{html.escape(msg)}</p>")
+        return Response(page, status_code=200 if ok else 400, media_type="text/html; charset=utf-8", headers=page_headers)
 
     # ---------------------------------------------------------------- connect apps with "Allow" (OAuth)
     def new_session(handle: str) -> dict:

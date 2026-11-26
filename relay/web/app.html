@@ -132,6 +132,8 @@
 body:has(.composer) .offnote { bottom: calc(112px + env(safe-area-inset-bottom)); }
 @media (prefers-reduced-motion: reduce) { .offnote { transition: none; } }
 .doorhint.bad { color: var(--red); font-weight: 600; }
+.switchrow.paused .switch { opacity: .55; }
+.mailfacts:not(:empty) { margin-top: 26px; }
 .morb .mh.hbad { color: var(--red); }
 .hcheck { align-items: flex-start; }
 .hcheck .hdot { flex: none; width: 10px; height: 10px; border-radius: 50%; margin: 6px 2px 0 4px; background: var(--green); }
@@ -181,24 +183,28 @@ body:has(.composer) .offnote { bottom: calc(112px + env(safe-area-inset-bottom))
 .firstbtn { margin-top: 6px; }
 /* Activity: one view at a time. Chips, not tabs: they wrap on a narrow screen instead of scrolling sideways */
 .fchips { display: flex; flex-wrap: wrap; gap: 6px; margin: 0 0 12px; }
-.fchips[hidden], .fchips.off { display: none; }
-.fchip { appearance: none; border: 0; display: inline-flex; align-items: center; gap: 5px; height: 36px; padding: 0 10px; border-radius: 999px;
+.fchips[hidden] { display: none; }
+.fchips { transition: opacity .2s ease; }
+.fchips.off { opacity: .35; pointer-events: none; }       /* searching: kept in place so the list doesn't jump */
+.findbox.nowhen .whenwrap { display: none; }
+.fchip { appearance: none; border: 0; display: inline-flex; align-items: center; gap: 5px; height: 38px; padding: 0 11px; border-radius: 999px;
   background: var(--fill); color: var(--ink); font: 600 13.5px var(--font); white-space: nowrap; cursor: pointer; transition: background-color .2s var(--ease), color .2s var(--ease); }
 .fchip:hover { background: var(--fill2); }
 .fchip[aria-pressed=true] { background: var(--ink); color: var(--bg); }
 .fcount { min-width: 18px; height: 18px; padding: 0 5px; border-radius: 999px; background: var(--accent); color: var(--on-accent);
   font: 700 11px/18px var(--font); text-align: center; }
 .fcount.sun { background: var(--sun); color: var(--on-sun); }
-.fempty { padding: 36px 12px; text-align: center; color: var(--ink2); font-size: 15px; }
+.fempty { padding: 36px 12px; text-align: center; color: var(--ink2); font-size: 15px; display: flex; flex-direction: column; align-items: center; gap: 10px; }
 /* When: a small pill beside the search box; the native picker does the choosing (a wheel on a phone) */
 .findbox.withwhen { display: flex; gap: 8px; align-items: center; }
 .findbox.withwhen .field { flex: 1; min-width: 0; }
 .whenwrap { flex: none; position: relative; display: inline-flex; }
 .whenpick { appearance: none; -webkit-appearance: none; border: 0; height: 48px; padding: 0 30px 0 14px; border-radius: 999px; background: var(--fill);
-  color: var(--ink); font: 600 14px var(--font); cursor: pointer; max-width: 150px; text-overflow: ellipsis; }
+  color: var(--ink2); font: 500 14px var(--font); cursor: pointer; max-width: 132px; text-overflow: ellipsis; }
 .whenwrap::after { content: ""; position: absolute; right: 13px; top: 50%; width: 7px; height: 7px; margin-top: -5px; pointer-events: none;
   border: solid currentColor; border-width: 0 1.8px 1.8px 0; transform: rotate(45deg); color: var(--ink2); }
-.whenpick.set { background: var(--accent-soft); color: var(--accent); }
+.whenpick.set { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
+.whenwrap:has(.set)::after { color: var(--accent); }
 .whenpick:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .msg .more.saved { color: var(--green-ink); cursor: default; }
 .pickq { margin: 22px 0 10px; }
@@ -208,7 +214,8 @@ body:has(.composer) .offnote { bottom: calc(112px + env(safe-area-inset-bottom))
 /* a switch: the checkbox stays the real control (keyboard, screen readers); the pill only shows it */
 .switchrow { position: relative; cursor: pointer; gap: 14px; }
 .switchrow input { position: absolute; opacity: 0; width: 1px; height: 1px; }
-.switch { flex: none; position: relative; width: 46px; height: 28px; border-radius: 999px; background: var(--fill2); transition: background-color .25s var(--ease); }
+.switch { flex: none; position: relative; width: 46px; height: 28px; border-radius: 999px; background: var(--fill2);
+  background: color-mix(in srgb, var(--ink) 46%, transparent); transition: background-color .25s var(--ease); }   /* off: still 3:1 */
 .switch::after { content: ""; position: absolute; top: 3px; left: 3px; width: 22px; height: 22px; border-radius: 50%; background: var(--card);
   background: #fff; box-shadow: 0 1px 3px rgba(0, 0, 0, .25); transition: transform .35s var(--spring); }
 .switchrow input:checked + .switch { background: var(--green); }
@@ -281,6 +288,10 @@ body:has(.composer) .offnote { bottom: calc(112px + env(safe-area-inset-bottom))
 .morerow { appearance: none; border: 0; display: flex; align-items: center; justify-content: center; gap: 6px; width: 100%; min-height: 44px;
   margin: 4px 0 8px; border-radius: 14px; background: none; color: var(--accent); font: 600 14px var(--font); cursor: pointer; }
 .findbox { margin: 0 0 10px; } .findbox .field { width: 100%; }
+.searchbox .field::-webkit-search-cancel-button { -webkit-appearance: none; appearance: none; width: 20px; height: 20px; margin-right: 2px; cursor: pointer;
+  background: var(--ink3) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20' fill='none' stroke='white' stroke-width='2' stroke-linecap='round'%3E%3Cpath d='M7 7l6 6M13 7l-6 6'/%3E%3C/svg%3E") center / 20px no-repeat;
+  border-radius: 50%; }
+@media (prefers-color-scheme: dark) { .searchbox .field { background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23a6a4ae' stroke-width='2' stroke-linecap='round'%3E%3Ccircle cx='11' cy='11' r='6.5'/%3E%3Cpath d='M16 16l4 4'/%3E%3C/svg%3E"); } }
 .searchbox .field { padding-left: 40px; background: var(--fill) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%2364626b' stroke-width='2' stroke-linecap='round'%3E%3Ccircle cx='11' cy='11' r='6.5'/%3E%3Cpath d='M16 16l4 4'/%3E%3C/svg%3E") no-repeat 14px 50% / 18px; }
 /* the words a search found */
 .preview mark, .conv mark { background: var(--accent-soft); color: var(--ink); border-radius: 4px; padding: 0 2px; font-weight: 600; }
@@ -375,6 +386,11 @@ body:has(.composer) .offnote { bottom: calc(112px + env(safe-area-inset-bottom))
   cursor: pointer; transition: background-color .2s var(--ease), color .2s var(--ease); }
 .way:hover { background: var(--fill); color: var(--ink); } .way:disabled { opacity: .5; cursor: default; background: none; }
 .ways .sep { color: var(--ink3); }
+.way.danger { color: var(--red); }
+.way.accent { color: var(--accent); font-weight: 600; }
+.delform { margin-top: 22px; }
+.s.clamp2 { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; }
+.hero .lede { text-wrap: balance; }
 .first { margin: -8px 0 0; text-align: center; color: var(--ink2); font-size: 13px; }
 .first:empty { display: none; }
 .check { display: flex; align-items: center; justify-content: center; gap: 8px; color: var(--ink2); font-size: 14px; cursor: pointer; }
@@ -622,6 +638,7 @@ pre.block.muted { color: var(--ink2); }
   .detail > .page { flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain; max-width: none; margin: 0;
     padding: 36px var(--gut) 64px; }
   .detail[data-page=addname], .detail[data-page=key], .detail[data-page=added] { --cap: 400px; }
+  .detail[data-page=me] .ways { justify-content: flex-start; margin-left: -12px; }
   .detail[data-page=connect], .detail[data-page=invite], .detail[data-page=wake] { --cap: 560px; }
   .detail[data-page=short], .detail[data-page=shortview] { --cap: 480px; }
   .listpane .shortthumb { width: 36px; height: 36px; }

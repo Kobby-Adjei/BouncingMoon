@@ -227,12 +227,6 @@ pre.block.oneline::-webkit-scrollbar { display: none; }
 .opt:hover { background: var(--fill); }
 .opt .sub { font-size: 12px; font-weight: 400; color: var(--ink2); margin-top: -6px; }
 .opt[aria-checked=true] { background: var(--sel); box-shadow: inset 0 0 0 1.5px var(--accent); }
-.switch { position: relative; width: 44px; height: 26px; flex: none; border: 0; border-radius: 999px; background: var(--fill2);
-  cursor: pointer; transition: background-color .3s var(--ease); }
-.switch::after { content: ""; position: absolute; top: 2px; left: 2px; width: 22px; height: 22px; border-radius: 50%; background: #fff;
-  box-shadow: 0 1px 2px rgba(0,0,0,.2); transition: transform .45s var(--spring); }
-.switch[aria-checked=true] { background: var(--accent); }
-.switch[aria-checked=true]::after { transform: translateX(18px); }
 .steps { counter-reset: step; display: grid; gap: 28px; margin: 0; padding: 0; list-style: none; }
 .steps > li { counter-increment: step; display: grid; grid-template-columns: 24px minmax(0, 1fr); gap: 14px; align-items: start; position: relative; }
 .steps > li::before { content: counter(step); width: 24px; height: 24px; border-radius: 50%; background: var(--fill2); color: var(--ink);

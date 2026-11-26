@@ -108,6 +108,10 @@ function offline(on) {
 }
 // Relay on this device: the app opens at once from a saved copy (sw.js), and notifications work
 if ("serviceWorker" in navigator) navigator.serviceWorker.register("/sw.js", { scope: "/" }).catch(() => {});
+// the daily email comes in this person's morning: the hub needs their time zone (minutes east of UTC)
+function sayTimeZone() {
+  if (ME && ME.role === "human") api("PUT", "/me/prefs", { tz: -new Date().getTimezoneOffset() }).catch(() => {});
+}
 function forgetKept() {                       // signing out: what was kept for this person goes too
   try { caches.delete("relay-data"); } catch {}
   try { navigator.serviceWorker.controller && navigator.serviceWorker.controller.postMessage({ relay: "forget" }); } catch {}
@@ -1488,10 +1492,10 @@ async function meScreen() {
         keyOrb("", 40), h("span", { class: "grow" }, h("b", { text: "Keys" })), chev()),
       !ME.owner && ME.role === "human" ? friendDoor() : null,
       ME.owner ? h("button", { class: "door press", type: "button", onclick: (e) => saveBackup(e.currentTarget) },
-        backupOrb(40), h("span", { class: "grow" }, h("b", { text: "Download a backup" }), backupLine())) : null),
+        backupOrb(40), h("span", { class: "grow" }, h("b", { text: "Download the hub's backup" }), backupLine())) : null),
       rows, h("button", { class: "btn ghost press signout", type: "button", onclick: userSignOut }, "Sign out"),
-      ME.role !== "human" ? null : ways(way("Download my data", (e) => saveMyData(e.currentTarget)),
-        ME.owner ? null : way("Delete my account", () => nav("me/delete")))));
+      ME.role !== "human" ? null : ways(way("Download my data", (e) => saveMyData(e.currentTarget))),
+      ME.role !== "human" || ME.owner ? null : ways(Object.assign(way("Delete my account", () => nav("me/delete")), { className: "way danger" }))));
 }
 // How it's going: counted on this hub, shown only to its owner, sent nowhere
 function goingCard() {
@@ -1794,17 +1798,29 @@ async function notifyScreen() {
       test, err, h("div", { class: "ways" }, off));
   }
   // the daily email, for when notifications are off: once a day at most, only when something waits
-  const mail = h("section", { class: "facts" });
+  const mail = h("section", { class: "facts mailfacts" });
   api("GET", "/me/prefs").then((pr) => {
     if (!pr.email) return;
-    const box = h("input", { type: "checkbox", role: "switch", checked: pr.digest, "aria-label": "Daily email when something waits" });
-    box.addEventListener("change", async () => {
-      try { await api("PUT", "/me/prefs", { digest: box.checked }); } catch (x) { box.checked = !box.checked; alert(x.message); }
-    });
-    mail.replaceChildren(h("h2", { class: "label", text: "Email" }), h("div", { class: "group info" },
-      h("label", { class: "cell switchrow" }, h("div", { class: "grow" }, h("div", { class: "t", text: "Daily email when something waits" }),
-        h("div", { class: "s", text: "Only while notifications are off on all your devices, at most once a day, to your sign-in email" })),
-        box, h("span", { class: "switch", "aria-hidden": "true" }))));
+    // three honest states: no address to send to, paused because a device gets "needs you", or on/off
+    let row;
+    if (!pr.address) {
+      row = h("button", { class: "cell press", type: "button", onclick: () => nav("me") },
+        h("div", { class: "grow" }, h("div", { class: "t", text: "Daily email when something waits" }),
+          h("div", { class: "s", text: "Add an email under Signing in to get this." })), chev());
+    } else {
+      const box = h("input", { type: "checkbox", role: "switch", checked: pr.digest, "aria-label": "Daily email when something waits" });
+      const sub = h("div", { class: "s" });
+      const say = () => { sub.textContent = pr.paused_by && box.checked
+        ? `Paused: ${pr.paused_by} gets notifications when something needs you.`
+        : `At most once a day, in the morning, only when something waits. To ${pr.address}.`; };
+      box.addEventListener("change", async () => {
+        try { pr = await api("PUT", "/me/prefs", { digest: box.checked }); say(); } catch (x) { box.checked = !box.checked; alert(x.message); }
+      });
+      say();
+      row = h("label", { class: "cell switchrow" + (pr.paused_by ? " paused" : "") }, h("div", { class: "grow" },
+        h("div", { class: "t", text: "Daily email when something waits" }), sub), box, h("span", { class: "switch", "aria-hidden": "true" }));
+    }
+    mail.replaceChildren(h("h2", { class: "label", text: "Email" }), h("div", { class: "group info" }, row));
   }).catch(() => {});
   screen("notify", tk, head0, body, mail);
 }
@@ -1904,12 +1920,16 @@ async function healthScreen() {
 }
 
 // ------------------------------------------------------------------ leaving: your half pulls away
-function deleteScreen() {
+async function deleteScreen() {
   const tk = ticket();
+  let mine = [];
+  try { mine = (await api("GET", "/agents")).filter((a) => a.person === ME.handle && a.role !== "human").map((a) => a.handle); } catch {}
+  if (!fresh(tk)) return;
   const orb = h("span", { class: "morb lone", style: "--s:92px", "aria-hidden": "true" },
     h("span", { class: "mh l ghost" }), h("span", { class: "mh r dark" }, h("i", { class: "mk" })));
-  const name = h("input", { class: "field", type: "text", placeholder: ME.handle, autocapitalize: "off", spellcheck: "false",
-                            autocomplete: "off", "aria-label": "Your name, to confirm" });
+  // the field is empty and says exactly what to type: a placeholder that looks typed in made the button look broken
+  const label = h("label", { class: "label", for: "del-confirm", text: `Type ${ME.handle} to confirm` });
+  const name = h("input", { class: "field", id: "del-confirm", type: "text", autocapitalize: "off", spellcheck: "false", autocomplete: "off" });
   const err = h("p", { class: "err", role: "alert" });
   const go = h("button", { class: "btn danger press", type: "submit", disabled: "" }, "Delete my account");
   name.addEventListener("input", () => { go.disabled = name.value.trim().toLowerCase() !== ME.handle; });
@@ -1917,8 +1937,14 @@ function deleteScreen() {
     e.preventDefault(); go.disabled = true; err.textContent = "";
     try { await api("POST", "/me/delete", { confirm: name.value.trim() }); signOut("Your account is deleted."); }
     catch (x) { err.textContent = x.message; go.disabled = false; }
-  } }, name, go, err);
-  screen("delete", tk, heroHead(orb, "Delete your account?", "Your agents, keys and files go for good. Type your name."), form);
+  } }, label, name, go, err);
+  const agentsSaid = mine.length ? `your agents (${mine.join(", ")}), ` : "";
+  screen("delete", tk, heroHead(orb, "Delete your account?",
+      `This deletes you, ${agentsSaid}your saved keys and every file you shared. What you wrote in other people's conversations shows as “(deleted)”. Backup copies are gone within 7 days.`),
+    h("div", { class: "stack tight" },
+      h("p", { class: "hint center", text: "If you connected Claude, ChatGPT or another app, remove Relay there too." }),
+      ways(way("Download my data first", (e) => saveMyData(e.currentTarget), true))),
+    h("div", { class: "delform" }, form));
 }
 
 // ------------------------------------------------------------------ passkeys: your devices, each one a way back in
@@ -2592,7 +2618,10 @@ async function wake(handle) {
 // ------------------------------------------------------------------ activity
 // When: preset spans of time, in the person's own time zone
 const WHEN = [["any", "Any time"], ["today", "Today"], ["yesterday", "Yesterday"], ["week", "This week"], ["month", "This month"],
-  ["3months", "Last 3 months"], ["older", "Older"]];
+  ["3months", "Last 3 months"], ["older", "Before 3 months ago"]];
+// "Nothing today." / "Nothing from yesterday." — said the way a person would
+const NOTHING_WHEN = { today: "today", yesterday: "from yesterday", week: "this week", month: "this month", "3months": "in the last 3 months",
+  older: "from before 3 months ago" };
 function whenRange(id) {
   const d = new Date(); d.setHours(0, 0, 0, 0);
   const day = d.getTime() / 1000, s = (n) => day - n * 86400;
@@ -2600,9 +2629,16 @@ function whenRange(id) {
   return { any: [0, 0], today: [day, 0], yesterday: [s(1), day], week: [monday, 0], month: [first, 0], "3months": [s(91), 0], older: [0, s(91)] }[id] || [0, 0];
 }
 const whenQuery = (id) => { const [a, b] = whenRange(id); return (a ? `&since=${a}` : "") + (b ? `&until=${b}` : ""); };
-// the Activity filter you last picked, kept on this device
-const savedFilter = () => { try { return localStorage.getItem("relay_activity_filter"); } catch { return null; } };
-const saveFilter = (v) => { try { localStorage.setItem("relay_activity_filter", v); } catch {} };
+// Where a request goes, by name: "Instagram", not graph.facebook.com
+function siteOf(r) {
+  const host = hostOf(r.url);
+  const p = KEY_PRESETS.find((k) => k.hosts.includes(host) || k.name === r.key);
+  return p ? p.label : host;
+}
+function expiresIn(created) {
+  const left = created + 86400 - Date.now() / 1000;
+  return left <= 0 ? "expiring" : left < 3600 ? `expires in ${Math.max(1, Math.round(left / 60))} min` : `expires in ${Math.round(left / 3600)} h`;
+}
 async function activity() {
   const tk = ticket();
   const list = h("div", { class: "group conv" }, h("div", { class: "empty", text: "Loading…" }));
@@ -2615,8 +2651,11 @@ async function activity() {
   let when = "any";
   const whenPick = h("select", { class: "whenpick", "aria-label": "When" },
     ...WHEN.map(([id, label]) => h("option", { value: id, text: label })));
-  whenPick.addEventListener("change", () => { when = whenPick.value; whenPick.classList.toggle("set", when !== "any"); pages = 1; first = true;
-    if (q.length >= 2) runSearch(); else { asked++; refresh(); } });
+  function setWhen(v) {
+    when = v; whenPick.value = v; whenPick.classList.toggle("set", when !== "any"); pages = 1; first = true;
+    if (q.length >= 2) runSearch(); else { asked++; refresh(); }
+  }
+  whenPick.addEventListener("change", () => setWhen(whenPick.value));
   find.append(h("span", { class: "whenwrap" }, whenPick));
   find.classList.add("withwhen");
   find.classList.add("searchbox");
@@ -2630,7 +2669,8 @@ async function activity() {
     catch (x) { if (mine === asked) list.replaceChildren(h("div", { class: "empty", text: x.message })); return; }
     if (mine !== asked || q.length < 2 || !view.isConnected) return;
     const by = Object.fromEntries(ags.map((a) => [a.handle, a]));
-    if (!got.length) return list.replaceChildren(h("div", { class: "empty", text: `Nothing matches “${q}”.` }));
+    if (!got.length) return list.replaceChildren(h("div", { class: "fempty" }, h("span", { text: when === "any" ? `Nothing matches “${q}”.` : `Nothing matches “${q}” ${NOTHING_WHEN[when]}.` }),
+      when === "any" ? null : h("button", { class: "inline press", type: "button", onclick: () => setWhen("any") }, "Search any time")));
     list.replaceChildren(secthead(got.length === 1 ? "1 conversation" : `${got.length} conversations`), ...got.map((t) => {
       const others = t.people.filter((x) => x !== ME.handle && x !== "relay");
       const about = t.first && t.first.from !== "relay" ? topic(t.first.text) : "";
@@ -2647,7 +2687,7 @@ async function activity() {
     markSelected();
   }
   // It grows without end, so it comes a page at a time: the newest conversations, then "Show older".
-  let pages = 1, more = false, filter = null, filterPicked = false;
+  let pages = 1, more = false, filter = null;
   const PAGE = 40;
   async function refresh() {
     if (q.length >= 2) return;              // searching: the list is the results until the box is cleared
@@ -2660,10 +2700,11 @@ async function activity() {
       const by = Object.fromEntries(ags.map((a) => [a.handle, a]));
       const threads = new Map(convs.map((c) => [c.thread, { id: c.thread, msgs: [c.last], count: c.count, people: new Set(c.people),
         first: c.first, unread: c.unread && !c.muted, pinned: c.pinned, muted: c.muted }]));
+      // "codex wants to post on Instagram" / "“New drop. Link in bio.” · expires in 23 h": what and where, not a hostname
       const oks = asks.map((r) => h("button", { class: "cell jobcell press", type: "button", "data-key": `approve/${r.id}`, onclick: () => nav(`approve/${r.id}`) },
         h("span", { class: "stackav" }, avatar(by[r.agent] || { handle: r.agent }, 44)),
-        h("div", { class: "grow" }, h("div", { class: "t", text: `${r.agent} wants to ${VERB[r.method] || r.method}` }),
-          h("div", { class: "s", text: `Needs your OK · ${r.key} · ${hostOf(r.url)}` })),
+        h("div", { class: "grow" }, h("div", { class: "t", text: `${r.agent} wants to ${VERB[r.method] || r.method} on ${siteOf(r)}` }),
+          h("div", { class: "s clamp2", text: [(plainAsk(r).text && `“${plainAsk(r).text}”`) || r.why, expiresIn(r.created)].filter(Boolean).join(" · ") })),
         h("span", { class: "btn small", text: "Review" })));
       const needs = oks.concat(wants.map((w) => h("button", { class: "cell jobcell press", type: "button", "data-key": `ask/${w.id}`, onclick: () => nav(`ask/${w.id}`) },
         h("span", { class: "stackav" }, avatar("person", 44)),
@@ -2677,15 +2718,18 @@ async function activity() {
       // One thing in view at a time, not one endless scroll: what needs you, what's new, your own
       // conversations, or the ones your agents have among themselves.
       const isMine = (t) => t.people.has(ME.handle);
-      const sets = { needs, new: sorted.filter((t) => t.unread), mine: sorted.filter(isMine), agents: sorted.filter((t) => !isMine(t)) };
-      if (!filterPicked) filter = needs.length ? "needs" : sets.new.length ? "new" : savedFilter() || "mine";
-      const FILTERS = [["needs", "Needs you", needs.length], ["new", "New", sets.new.length], ["mine", "Mine", 0], ["agents", "Agents", 0]];
+      const sets = { all: sorted, needs, new: sorted.filter((t) => t.unread), agents: sorted.filter((t) => !isMine(t)) };
+      // picked once per visit (what needs you if anything does, else everything), then it stays put while you read
+      if (!filter) filter = needs.length ? "needs" : "all";
+      const FILTERS = [["all", "All", 0], ["needs", "Needs you", needs.length], ["new", "New", sets.new.length], ["agents", "Agent chats", 0]];
       chips.replaceChildren(...FILTERS.map(([id, label, n]) => h("button", { class: "fchip press", type: "button", "aria-pressed": String(filter === id),
-          onclick: () => { filter = id; filterPicked = true; saveFilter(id); first = true; refresh(); } },
+          onclick: () => { filter = id; first = true; refresh(); } },
         h("span", { text: label }), n ? h("span", { class: "fcount" + (id === "needs" ? " sun" : ""), text: n > 99 ? "99+" : String(n) }) : null)));
       const rows = [];
+      find.classList.toggle("nowhen", filter === "needs");          // what waits for you has no "when"
       if (filter === "needs") rows.push(...needs);
       else {
+        if (filter === "all" && needs.length) rows.push(secthead("Needs you"), ...needs);
         let section = null;
         for (const t of sets[filter]) {
           const last = t.msgs[t.msgs.length - 1];
@@ -2711,10 +2755,11 @@ async function activity() {
       }
       const anything = needs.length || sorted.length;
       chips.hidden = !anything;
-      if (when !== "any" && filter !== "needs" && !rows.length) rows.push(h("div", { class: "fempty", text: `Nothing ${WHEN.find((w) => w[0] === when)[1].toLowerCase()} here.` }));
+      if (when !== "any" && filter !== "needs" && !rows.length) rows.push(h("div", { class: "fempty" }, h("span", { text: `Nothing ${NOTHING_WHEN[when]}.` }),
+        h("button", { class: "inline press", type: "button", onclick: () => setWhen("any") }, "Show any time")));
       else if (anything && !rows.length) rows.push(h("div", { class: "fempty", text: {
         needs: "Nothing needs you right now.", new: "You're all caught up.",
-        mine: "No conversations of yours yet. New starts one.", agents: "Your agents haven't talked among themselves yet." }[filter] }));
+        all: "No conversations yet. New starts one.", agents: "Your agents haven't talked among themselves yet." }[filter] }));
       if (filter !== "needs" && more && pages * PAGE < 200) rows.push(h("button", { class: "morerow press", type: "button", onclick: (e) => {
         e.currentTarget.disabled = true; pages++; refresh(); } }, "Show older conversations", chev()));
       find.hidden = !anything;                        // nothing to search yet: no box
@@ -3189,7 +3234,7 @@ brandmini.append(mark(), h("span", { class: "word", text: "Relay" }));
   if (link && link.error) return signin(link.error, AUTH.email ? "email" : "key");
   const saved = store.get();
   if (saved) {
-    try { ME = await api("GET", "/agents/me", undefined, saved); KEY = saved; return goTab(agents); }
+    try { ME = await api("GET", "/agents/me", undefined, saved); KEY = saved; sayTimeZone(); return goTab(agents); }
     catch (x) {
       // no signal and nothing kept: stay signed in, say so, and try again when the signal comes back
       if (x.offline) { offline(false); addEventListener("online", () => location.reload(), { once: true });

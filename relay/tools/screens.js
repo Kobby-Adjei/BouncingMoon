@@ -78,7 +78,7 @@ async function seed() {
     ["agents", "/app#agents", "K", true], ["agent", "/app#agents/claude", "K", true], ["wake", "/app#agents/claude/wake", "K", false],
     ["add", "/app#add", "K", true], ["add-claude", "/app#add/claude_app", "K", false], ["add-chatgpt", "/app#add/chatgpt", "K", false],
     ["add-codex", "/app#add/codex", "K", false], ["add-person", "/app#add/person", "K", false],
-    ["activity", "/app#activity", "K", true], ["activity-mine", "/app#activity", "K", true], ["thread", `/app#activity/${s.thread}`, "K", true],
+    ["activity", "/app#activity", "K", true], ["activity-all", "/app#activity", "K", true], ["thread", `/app#activity/${s.thread}`, "K", true],
     ["thread-menu", `/app#activity/${s.thread}`, "K", true], ["new-message", "/app#activity/new", "K", false],
     ["approve", s.approval ? `/app#approve/${s.approval}` : null, "K", true], ["invite-ask", s.ask ? `/app#ask/${s.ask}` : null, "K", false],
     ["me", "/app#me", "K", true], ["apps", "/app#me/apps", "K", false], ["passkeys", "/app#me/passkeys", "K", false], ["notify", "/app#me/notify", "K", true], ["health", "/app#me/health", "K", true], ["people", "/app#me/people", "K", true], ["agents-friend", "/app#agents", "AMA", false],
@@ -105,7 +105,7 @@ async function seed() {
       if (mark === "demo") { await page.evaluate(() => document.getElementById("chat").scrollIntoView({ block: "start" })); await page.waitForTimeout(6500); }
       else if (mark === "end") { await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight)); await page.waitForTimeout(1200); }
       else await page.waitForTimeout(route === "/" ? 3500 : 1800);
-      if (name === "activity-mine") { await page.locator(".listpane .fchip, .fchip").filter({ hasText: "Mine" }).last().click(); await page.waitForTimeout(800); }
+      if (name === "activity-all") { await page.locator(".listpane .fchip, .fchip").filter({ hasText: /^All$/ }).last().click(); await page.waitForTimeout(800); }
       if (name === "thread-menu") { await page.locator('[aria-label="Conversation options"]:visible').first().click(); await page.waitForTimeout(700); }
       // the page must never scroll sideways on a phone
       const wide = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);

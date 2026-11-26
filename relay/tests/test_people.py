@@ -303,7 +303,7 @@ def test_the_daily_email_goes_only_when_something_waits_and_only_without_notific
     assert app.state.send_digests() == 0 and sent == []                   # nothing waits: nothing sent
     c.post("/invite-requests", json={"name": "Abena", "contact": "abena@example.com"})
     assert app.state.send_digests() == 1
-    assert sent[0]["to"] == ["kobby@example.com"] and sent[0]["subject"] == "Abena would like an invite"
+    assert sent[0]["to"] == ["kobby@example.com"] and sent[0]["subject"] == "Relay: Abena would like an invite"
     c.post("/invite-requests", json={"name": "Kofi", "contact": "kofi@example.com"})
     assert app.state.send_digests() == 0                                  # once a day at most
     assert c.put("/me/prefs", headers=H(owner), json={"digest": False}).json()["digest"] is False
@@ -312,8 +312,52 @@ def test_the_daily_email_goes_only_when_something_waits_and_only_without_notific
     assert app.state.send_digests() == 0                                  # switched off
     c.put("/me/prefs", headers=H(owner), json={"digest": True})
     with app.state.store.tx() as d:                                      # notifications on a device: no email
-        d.execute("INSERT INTO push_subs(endpoint,handle,p256dh,auth,kinds,created) VALUES ('https://fcm.googleapis.com/x','kobby','k','a','[]',0)")
+        d.execute("INSERT INTO push_subs(endpoint,handle,p256dh,auth,kinds,created,label) VALUES"
+                  " ('https://fcm.googleapis.com/x','kobby','k','a','[\"approvals\"]',0,'Pixel')")
     assert app.state.send_digests() == 0
+    p = c.get("/me/prefs", headers=H(owner)).json()
+    assert p["paused_by"] == "Pixel" and p["address"].startswith("k") and p["address"].endswith("@example.com") and "kobby" not in p["address"]
+    with app.state.store.tx() as d:                                      # a device with "needs you" switched off doesn't count
+        d.execute("""UPDATE push_subs SET kinds='["answers"]'""")
+    assert c.get("/me/prefs", headers=H(owner)).json()["paused_by"] is None
+    assert app.state.send_digests() == 1
+
+
+def test_the_daily_email_comes_in_the_morning_says_what_and_where_and_stops_in_one_click(tmp_path, monkeypatch):
+    import json as _json, socket as _socket
+    from relay import hub as _hub, vault as _vault
+    monkeypatch.setattr(_vault, "WAIT_SECONDS", 0.2)
+    monkeypatch.setenv("RELAY_BACKUPS", "0")
+    sent, clock = [], {"t": 1_800_000_000.0 - 1_800_000_000.0 % 86400 + 3 * 3600}     # 03:00 UTC
+    monkeypatch.setattr(_hub, "_now", lambda: clock["t"])
+    monkeypatch.setenv("RELAY_PUBLIC_URL", "https://relay.example")
+    send = lambda m, u, h, b: (sent.append(_json.loads(b)), (200, b"{}"))[1]
+    app = create_app(data_dir=str(tmp_path), admin_token=ADMIN, resend_key="re_test", resend_send=send,
+                     vault_send=lambda *a, **k: (200, {}, b"{}"),
+                     vault_resolve=lambda host: [(_socket.AF_INET, _socket.SOCK_STREAM, 6, "", ("93.184.216.34", 443))])
+    c = TestClient(app)
+    owner = c.post("/owner", headers=H(ADMIN), json={"handle": "kobby"}).json()["token"]
+    codex = c.post("/agents", headers=H(owner), json={"handle": "codex"}).json()["token"]
+    c.put("/people/kobby/email", headers=H(owner), json={"email": "kobby@example.com"})
+    c.put("/me/prefs", headers=H(owner), json={"tz": 0})
+    c.post("/keys", headers=H(owner), json={"name": "instagram", "hosts": ["graph.facebook.com"], "secret": "IGQV-x"})
+    c.post("/mcp", headers=H(codex), json={"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "call_api", "arguments": {
+        "key": "instagram", "method": "POST", "url": "https://graph.facebook.com/v21.0/me/media", "json": {"caption": "New drop"}, "why": "Post it"}}})
+    assert app.state.send_digests() == 0                                  # 3 am where they are: not now
+    clock["t"] += 6 * 3600                                                # 9 am
+    assert app.state.send_digests() == 1
+    m = sent[0]
+    assert m["subject"] == "Relay: codex is waiting for your OK to post on Instagram"
+    assert "graph.facebook.com" not in m["text"] and "“New drop”" in m["text"] and "Expires in" in m["text"]
+    assert "https://relay.example/app#approve/" in m["html"] and "IGQV" not in _json.dumps(m)
+    stop = m["headers"]["List-Unsubscribe"][1:-1]
+    assert m["headers"]["List-Unsubscribe-Post"] == "List-Unsubscribe=One-Click" and "Stop these emails" in m["html"]
+    clock["t"] += 3 * 3600
+    assert app.state.send_digests() == 0                                  # once a local day
+    path = stop.replace("https://relay.example", "")
+    assert c.get(path.replace("t=kobby.", "t=kobby.0")).status_code == 400   # a forged link does nothing
+    assert c.post(path).status_code == 200                                # a mail app's one click
+    assert c.get("/me/prefs", headers=H(owner)).json()["digest"] is False
 
 
 def test_download_my_data_is_everything_of_mine_and_nothing_of_anyone_elses(tmp_path, monkeypatch):
@@ -332,5 +376,10 @@ def test_download_my_data_is_everything_of_mine_and_nothing_of_anyone_elses(tmp_
     assert _json.loads(z.read("me.json"))["name"] == "kobby" and [a["name"] for a in _json.loads(z.read("agents.json"))] == ["claude"]
     convo = _json.loads(z.read(f"conversations/{mine['thread']}.json"))
     assert convo[0]["text"] == "@claude my plan"
+    # readable without a developer: an index page, and each conversation as plain text with dates
+    assert "my plan" in z.read("index.html").decode() and "ama's private note" not in z.read("index.html").decode()
+    [txt] = [n for n in names if n.endswith(".txt") and n.startswith("conversations/")]
+    assert "my plan" in txt and "(claude, kobby)" in txt and " UTC · kobby:" in z.read(txt).decode()
+    assert convo[0]["when"].endswith("Z") and z.read("README.txt").decode().startswith("Your data from Relay.\n\nOpen index.html")
     assert not any("ama's private note" in z.read(n).decode() for n in names if n.startswith("conversations/"))
     assert c.get("/me/export", headers=H(claude)).status_code == 403
