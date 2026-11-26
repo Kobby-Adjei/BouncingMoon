@@ -20,7 +20,9 @@ One process. SQLite for state, the filesystem for blobs.
 """
 from __future__ import annotations
 
+import functools
 import hashlib
+import hmac
 import ipaddress
 import html
 import io
@@ -74,6 +76,9 @@ CREATE TABLE IF NOT EXISTS shortcuts(id TEXT PRIMARY KEY, handle TEXT NOT NULL, 
 -- a person's small settings (the daily email on or off, when it last went)
 CREATE TABLE IF NOT EXISTS prefs(handle TEXT NOT NULL, key TEXT NOT NULL, value TEXT, PRIMARY KEY(handle, key));
 CREATE TABLE IF NOT EXISTS seen(handle TEXT NOT NULL, thread INTEGER NOT NULL, last INTEGER NOT NULL, PRIMARY KEY(handle, thread));
+-- a person's pinned conversations (kept on top) and muted ones (no notifications, not counted as new)
+CREATE TABLE IF NOT EXISTS marks(handle TEXT NOT NULL, thread INTEGER NOT NULL, pinned REAL, muted INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY(handle, thread));
 CREATE INDEX IF NOT EXISTS messages_channel ON messages(channel);
 CREATE TABLE IF NOT EXISTS subs(agent TEXT, channel TEXT, PRIMARY KEY(agent, channel));
 CREATE TABLE IF NOT EXISTS follows(agent TEXT, thread INTEGER, PRIMARY KEY(agent, thread));
@@ -427,8 +432,14 @@ class ShortcutIn(BaseModel):
     mentions: List[str] = Field(default_factory=list, max_length=20)
 
 
+class MarkIn(BaseModel):
+    pinned: Optional[bool] = None
+    muted: Optional[bool] = None
+
+
 class PrefsIn(BaseModel):
     digest: Optional[bool] = None
+    tz: Optional[int] = Field(default=None, ge=-720, le=840)     # minutes east of UTC: the daily email comes in your morning
 
 
 class DeleteIn(BaseModel):
@@ -824,7 +835,8 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
                     "SELECT m.agent FROM members m JOIN agents a ON a.handle=m.agent WHERE m.thread=? AND a.role='human'", (thread,))}
                 people_in |= {m for m in mentions if (c.execute("SELECT role FROM agents WHERE handle=?", (m,)).fetchone() or {"role": ""})["role"] == "human"}
                 line = next((l.strip() for l in text.splitlines() if l.strip()), "")
-                for person in people_in - {sender}:
+                quiet = {r["handle"] for r in c.execute("SELECT handle FROM marks WHERE thread=? AND muted=1", (thread,))}
+                for person in people_in - {sender} - quiet:
                     pusher.notify(person, "answers", f"{sender} answered", line[:200] or "A new message",
                                   f"/app#activity/{thread}", tag=f"t{thread}")
         for m in {sender, *mentions} - {SYSTEM}:
@@ -1171,7 +1183,21 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
     def service_worker():
         """Shows notifications and opens the right screen when one is tapped. Served from the root so it
         covers the whole app."""
-        return static("web/sw.js", "text/javascript")
+        with open(os.path.join(web_dir, "sw.js"), "rb") as f:
+            # the app's own files, as a version: a deploy that changes them makes a new service worker
+            body = f.read().replace(b"__SHELL_VERSION__", shell_version().encode())
+        return Response(body, media_type="text/javascript", headers=page_headers)
+
+    @functools.lru_cache(maxsize=1)
+    def shell_version() -> str:
+        d = hashlib.sha256()
+        for n in ("app.html", "app.js", "relay.css", "fuse.js", "icon.svg", "icon-192.png", "sw.js"):
+            try:
+                with open(os.path.join(web_dir, n), "rb") as f:
+                    d.update(f.read())
+            except OSError:
+                pass
+        return d.hexdigest()[:16]
 
     @app.get("/manifest.webmanifest", include_in_schema=False)
     def manifest():
@@ -1607,6 +1633,10 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
             only, more = visible(c, me["handle"])
             q = f"SELECT t.thread, t.n, m.* FROM convs t JOIN messages m ON m.id=t.last WHERE {only}"
             a = list(more)
+            marks = {r["thread"]: r for r in c.execute("SELECT * FROM marks WHERE handle=?", (me["handle"],))}
+            pins = sorted((t for t, r in marks.items() if r["pinned"]), key=lambda t: marks[t]["pinned"])
+            if pins:                           # pinned ones come first, on the first page only, and never twice
+                q += f" AND t.thread NOT IN ({','.join('?' * len(pins))})"; a += pins
             if before:
                 q += " AND t.last<?"; a.append(before)
             if with_:                          # only conversations this agent or person has been in
@@ -1616,6 +1646,10 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
             if until:                          # ...and before this one
                 q += " AND m.time<?"; a.append(until)
             rows = c.execute(q + " ORDER BY t.last DESC LIMIT ?", a + [limit]).fetchall()
+            if pins and not before:
+                pq = q.replace(f" AND t.thread NOT IN ({','.join('?' * len(pins))})", f" AND t.thread IN ({','.join('?' * len(pins))})", 1)
+                top = {r["thread"]: r for r in c.execute(pq, a)}
+                rows = [top[t] for t in pins if t in top] + rows
             ids = [r["thread"] for r in rows]
             people: dict = {}
             first: dict = {}
@@ -1635,7 +1669,39 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
                 return False                     # the newest is yours, or the hub's own note ("ama joined")
             return r["id"] > seen.get(r["thread"], floor)
         return [{"thread": r["thread"], "count": r["n"], "people": people.get(r["thread"], []), "last": msg_out(r),
-                 "first": first.get(r["thread"]), "unread": unread(r)} for r in rows]
+                 "first": first.get(r["thread"]), "unread": unread(r),
+                 "pinned": bool(r["thread"] in marks and marks[r["thread"]]["pinned"]),
+                 "muted": bool(r["thread"] in marks and marks[r["thread"]]["muted"])} for r in rows]
+
+    PINS_EACH = 10
+
+    @app.put("/threads/{thread}/mark")
+    def mark_thread(thread: int, body: MarkIn, me: dict = Depends(auth)):
+        """Pin a conversation to the top of your list, or mute it: no notifications, not counted as new.
+        Only for you; nobody else sees it."""
+        if me["role"] != "human":
+            raise HTTPException(403, "Pinning and muting are for people.")
+        h = me["handle"]
+        with store.tx() as c:
+            if not c.execute("SELECT 1 FROM convs WHERE thread=?", (thread,)).fetchone() or not can_see(c, h, thread):
+                raise HTTPException(404, "no such conversation")
+            r = c.execute("SELECT * FROM marks WHERE handle=? AND thread=?", (h, thread)).fetchone()
+            pinned, muted = (r["pinned"], r["muted"]) if r else (None, 0)
+            if body.pinned is not None:
+                if body.pinned and not pinned:
+                    if c.execute("SELECT COUNT(*) FROM marks WHERE handle=? AND pinned IS NOT NULL", (h,)).fetchone()[0] >= PINS_EACH:
+                        raise HTTPException(429, f"You can pin {PINS_EACH} conversations. Unpin one first.")
+                    pinned = _now()
+                elif not body.pinned:
+                    pinned = None
+            if body.muted is not None:
+                muted = 1 if body.muted else 0
+            if pinned is None and not muted:
+                c.execute("DELETE FROM marks WHERE handle=? AND thread=?", (h, thread))
+            else:
+                c.execute("INSERT INTO marks(handle,thread,pinned,muted) VALUES (?,?,?,?) ON CONFLICT(handle,thread)"
+                          " DO UPDATE SET pinned=excluded.pinned, muted=excluded.muted", (h, thread, pinned, muted))
+        return {"thread": thread, "pinned": pinned is not None, "muted": bool(muted)}
 
     # ---------------------------------------------------------------- shortcuts: a hand-off again, in one tap
     SHORTCUTS_EACH = 30
@@ -1889,6 +1955,10 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
             except Exception as e:                 # a backup that fails must never take the hub down
                 log.warning("backup failed: %s", e)
             try:
+                app.state.alert_health()           # a failed backup, a key turned away, a disk filling up
+            except Exception as e:
+                log.warning("health check failed: %s", e)
+            try:
                 media_svc.tidy()                   # half-finished uploads and leftovers from restarts
             except Exception as e:
                 log.warning("tidying up failed: %s", e)
@@ -1900,11 +1970,24 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
     # ---------------------------------------------------------------- delete my account
     # ---------------------------------------------------------------- download my data
     EXPORT_NOTE = ("Your data from Relay.\n\n"
-                   "me.json: your account. agents.json: your agents. conversations/: every conversation you or your agents\n"
-                   "are in, one file each, every message in order. shortcuts.json, keys.json (names and websites only:\n"
-                   "the keys themselves never leave the hub), approvals.json (what your agents asked to do with them, and\n"
-                   "what you said), devices.json (passkeys and notification devices, by name).\n"
-                   "Files people shared are listed in the messages that carried them, not copied here.\n")
+                   "Open index.html to read everything: every conversation, in order, with dates. Each conversation is also "
+                   "a plain text file in the conversations folder.\n\n"
+                   "The .json files are the same data for other apps: me.json (your account), agents.json (your agents), "
+                   "conversations/*.json, shortcuts.json, keys.json (names and websites only: the keys themselves never "
+                   "leave the hub), approvals.json (what your agents asked to do with them, and what you said), "
+                   "devices.json (passkeys and notification devices, by name).\n\n"
+                   "Videos and files you shared are not in this download, only their names. Save the ones you want from "
+                   "Relay before you delete your account.\n")
+
+    def when_iso(t) -> Optional[str]:
+        return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(t)) if t else None
+
+    def when_read(t) -> str:
+        return time.strftime("%a %d %b %Y, %H:%M UTC", time.gmtime(t)) if t else ""
+
+    def file_safe(text: str, n: int = 48) -> str:
+        words = re.sub(r"[^\w\s.,'-]", "", re.sub(r"@\S+", "", text or "")).split()
+        return " ".join(words)[:n].strip(" .,-") or "Conversation"
 
     @app.get("/me/export")
     def export_me(me: dict = Depends(auth)):
@@ -1928,11 +2011,43 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
             with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
                 z.writestr("README.txt", EXPORT_NOTE)
                 z.writestr("me.json", json.dumps({"name": h, "owner": bool(row["owner"]), "joined": row["created"],
-                                                  "last_seen": row["last_seen"], "email": email["email"] if email else None}, indent=2))
+                                                  "last_seen": row["last_seen"], "email": email["email"] if email else None,
+                                                  "pinned_conversations": [r["thread"] for r in c.execute(
+                                                      "SELECT thread FROM marks WHERE handle=? AND pinned IS NOT NULL ORDER BY pinned", (h,))],
+                                                  "muted_conversations": [r["thread"] for r in c.execute(
+                                                      "SELECT thread FROM marks WHERE handle=? AND muted=1", (h,))]}, indent=2))
                 z.writestr("agents.json", json.dumps(agents_out, indent=2))
+                index = []
                 for t in threads_:
                     msgs = [msg_out(r) for r in c.execute("SELECT * FROM messages WHERE thread=? ORDER BY id LIMIT 20000", (t,))]
+                    for m in msgs:
+                        m["when"] = when_iso(m.get("time"))
                     z.writestr(f"conversations/{t}.json", json.dumps(msgs, indent=1))
+                    if not msgs:
+                        continue
+                    who = sorted(({m["from"] for m in msgs} | {x for m in msgs for x in (m.get("mentions") or [])}) - {SYSTEM})
+                    start = msgs[0]
+                    title = file_safe(start.get("text", ""))
+                    name = f"{time.strftime('%Y-%m-%d', time.gmtime(start['time']))} {title} ({', '.join(who)[:60]}) {t}.txt"
+                    z.writestr(f"conversations/{name}", "\n\n".join(
+                        f"{when_read(m['time'])} · {m['from']}:\n{m.get('text') or ''}"
+                        + "".join(f"\n[file: {f.get('name') or f.get('id')}]" for f in (m.get("media") or []) if isinstance(f, dict))
+                        for m in msgs) + "\n")
+                    index.append((start["time"], title, who, name, msgs))
+                index.sort(key=lambda x: -x[0])
+                esc = html.escape
+                page = ["<!doctype html><meta charset=utf-8><meta name=viewport content='width=device-width,initial-scale=1'>",
+                        f"<title>Your Relay data</title><body style=\"font:16px/1.5 -apple-system,system-ui,sans-serif;max-width:720px;"
+                        f"margin:0 auto;padding:24px 16px;color:#18171d;background:#f6f4ef\"><h1>Your Relay data</h1>",
+                        f"<p>{esc(h)} · downloaded {esc(when_read(time.time()))} · {len(index)} conversation{'s' if len(index) != 1 else ''}</p>"]
+                for t0, title, who, name, msgs in index:
+                    page.append(f"<details style=\"background:#fff;border-radius:14px;padding:12px 16px;margin:10px 0\"><summary><b>{esc(title)}</b>"
+                                f"<br><small>{esc(when_read(t0))} · {esc(', '.join(who))} · {len(msgs)} message{'s' if len(msgs) != 1 else ''}</small></summary>")
+                    for m in msgs:
+                        page.append(f"<p><small>{esc(when_read(m['time']))}</small><br><b>{esc(m['from'])}</b>: "
+                                    f"{esc(m.get('text') or '').replace(chr(10), '<br>')}</p>")
+                    page.append("</details>")
+                z.writestr("index.html", "\n".join(page))
                 z.writestr("shortcuts.json", json.dumps([{"title": r["title"], "text": r["text"], "to": _loads(r["mentions"], []),
                                                           "uses": r["uses"]} for r in c.execute("SELECT * FROM shortcuts WHERE handle=?", (h,))], indent=2))
                 z.writestr("keys.json", json.dumps([{"name": r["name"], "websites": _loads(r["hosts"], []), "ask": r["ask"],
@@ -1992,7 +2107,7 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
                                ("session_cursors", "handle"), ("delivered", "handle"), ("passkeys", "handle"),
                                ("oauth_tokens", "handle"), ("oauth_codes", "handle"), ("webauthn_challenges", "handle"),
                                ("push_subs", "handle"), ("reads", "handle"), ("seen", "handle"), ("shortcuts", "handle"),
-                               ("prefs", "handle"),
+                               ("prefs", "handle"), ("marks", "handle"),
                                ("agents", "handle")):
                 c.execute(f"DELETE FROM {table} WHERE {col} IN ({q})", hs)
             for table in ("oauth_tokens", "oauth_codes"):
@@ -2015,6 +2130,99 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
         return {"local": {"name": local[-1], "time": os.path.getmtime(os.path.join(folder, local[-1]))} if local else None,
                 "offsite": {"on": bool(offsite), "name": st.get("name"), "ok": st.get("ok"), "error": st.get("error"),
                             "failed": st.get("failed")}}
+
+    # ---------------------------------------------------------------- health: told when something breaks
+    HEALTH_GAP = 20 * 3600                     # the same problem taps you at most once a day
+    STARTED = time.time()
+
+    def site_of(url: str) -> str:
+        host = (urllib.parse.urlsplit(url).hostname or url).lower()
+        for name, hosts in (("Instagram", ("instagram.com", "facebook.com")), ("YouTube", ("youtube.com", "googleapis.com")),
+                            ("TikTok", ("tiktok.com", "tiktokapis.com")), ("X", ("x.com", "twitter.com"))):
+            if any(host == x or host.endswith("." + x) for x in hosts):
+                return name
+        return host
+
+    def health_for(h: str) -> list:
+        """What's fine and what isn't, for this person: their saved keys; for the owner also backups and storage.
+        Problems first. Each: id, ok, title, detail and, where there's something to do, where to do it."""
+        out = []
+        with store.ro() as c:
+            owner = first_owner(c) == h
+            keys = c.execute("SELECT id, name FROM vault_keys WHERE owner=? ORDER BY name", (h,)).fetchall()
+            refused = []
+            for k in keys:                     # the newest answer a website gave with this key
+                r = c.execute("SELECT result_status, url FROM vault_calls WHERE key_id=? AND status='done'"
+                              " ORDER BY finished DESC LIMIT 1", (k["id"],)).fetchone()
+                if r and r["result_status"] in (401, 403):
+                    refused.append((k, r))
+        for k, r in refused:
+            out.append({"id": f"key:{k['id']}", "ok": False, "title": f"{site_of(r['url'])} turned away your {k['name']} key",
+                        "detail": "It may have expired or been changed there. Paste a new one in Keys.", "url": f"me/keys/{k['id']}"})
+        if keys and not refused:
+            out.append({"id": "keys", "ok": True, "title": "Your keys work",
+                        "detail": f"{len(keys)} saved; no website has turned one away", "url": None})
+        if owner and os.environ.get("RELAY_BACKUPS", "1") != "0":
+            folder = os.path.join(store.dir, "backups")
+            local = sorted(f for f in os.listdir(folder) if f.endswith(".zip")) if os.path.isdir(folder) else []
+            age = time.time() - os.path.getmtime(os.path.join(folder, local[-1])) if local else None
+            if age is not None and age > 36 * 3600:
+                out.append({"id": "backup", "ok": False, "title": f"No backup for {int(age // 86400) or 1} day{'s' if age >= 2 * 86400 else ''}",
+                            "detail": "The nightly copy didn't happen. The hub may be short of space; see Storage.", "url": None})
+            elif age is None and time.time() - STARTED > 3 * 3600:
+                out.append({"id": "backup", "ok": False, "title": "No backup yet",
+                            "detail": "The nightly copy hasn't run. The hub may be short of space; see Storage.", "url": None})
+            else:
+                out.append({"id": "backup", "ok": True, "title": "Backed up every night",
+                            "detail": "The first copy is on its way" if age is None else "Last copy today" if age < 86400 else "Last copy yesterday",
+                            "url": None})
+            if offsite:
+                st = offsite_mod.status(store.dir)
+                if st.get("error") and not (st.get("ok") and st.get("ok", 0) > st.get("failed", 0)):
+                    out.append({"id": "offsite", "ok": False, "title": "The off-site copy failed",
+                                "detail": str(st["error"])[:200], "url": None})
+                else:
+                    out.append({"id": "offsite", "ok": True, "title": "A copy is kept off this server",
+                                "detail": "Encrypted, the last 7 nights", "url": None})
+        if owner:
+            free, total = media_mod.disk(store.dir)
+            used = round(100 * (1 - free / total)) if total else 0
+            stop = round(100 * (1 - media_mod.KEEP_FREE))
+            if total and used >= stop - 5:
+                out.append({"id": "storage", "ok": False, "title": f"Storage is {used}% full",
+                            "detail": f"New files stop at {stop}%. Remove old videos, or give the volume more room in Railway.", "url": None})
+            else:
+                out.append({"id": "storage", "ok": True, "title": "Room to spare", "detail": f"Storage {used}% used", "url": None})
+        return sorted(out, key=lambda x: x["ok"])
+
+    def alert_health(h: str) -> int:
+        """Tap this person on the shoulder about each problem, once a day while it lasts. Returns how many."""
+        sent = 0
+        now = time.time()
+        problems = [x for x in health_for(h) if not x["ok"]]
+        with store.tx() as c:
+            known = {r["key"][6:]: float(r["value"] or 0) for r in c.execute(
+                "SELECT key, value FROM prefs WHERE handle=? AND key LIKE 'alert:%'", (h,))}
+            for x in problems:
+                if now - known.get(x["id"], 0) >= HEALTH_GAP:
+                    pusher.notify(h, "approvals", x["title"], x["detail"], f"/app#{x['url'] or 'me/health'}", tag=x["id"], urgent=True)
+                    set_pref(c, h, f"alert:{x['id']}", str(now))
+                    sent += 1
+            for gone in set(known) - {x["id"] for x in problems}:     # fixed: a new break later taps again
+                c.execute("DELETE FROM prefs WHERE handle=? AND key=?", (h, f"alert:{gone}"))
+        return sent
+
+    def alert_everyone() -> int:
+        with store.ro() as c:
+            who = {first_owner(c)} | {r["owner"] for r in c.execute("SELECT DISTINCT owner FROM vault_keys")}
+        return sum(alert_health(h) for h in who if h)
+    app.state.alert_health = alert_everyone
+
+    @app.get("/me/health")
+    def my_health(me: dict = Depends(auth)):
+        if me["role"] != "human":
+            raise HTTPException(403, "Sign in as yourself.")
+        return {"checks": health_for(me["handle"])}
 
     @app.get("/backup", include_in_schema=False)
     def download_backup(me: dict = Depends(auth)):
@@ -2330,6 +2538,7 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
         pusher.notify(owner, "approvals", f"{agent} wants to {VERBS.get(method, method)}",
                       f"With your {key_name} key, on {host}. Tap to review.", f"/app#approve/{cid}", tag=cid, urgent=True)
     vault.on_waiting = ok_needed
+    vault.on_refused = alert_health                 # a website turned a key away: say so now, not tomorrow
 
     def waiting_for(person: str) -> int:
         """What waits for this person: OKs to give, and for the owner, people asking to join."""
@@ -2362,7 +2571,7 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
                                       new_session=lambda h: new_session(h), tell_owner=tell_owner), supabase, resend)
 
     # ---------------------------------------------------------------- the daily email: for people without notifications
-    DIGEST_GAP = 20 * 3600                       # once a day at most
+    DIGEST_GAP = 24 * 3600 - 1800                # once a day at most (the loop runs every half hour)
 
     def pref(c, h: str, key: str) -> Optional[str]:
         r = c.execute("SELECT value FROM prefs WHERE handle=? AND key=?", (h, key)).fetchone()
@@ -2378,22 +2587,50 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
         return c.execute(
             "SELECT COUNT(*) FROM convs t JOIN messages m ON m.id=t.last JOIN members mb ON mb.thread=t.thread AND mb.agent=?"
             " LEFT JOIN seen s ON s.handle=? AND s.thread=t.thread"
-            " WHERE m.sender NOT IN (?, ?) AND m.id > COALESCE(s.last, ?)", (h, h, h, SYSTEM, floor)).fetchone()[0]
+            " WHERE m.sender NOT IN (?, ?) AND m.id > COALESCE(s.last, ?)"
+            " AND NOT (t.n = 1 AND m.text LIKE '🔑 Asking %')"      # an agent's "asking you to OK" note: the OK itself is listed
+            " AND NOT EXISTS (SELECT 1 FROM marks k WHERE k.handle=? AND k.thread=t.thread AND k.muted=1)",
+            (h, h, h, SYSTEM, floor, h)).fetchone()[0]
 
     def digest_lines(h: str) -> list:
+        """What waits for this person, for the daily email: OKs to give first (each with its own link and when it
+        expires), then the rest. Each: {text, url, note, ask}."""
         lines = []
         for call in vault.waiting(h)[:5]:
-            host = urllib.parse.urlsplit(call["url"]).hostname or call["url"]
-            verb = {"GET": "read", "POST": "post", "PUT": "change", "PATCH": "change", "DELETE": "delete"}.get(call["method"], call["method"])
-            lines.append(f"{call['agent']} wants to {verb} with your {call['key']} key, on {host}")
+            verb = VERBS.get(call["method"], call["method"])
+            said = None
+            try:
+                body = json.loads(call["body"]) if call["body"] else {}
+                said = next((body[k] for k in ("caption", "text", "message", "title") if isinstance(body, dict)
+                             and isinstance(body.get(k), str) and body[k].strip()), None)
+            except ValueError:
+                pass
+            left = call["created"] + vault_mod.APPROVAL_SECONDS - _now()
+            lines.append({"text": f"{call['agent']} wants to {verb} on {site_of(call['url'])}" + (f": “{said.strip()[:120]}”" if said else ""),
+                          "note": f"Expires in {max(1, round(left / 3600))} h" if left >= 3600 else "Expires within the hour",
+                          "url": f"/app#approve/{call['id']}", "ask": True,
+                          "subject": f"{call['agent']} is waiting for your OK to {verb} on {site_of(call['url'])}"})
         with store.ro() as c:
             if first_owner(c) == h:
                 for r in c.execute("SELECT name FROM invite_requests WHERE status='waiting' ORDER BY created DESC LIMIT 5"):
-                    lines.append(f"{r['name']} would like an invite")
+                    lines.append({"text": f"{r['name']} would like an invite", "url": "/app#activity", "ask": False})
             n = unread_for(c, h)
         if n:
-            lines.append(f"{n} conversation{'s have' if n != 1 else ' has'} something new")
+            lines.append({"text": f"{n} conversation{'s have' if n != 1 else ' has'} something new", "url": "/app#activity", "ask": False})
+        lines += [{"text": x["title"], "url": f"/app#{x['url'] or 'me/health'}", "ask": False} for x in health_for(h) if not x["ok"]][:3]
         return lines
+
+    def stop_token(h: str) -> str:
+        """Stops this person's daily email from the email itself, without signing in. Only does that."""
+        return h + "." + hmac.new(hub_secret.encode(), b"digest-stop:" + h.encode(), hashlib.sha256).hexdigest()[:32]
+
+    def local_day(c, h: str):
+        """(this person's local date, local hour), or None when the app hasn't said which time zone they're in."""
+        tz = pref(c, h, "tz")
+        if tz is None:
+            return None
+        t = _now() + int(tz) * 60
+        return int(t // 86400), int(t % 86400 // 3600)
 
     def send_digests() -> int:
         """Everyone with an email on file, no notifications turned on and the email not switched off, who has
@@ -2404,23 +2641,31 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
         with store.ro() as c:
             people_ = [(r["handle"], r["email"]) for r in c.execute(
                 "SELECT e.handle, e.email FROM people_emails e JOIN agents a ON a.handle=e.handle AND a.role='human'"
-                " WHERE NOT EXISTS (SELECT 1 FROM push_subs p WHERE p.handle=e.handle)")]
+                " WHERE NOT EXISTS (SELECT 1 FROM push_subs p WHERE p.handle=e.handle AND p.kinds LIKE '%\"approvals\"%')")]
         home = public_url or seen_https["origin"] or ""
         for h, email in people_:
             with store.ro() as c:
-                if pref(c, h, "digest") == "off" or _now() - float(pref(c, h, "digest_sent") or 0) < DIGEST_GAP:
+                if pref(c, h, "digest") == "off":
                     continue
+                day = local_day(c, h)
+                if day is None:                    # time zone unknown: a day apart
+                    if _now() - float(pref(c, h, "digest_sent") or 0) < DIGEST_GAP:
+                        continue
+                elif pref(c, h, "digest_day") == str(day[0]) or not (8 <= day[1] < 21):
+                    continue                       # once a local day, in the morning or daytime, never at 3 am
             lines = digest_lines(h)
             if not lines:
                 continue
             try:
-                status, _ = resend.send_digest(email, lines, f"{home}/app#activity" if home else "")
+                status, _ = resend.send_digest(email, lines, home, f"{home}/email/stop?t={stop_token(h)}" if home else "")
             except Exception as e:
                 log.warning("digest to @%s failed: %s", h, e)
                 continue
             if 200 <= status < 300:
                 with store.tx() as c:
                     set_pref(c, h, "digest_sent", str(_now()))
+                    if day is not None:
+                        set_pref(c, h, "digest_day", str(day[0]))
                 sent += 1
         return sent
     app.state.send_digests = send_digests
@@ -2438,10 +2683,23 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
     if os.environ.get("RELAY_DIGEST", "1") != "0" and os.environ.get("RELAY_BACKUPS", "1") != "0":
         threading.Thread(target=digest_loop, name="relay-digest", daemon=True).start()
 
+    def prefs_out(c, h: str) -> dict:
+        """The daily email as the person should see it: on or off, where it goes (half hidden), and whether a
+        device of theirs gets "needs you" notifications, which pauses it."""
+        row = c.execute("SELECT email FROM people_emails WHERE handle=?", (h,)).fetchone()
+        addr = row["email"] if row else None
+        if addr and "@" in addr:
+            name, dom = addr.split("@", 1)
+            addr = f"{name[:1]}{'•' * min(max(len(name) - 1, 2), 6)}@{dom}"
+        dev = c.execute("SELECT label FROM push_subs WHERE handle=? AND kinds LIKE '%\"approvals\"%' ORDER BY last_ok DESC LIMIT 1",
+                        (h,)).fetchone()
+        return {"digest": pref(c, h, "digest") != "off", "email": bool(resend), "address": addr,
+                "paused_by": (dev["label"] or "a device") if dev else None}
+
     @app.get("/me/prefs")
     def my_prefs(me: dict = Depends(auth)):
         with store.ro() as c:
-            return {"digest": pref(c, me["handle"], "digest") != "off", "email": bool(resend)}
+            return prefs_out(c, me["handle"])
 
     @app.put("/me/prefs")
     def set_my_prefs(body: PrefsIn, me: dict = Depends(auth)):
@@ -2450,7 +2708,28 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
         with store.tx() as c:
             if body.digest is not None:
                 set_pref(c, me["handle"], "digest", "on" if body.digest else "off")
-            return {"digest": pref(c, me["handle"], "digest") != "off", "email": bool(resend)}
+            if body.tz is not None:
+                set_pref(c, me["handle"], "tz", str(body.tz))
+            return prefs_out(c, me["handle"])
+
+    # Stop the daily email from the email itself: the link carries a token that can do only that. GET for a
+    # person's click, POST for a mail app's one-click unsubscribe (RFC 8058).
+    @app.api_route("/email/stop", methods=["GET", "POST"], include_in_schema=False)
+    def stop_email(t: str = Query("", max_length=200)):
+        h = t.rsplit(".", 1)[0]
+        ok = bool(h) and hmac.compare_digest(t, stop_token(h))
+        if ok:
+            with store.tx() as c:
+                if c.execute("SELECT 1 FROM agents WHERE handle=? AND role='human'", (h,)).fetchone():
+                    set_pref(c, h, "digest", "off")
+                else:
+                    ok = False
+        msg = ("You won't get Relay's daily email any more. Turn it back on in Relay: Me, Notifications."
+               if ok else "That link didn't work. Turn the daily email off in Relay: Me, Notifications.")
+        page = ("<!doctype html><meta charset=utf-8><meta name=viewport content='width=device-width,initial-scale=1'>"
+                "<title>Relay</title><body style=\"font:17px/1.5 -apple-system,system-ui,sans-serif;background:#f6f4ef;color:#18171d;"
+                f"display:grid;place-items:center;min-height:90vh;margin:0;padding:24px\"><p style=\"max-width:30em\">{html.escape(msg)}</p>")
+        return Response(page, status_code=200 if ok else 400, media_type="text/html; charset=utf-8", headers=page_headers)
 
     # ---------------------------------------------------------------- connect apps with "Allow" (OAuth)
     def new_session(handle: str) -> dict:

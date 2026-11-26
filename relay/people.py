@@ -218,26 +218,56 @@ class Resend:
                                      "text": text, "html": page}).encode())
 
 
-    def send_digest(self, email: str, lines: list, url: str) -> tuple:
-        """Once a day at most, only when something waits: what it is, and one link to Relay."""
+    def send_digest(self, email: str, lines: list, home: str, stop_url: str = "") -> tuple:
+        """Once a day at most, only when something waits. OKs to give come first, each with its own link and when it
+        expires; the rest under "Also". A one-click way to stop these, in the email and for mail apps."""
         import html as _html
-        n = len(lines)
-        subject = lines[0] if n == 1 else f"{n} things wait for you on Relay"
-        text = "Waiting for you on Relay:\n\n" + "\n".join("- " + l for l in lines) + (f"\n\nOpen Relay: {url}" if url else "") + \
-            "\n\nYou get this because notifications are off on your devices. Turn it off in Relay: Me, Notifications."
-        items = "".join(f"<li style=\"margin:6px 0\">{_html.escape(l)}</li>" for l in lines)
-        button = (f"<a href=\"{_html.escape(url)}\" style=\"display:inline-block;background:#4f44e0;color:#fff;text-decoration:none;"
-                  f"padding:12px 22px;border-radius:999px;font-weight:600\">Open Relay</a>") if url else ""
+        e = _html.escape
+        asks = [l for l in lines if l.get("ask")]
+        rest = [l for l in lines if not l.get("ask")]
+        if len(lines) == 1:
+            subject = "Relay: " + (lines[0].get("subject") or lines[0]["text"])
+        else:
+            subject = f"Relay: {len(lines)} things are waiting for you"
+        link = lambda l: f"{home}{l['url']}" if home and l.get("url") else ""
+        text = "Waiting for you on Relay\n\n" + "\n\n".join(
+            l["text"] + (f"\n{l['note']}" if l.get("note") else "") + (f"\nReview: {link(l)}" if link(l) else "") for l in asks)
+        if rest:
+            text += ("\n\nAlso:\n" if asks else "") + "\n".join("- " + l["text"] for l in rest)
+        if home:
+            text += f"\n\nOpen Relay: {home}/app#activity"
+        text += ("\n\nYou get this because notifications aren't on for Relay. Turn them on in Relay: Me, Notifications."
+                 + (f"\nStop these emails: {stop_url}" if stop_url else ""))
+        block = "".join(
+            "<div style=\"background:#fff;border-radius:16px;padding:16px 18px;margin:0 0 10px;box-shadow:0 1px 2px rgba(24,23,29,.06)\">"
+            f"<div style=\"font-size:16px;font-weight:600;line-height:1.35\">{e(l['text'])}</div>"
+            + (f"<div style=\"font-size:14px;color:#6b6972;margin-top:4px\">{e(l['note'])}</div>" if l.get("note") else "")
+            + (f"<a href=\"{e(link(l))}\" style=\"display:inline-block;margin-top:12px;background:#4f44e0;color:#fff;text-decoration:none;"
+               f"padding:10px 20px;border-radius:999px;font-weight:600;font-size:15px\">Review</a>" if link(l) else "")
+            + "</div>" for l in asks)
+        also = ""
+        if rest:
+            also = ((f"<div style=\"font-size:13px;font-weight:600;color:#6b6972;margin:18px 0 6px\">Also</div>" if asks else "")
+                    + "".join(f"<div style=\"font-size:15px;line-height:1.45;padding:6px 0\">{e(l['text'])}</div>" for l in rest))
+        button = (f"<a href=\"{e(home)}/app#activity\" style=\"display:inline-block;margin-top:18px;color:#4f44e0;font-weight:600;"
+                  f"text-decoration:none;font-size:15px\">Open Relay</a>") if home else ""
+        mark = (f"<img src=\"{e(home)}/icon-192.png\" width=\"28\" height=\"28\" alt=\"\" style=\"vertical-align:-7px;margin-right:10px;"
+                f"border-radius:7px\">") if home else ""
+        stop = f" · <a href=\"{e(stop_url)}\" style=\"color:#6b6972\">Stop these emails</a>" if stop_url else ""
         page = ("<div style=\"background:#f6f4ef;padding:36px 16px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',"
                 "Helvetica,Arial,sans-serif;color:#18171d\"><div style=\"max-width:460px;margin:0 auto\">"
-                "<div style=\"font-size:20px;font-weight:700;margin-bottom:10px\">Waiting for you on Relay</div>"
-                f"<ul style=\"padding-left:20px;font-size:15px;line-height:1.45;margin:0 0 22px\">{items}</ul>{button}"
+                f"<div style=\"font-size:20px;font-weight:700;margin-bottom:16px\">{mark}Waiting for you on Relay</div>"
+                f"{block}{also}{button}"
                 "<div style=\"font-size:12px;color:#6b6972;margin-top:28px;line-height:1.5\">You get this at most once a day, only when "
-                "something waits, because notifications are off on your devices. Turn it off in Relay: Me, Notifications.</div>"
+                f"something waits, because notifications aren't on for Relay. "
+                f"<a href=\"{e(home)}/app#me/notify\" style=\"color:#6b6972\">Turn on notifications</a>{stop}</div>"
                 "</div></div>")
+        msg = {"from": self.sender, "to": [email], "subject": subject, "text": text, "html": page}
+        if stop_url:
+            msg["headers"] = {"List-Unsubscribe": f"<{stop_url}>", "List-Unsubscribe-Post": "List-Unsubscribe=One-Click"}
         return self.send("POST", "https://api.resend.com/emails",
                          {"Authorization": f"Bearer {self.key}", "Content-Type": "application/json", "User-Agent": "relay-hub"},
-                         json.dumps({"from": self.sender, "to": [email], "subject": subject, "text": text, "html": page}).encode())
+                         json.dumps(msg).encode())
 
 
 def resend_refusal(status: int, body: bytes) -> tuple:

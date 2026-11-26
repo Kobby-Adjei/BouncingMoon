@@ -138,6 +138,7 @@ class Vault:
                  resolve: Optional[Callable] = None):
         self.store, self.now = store, now
         self.on_waiting = None        # set by the hub: who to tell when a call needs an OK
+        self.on_refused = None        # set by the hub: who to tell when a website turns a key away (401/403)
         self.aead = AESGCM(HKDF(algorithm=hashes.SHA256(), length=32, salt=b"relay-vault",
                                 info=b"keys v1").derive(secret.encode()))
         self.send = send or _http
@@ -453,6 +454,11 @@ class Vault:
                                       out["error"], self.now(), cid))
             if k:
                 c.execute("UPDATE vault_keys SET last_used=? WHERE id=?", (self.now(), k["id"]))
+        if k and out["result_status"] in (401, 403) and self.on_refused:
+            try:
+                self.on_refused(k["owner"])
+            except Exception:
+                pass
         return self.call(cid)
 
     @staticmethod

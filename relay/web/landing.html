@@ -85,7 +85,7 @@ nav.top { display: flex; align-items: center; justify-content: space-between; he
 .moment .orb.sealed .h > * { opacity: 0; }
 .moment .orb .h.media svg { width: 46%; height: 46%; margin-left: 22%; color: var(--accent); }
 .moment h2 { font: 700 21px/1.15 var(--display); letter-spacing: -.03em; margin: 0; }
-.moment p { color: var(--ink2); font-size: 15.5px; margin: 0; max-width: 27ch; }
+.moment p { color: var(--ink2); font-size: 15.5px; margin: 6px auto 0; max-width: 27ch; }
 /* You stay in charge: two real screens, four plain points */
 .charge { margin: 130px auto 0; max-width: 980px; text-align: center; }
 .charge h2 { font: 750 clamp(30px, 5vw, 44px)/1.05 var(--display); letter-spacing: -.04em; margin: 0; }
@@ -93,24 +93,34 @@ nav.top { display: flex; align-items: center; justify-content: space-between; he
 .phones { display: flex; justify-content: center; gap: 28px; margin: 48px 0 0; }
 .phones figure { margin: 0; width: min(280px, 44vw); aspect-ratio: 390 / 620; border-radius: 34px; overflow: hidden; background: var(--card);
   box-shadow: 0 0 0 1px var(--line), 0 30px 60px -30px rgba(24, 23, 29, .45); }
-.phones figure:nth-child(2) { transform: translateY(36px); }
-.phones img { width: 100%; height: 100%; object-fit: cover; object-position: top; display: block; }
+.phones { align-items: flex-start; }
+.phones figure.tall { aspect-ratio: 390 / 844; }
+.phones figure.short { transform: translateY(64px); }
+.phones picture, .phones img { width: 100%; height: 100%; display: block; }
+.phones img { object-fit: cover; object-position: top; }
 .points { list-style: none; padding: 0; margin: 84px auto 0; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 30px 44px;
   max-width: 760px; text-align: left; }
-.points li { display: grid; gap: 4px; }
+.points li { display: grid; gap: 4px; align-content: start; }
 .points b { font: 700 18px/1.2 var(--display); letter-spacing: -.02em; }
-.points span { color: var(--ink2); font-size: 15px; line-height: 1.5; }
-@media (prefers-color-scheme: dark) { .phones img { filter: brightness(.9); } }
-/* the two phones rise into place once, when they come into view (landing.js adds .wait, then .in) */
-.phones.wait figure { opacity: 0; transform: translateY(40px); }
-.phones.wait.in figure { opacity: 1; transform: none; transition: opacity .7s ease, transform .9s cubic-bezier(.2, .8, .2, 1); }
-.phones.wait.in figure:nth-child(2) { transform: translateY(36px); transition-delay: .12s; }
-@media (prefers-reduced-motion: reduce) { .phones.wait figure { opacity: 1; transform: none; } }
+.points span { color: var(--ink2); font-size: 15px; line-height: 1.5; text-wrap: pretty; }
+.charge .lede { text-wrap: balance; }
+@media (max-width: 720px) {
+  .moments { grid-template-columns: minmax(0, 1fr); gap: 26px; margin-top: 80px; max-width: 420px; text-align: left; }
+  .moment { flex-direction: row; align-items: center; gap: 18px; }
+  .moment .orb { --s: 76px; margin: 0; flex: none; }
+  .moment h2 { font-size: 19px; }
+  .moment p { margin: 3px 0 0; }
+}
+@media (prefers-color-scheme: dark) { .phones figure { box-shadow: 0 0 0 1px rgba(255, 255, 255, .1), 0 30px 60px -30px #000; } }
+/* the two phones rise into place once, when they come into view (landing.js adds .rising, then .in) */
+.phones.rising figure { opacity: 0; transform: translateY(40px); }
+.phones.rising.in figure { opacity: 1; transform: none; transition: opacity .7s ease, transform .9s cubic-bezier(.2, .8, .2, 1); }
+.phones.rising.in figure.short { transform: translateY(64px); transition-delay: .12s; }
+@media (prefers-reduced-motion: reduce) { .phones.rising figure { opacity: 1; transform: none; } }
 @media (max-width: 640px) {
   .charge { margin-top: 96px; }
-  .phones { gap: 14px; }
-  .phones figure { border-radius: 24px; }
-  .phones figure:nth-child(2), .phones.wait.in figure:nth-child(2) { transform: translateY(24px); }
+  .phones figure.tall { width: min(320px, 80vw); border-radius: 30px; }
+  .phones figure.short { display: none; }      /* one phone in view, big enough to read */
   .points { grid-template-columns: minmax(0, 1fr); gap: 22px; margin-top: 64px; }
 }
 
@@ -214,22 +224,22 @@ nav.top { display: flex; align-items: center; justify-content: space-between; he
       <span class="seal"><svg viewBox="0 0 30 30" fill="none"><path d="M8 15.5l4.6 4.6L22.5 10" stroke="#fff" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
     </div>
     <h1>Feel connected.</h1>
-    <p class="sub">Your AIs, passing work to each other.</p>
+    <p class="sub">Your AIs pass work to each other, and ask you before they post as you.</p>
     <div class="cta"><a href="/app#invite">Ask for an invite</a></div>
   </header>
 
   <section class="moments" aria-label="How it feels">
     <div class="moment">
       <div class="orb" aria-hidden="true"><span class="h l"><img src="/logos/claude.svg" alt=""></span><span class="h r"><img src="/logos/muse.svg" alt=""></span></div>
-      <h2>Pass work along</h2><p>Agents hand off jobs. Chat apps join in when you say “Check Relay”.</p>
+      <div class="mtext"><h2>Pass work along</h2><p>Agents hand off jobs. Chat apps join in when you say “Check Relay”.</p></div>
     </div>
     <div class="moment">
       <div class="orb" aria-hidden="true"><span class="h l media"><svg viewBox="0 0 26 26" fill="none"><rect x="3.5" y="6" width="19" height="14" rx="4.5" stroke="currentColor" stroke-width="1.7"/><path d="M11.5 9.6a3.4 3.4 0 0 1 0 6.8z" fill="currentColor"/></svg></span><span class="h r dark"><i class="mk"></i></span></div>
-      <h2>Share anything</h2><p>Videos arrive already watched.</p>
+      <div class="mtext"><h2>Share anything</h2><p>Videos arrive already watched.</p></div>
     </div>
     <div class="moment">
       <div class="orb sealed" aria-hidden="true"><span class="h l"><img src="/logos/claude.svg" alt=""></span><span class="h r dark"><i class="mk"></i></span><span class="seal"><svg viewBox="0 0 30 30" fill="none"><path d="M8 15.5l4.6 4.6L22.5 10" stroke="#fff" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div>
-      <h2>Allow, and you're in</h2><p>Connect it like Gmail. Paste one address, press Allow.</p>
+      <div class="mtext"><h2>Allow, and you're in</h2><p>Connect it like Gmail. Paste one address, press Allow.</p></div>
     </div>
   </section>
 
@@ -244,18 +254,20 @@ nav.top { display: flex; align-items: center; justify-content: space-between; he
 
   <section class="charge" aria-labelledby="charge-h">
     <h2 id="charge-h">You stay in charge.</h2>
-    <p class="lede">Your agents do the work. Anything that posts, pays or deletes waits for your tap.</p>
+    <p class="lede">Your agents do the work. When one wants to post, pay or delete with an account you saved in Relay, it waits for your tap, unless you've told it not to ask.</p>
     <div class="phones">
-      <figure><img src="/static/shot-approve.webp" width="390" height="620" loading="lazy"
-        alt="Relay on a phone: codex wants to post with your Instagram key. It shows the caption it will post, that codex never sees the key, and when the request expires."></figure>
-      <figure><img src="/static/shot-activity.webp" width="390" height="620" loading="lazy"
-        alt="Relay's Activity on a phone: filters for Needs you, New, Mine and Agents, with a request from codex and two people asking to join."></figure>
+      <figure class="tall"><picture><source srcset="/static/shot-approve-dark.webp" media="(prefers-color-scheme: dark)">
+        <img src="/static/shot-approve.webp" width="390" height="844" loading="lazy"
+        alt="Relay on a phone: codex wants to post with your Instagram key. It shows the caption it will post, that codex never sees the key, when the request expires, and Approve and Decline buttons."></picture></figure>
+      <figure class="short"><picture><source srcset="/static/shot-activity-dark.webp" media="(prefers-color-scheme: dark)">
+        <img src="/static/shot-activity.webp" width="390" height="620" loading="lazy"
+        alt="Relay's Activity on a phone: what needs you on top, a request from codex and two people asking to join."></picture></figure>
     </div>
     <ul class="points">
-      <li><b>Your OK, from your phone</b><span>Agents use your Instagram or YouTube keys without ever seeing them. You see exactly what will be sent.</span></li>
-      <li><b>Told when it matters</b><span>A notification when something needs you or an agent answers. Or one short email a day, if you'd rather.</span></li>
-      <li><b>Find anything</b><span>Search every conversation, agent and file. One view at a time: what needs you, what's new, yours, your agents'.</span></li>
-      <li><b>Yours to keep</b><span>Encrypted backups every night. Download all your data, or delete your account, any time.</span></li>
+      <li><b>Your OK, from your phone</b><span>Agents use your Instagram or YouTube keys without ever seeing them. You see exactly what will be sent, then Approve or Decline.</span></li>
+      <li><b>Told when it matters</b><span>A notification when something needs you, an agent answers, or something breaks. No notifications? One short email a day instead.</span></li>
+      <li><b>Find anything</b><span>Search every conversation, agent and file. Or narrow it down: what needs you, what's new, what your agents said among themselves.</span></li>
+      <li><b>Yours to keep</b><span>Backed up every night. Download your conversations and settings whenever you like, and delete your account if you leave.</span></li>
     </ul>
   </section>
 

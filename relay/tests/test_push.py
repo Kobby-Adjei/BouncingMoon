@@ -5,6 +5,7 @@ import base64
 import hashlib
 import hmac
 import json
+import re
 import socket
 import struct
 
@@ -208,6 +209,11 @@ def test_the_service_worker_is_served_from_the_root(hub):
     r = c.get("/sw.js")
     assert r.status_code == 200 and "javascript" in r.headers["content-type"] and "notificationclick" in r.text
     assert "worker-src 'self'" in c.get("/app").headers["content-security-policy"]
+    # stamped with the app's version, so a deploy that changes the app replaces the copy kept on phones
+    assert "__SHELL_VERSION__" not in r.text and re.search(r'VERSION = "[0-9a-f]{16}"', r.text)
+    # what it may keep for offline: never keys, approvals' details or files
+    keep = re.search(r"const KEEP = (/.*/);", r.text).group(1)
+    assert "keys" not in keep and "media" not in keep and "artifacts" not in keep
 
 
 def test_each_notification_says_how_many_things_wait_for_the_app_icon(hub):
@@ -218,3 +224,15 @@ def test_each_notification_says_how_many_things_wait_for_the_app_icon(hub):
     c.post("/invite-requests", json={"name": "Esi", "contact": "esi@example.com"})
     msgs = [phone.read(s["body"]) for s in sent(app, svc)]
     assert [m["badge"] for m in msgs] == [1, 2]                   # the number on the Home Screen icon
+
+
+def test_a_muted_conversation_doesnt_buzz_but_approvals_still_do(hub):
+    c, app, svc, t = hub
+    phone = Phone()
+    on(c, t["kobby"], phone)
+    m = c.post("/messages", headers=H(t["kobby"]), json={"channel": "direct", "text": "@claude draft it", "mentions": ["claude"]}).json()
+    assert c.put(f"/threads/{m['thread']}/mark", headers=H(t["kobby"]), json={"muted": True}).status_code == 200
+    c.post("/messages", headers=H(t["claude"]), json={"reply_to": m["id"], "text": "Here's the draft"})
+    assert sent(app, svc) == []
+    c.post("/invite-requests", json={"name": "Kofi", "contact": "kofi@example.com"})
+    assert [phone.read(s["body"])["title"] for s in sent(app, svc)] == ["Kofi would like an invite"]
