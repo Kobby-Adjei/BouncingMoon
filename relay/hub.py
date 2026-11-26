@@ -20,6 +20,7 @@ One process. SQLite for state, the filesystem for blobs.
 """
 from __future__ import annotations
 
+import asyncio
 import functools
 import hashlib
 import hmac
@@ -200,6 +201,7 @@ class Store:
         self.db_path = os.path.join(data_dir, "relay.db")
         self.changed = threading.Condition()   # notified after every write: a waiting inbox wakes at once
         self.writes = 0                         # counts them, so a write between a look and a wait isn't missed
+        self.on_write: list = []                # also told after every write (the app's live updates)
         c = self._connect()
         try:
             c.executescript(SCHEMA)
@@ -292,6 +294,11 @@ class Store:
         with self.changed:                 # anyone long-polling looks again now, not on its next tick
             self.writes += 1
             self.changed.notify_all()
+        for f in self.on_write:
+            try:
+                f()
+            except Exception:
+                pass
 
     @contextmanager
     def ro(self):
@@ -1672,6 +1679,59 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
                  "first": first.get(r["thread"]), "unread": unread(r),
                  "pinned": bool(r["thread"] in marks and marks[r["thread"]]["pinned"]),
                  "muted": bool(r["thread"] in marks and marks[r["thread"]]["muted"])} for r in rows]
+
+    # ---------------------------------------------------------------- live: the app hears about changes at once
+    # One request at a time per open app, answered the moment something that person would see changes, instead
+    # of the app asking for everything every few seconds. It waits on the event loop, not a worker thread, so a
+    # hundred open apps hold no threads.
+    live_waiters: set = set()
+    live_loop: dict = {"loop": None}
+
+    def live_wake() -> None:
+        loop = live_loop["loop"]
+        if loop and live_waiters:
+            loop.call_soon_threadsafe(lambda: [e.set() for e in list(live_waiters)])
+    store.on_write.append(live_wake)
+
+    def live_state(me: dict) -> str:
+        """A short fingerprint of what this person sees: the newest message in a conversation they can see,
+        who has read what, what waits for their OK, people asking to join (the owner), their pins and mutes."""
+        h = me["handle"]
+        with store.ro() as c:
+            sql, a = visible(c, h)
+            last = c.execute(f"SELECT MAX(t.last) FROM convs t JOIN messages m ON m.id=t.last WHERE {sql}", a).fetchone()[0] or 0
+            reads = c.execute("SELECT MAX(rowid) FROM reads").fetchone()[0] or 0
+            marks = c.execute("SELECT COUNT(*), COALESCE(SUM(pinned), 0), COALESCE(SUM(muted), 0) FROM marks WHERE handle=?",
+                              (h,)).fetchone()
+            owner = first_owner(c) == h
+            asks = c.execute("SELECT COUNT(*), COALESCE(MAX(created), 0) FROM vault_calls WHERE owner=? AND status='waiting'",
+                             (h,)).fetchone() if me["role"] == "human" else (0, 0)
+            inv = c.execute("SELECT COUNT(*), COALESCE(MAX(created), 0) FROM invite_requests WHERE status='waiting'").fetchone() \
+                if owner else (0, 0)
+        raw = f"{last}|{reads}|{tuple(marks)}|{tuple(asks)}|{tuple(inv)}"
+        return hashlib.sha256(raw.encode()).hexdigest()[:16]
+
+    @app.get("/changes")
+    async def changes(since: str = Query("", max_length=32), wait: float = Query(25, ge=0, le=30), me: dict = Depends(auth)):
+        """Answers as soon as something you'd see has changed since `since` (or after `wait` seconds) with
+        the new `state`; pass that back next time. The first call (no `since`) answers at once."""
+        live_loop["loop"] = asyncio.get_running_loop()
+        deadline = time.monotonic() + wait
+        while True:
+            woke = asyncio.Event()
+            live_waiters.add(woke)               # listening before looking: a write in between isn't missed
+            try:
+                state = await asyncio.to_thread(live_state, me)
+                left = deadline - time.monotonic()
+                if state != since or left <= 0:
+                    return {"state": state}
+                try:
+                    await asyncio.wait_for(woke.wait(), timeout=left)
+                except asyncio.TimeoutError:
+                    pass
+                await asyncio.sleep(0.25)         # a burst of writes (an agent streaming) is looked at once
+            finally:
+                live_waiters.discard(woke)
 
     PINS_EACH = 10
 

@@ -324,6 +324,43 @@ function every(view, fn, ms) {
   const id = setInterval(() => { if (!view.isConnected) { clearInterval(id); return; } fn(); }, ms);
   return id;
 }
+// Live: one request at a time waits at the hub and comes back the moment something you'd see changes (a
+// message, an OK to give, someone asking to join). Screens refresh then, instead of asking every few seconds.
+// A slow timer stays underneath, in case the connection drops without anyone noticing.
+const liveSubs = new Set();
+let liveState = "", liveRunning = false;
+const nap = (ms) => new Promise((r) => setTimeout(r, ms));
+function liveOn(view, fn, fallback = 30000) {
+  const sub = () => { if (!view.isConnected) { liveSubs.delete(sub); return; } fn(); };
+  liveSubs.add(sub);
+  every(view, fn, fallback);
+  startLive();
+}
+async function startLive() {
+  if (liveRunning || !KEY) return;
+  liveRunning = true;
+  let last = 0;
+  while (KEY) {
+    const key = KEY;
+    try {
+      const r = await api("GET", `/changes?since=${enc(liveState)}&wait=25`);
+      if (key !== KEY) break;
+      if (liveState && r.state !== liveState) {
+        const gap = Date.now() - last;
+        if (gap < 800) await nap(800 - gap);          // a burst (an agent writing fast) refreshes once, not ten times
+        last = Date.now();
+        for (const f of [...liveSubs]) f();
+      }
+      liveState = r.state;
+    } catch (x) {
+      if (x.status === 401 || !KEY) break;
+      await nap(x.offline ? 8000 : 4000);
+    }
+  }
+  liveRunning = false; liveState = "";
+}
+// back to the app (phone unlocked, tab shown): look now, not at the next change
+document.addEventListener("visibilitychange", () => { if (!document.hidden) for (const f of [...liveSubs]) f(); });
 
 function screen(name, opts, ...kids) {
   const { tab = null, push = false, pop = false } = opts || {};
@@ -379,7 +416,7 @@ function ensureShell() {
     iconBadge(n);
     waiting.closest(".railitem").setAttribute("aria-label", n ? `Activity, ${n} waiting for you` : "Activity");
   };
-  count(); every(shell, count, 15000);
+  count(); liveOn(shell, count, 60000);
 }
 // which sidebar item is lit: Keys and You when they're open, else the list beside it
 function markRail() {
@@ -652,7 +689,7 @@ async function overview(tk) {
 }
 
 function signOut(message) {
-  KEY = null; ME = null; store.clear(); forgetKept(); trail.length = 0; clearInterval(timer); timer = null;
+  KEY = null; ME = null; store.clear(); forgetKept(); liveSubs.clear(); trail.length = 0; clearInterval(timer); timer = null;
   clearInterval(waitTimer); waitTimer = null; segBadge.hidden = true; iconBadge(0);
   signin(message);
 }
@@ -683,7 +720,7 @@ function watchWaiting() {
       seg.setAttribute("aria-label", n ? `Activity, ${n} waiting for you` : "Activity");
     } catch {}
   };
-  tick(); waitTimer = setInterval(tick, 15000);
+  tick(); waitTimer = setInterval(tick, 60000); liveSubs.add(tick); startLive();
 }
 function userSignOut() {
   const k = KEY;
@@ -2787,7 +2824,7 @@ async function activity() {
   await refresh();
   if (!view.isConnected) return;
   if (WIDE) listRefresh = refresh;
-  every(view, refresh, 4000);
+  liveOn(view, refresh);
 }
 
 async function newMessage() {
@@ -3188,7 +3225,7 @@ async function thread(id, people) {
   }
   await refresh();
   if (!view.isConnected) return;
-  every(view, refresh, 3000);
+  liveOn(view, refresh);
   if (composer && WIDE) input.focus();
 }
 

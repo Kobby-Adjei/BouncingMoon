@@ -256,3 +256,26 @@ def test_only_people_mark_only_conversations_they_can_see_and_pins_are_capped(hu
         assert c.put(f"/threads/{th}/mark", headers=H(t["kobby"]), json={"pinned": True}).status_code == 200
     r = c.put(f"/threads/{mine['thread']}/mark", headers=H(t["kobby"]), json={"pinned": True})
     assert r.status_code == 429 and "Unpin one" in r.json()["detail"]
+
+
+def test_the_app_hears_about_a_change_at_once_and_only_its_own(hub):
+    import threading, time as _t
+    c, _, _, t = hub
+    first = c.get("/changes", headers=H(t["kobby"])).json()["state"]          # no `since`: at once
+    assert c.get(f"/changes?since={first}&wait=0", headers=H(t["kobby"])).json()["state"] == first
+    got = {}
+
+    def wait(who):
+        t0 = _t.monotonic()
+        r = c.get(f"/changes?since={states[who]}&wait=6", headers=H(t[who])).json()
+        got[who] = (r["state"], _t.monotonic() - t0)
+    states = {"kobby": first, "ama": c.get("/changes", headers=H(t["ama"])).json()["state"]}
+    ths = [threading.Thread(target=wait, args=(w,)) for w in ("kobby", "ama")]
+    for th in ths:
+        th.start()
+    _t.sleep(0.5)
+    say(c, t["kobby"], "@claude private to kobby", to=["claude"])            # ama can't see this one
+    ths[0].join(5)
+    assert got["kobby"][0] != first and got["kobby"][1] < 3                  # kobby: at once
+    ths[1].join(8)
+    assert got["ama"] == (states["ama"], got["ama"][1]) and got["ama"][1] >= 5.5   # ama: nothing to see, waited it out
