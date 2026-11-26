@@ -3198,7 +3198,27 @@ async function thread(id, people) {
         if (!open) bub.scrollIntoView({ block: "nearest", behavior: "smooth" });     // folding a long one back: stay on it
       });
     }
-    return h("div", { class: "msg" + (mine ? " mine" : "") }, face, h("div", { class: "body" }, who, bub, more, keep));
+    // quick answers: tap one and it goes back as your reply; once answered, what you picked stays marked
+    let answers = null;
+    if (!mine && m.options && m.options.length && canPost && ME.role === "human") {
+      const reply = [...byId.values()].find((x) => x.reply_to === m.id && x.from === ME.handle);
+      answers = h("div", { class: "qopts", role: "group", "aria-label": `Answer ${m.from}` }, ...m.options.map((o) => {
+        const picked = !!reply && reply.text.trim() === o;
+        const b = h("button", { class: "qopt press" + (picked ? " picked" : ""), type: "button", "aria-pressed": reply ? String(picked) : null }, o);
+        if (reply) b.disabled = true;
+        else b.addEventListener("click", async () => {
+          for (const x of answers.querySelectorAll("button")) x.disabled = true;
+          b.classList.add("picked");
+          try {
+            await api("POST", "/messages", { reply_to: m.id, text: o, mentions: [m.from] });
+            justSent = true; refresh();
+            if (listRefresh && listPane.dataset.tab === "activity") listRefresh();
+          } catch (x) { alert(x.message); for (const y of answers.querySelectorAll("button")) y.disabled = false; b.classList.remove("picked"); }
+        });
+        return b;
+      }));
+    }
+    return h("div", { class: "msg" + (mine ? " mine" : "") }, face, h("div", { class: "body" }, who, bub, answers, more, keep));
   }
   function paint(keepPlace) {
     const msgs = [...byId.values()].sort((a, b) => a.id - b.id);

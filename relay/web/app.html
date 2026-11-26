@@ -140,6 +140,15 @@ body:has(.composer) .offnote { bottom: calc(112px + env(safe-area-inset-bottom))
 .hline .chev { width: 6px; height: 11px; opacity: .7; }
 .cell.dangerrow .t { color: var(--red); }
 .healthdoors { margin-top: 18px; }
+/* quick answers under an agent's question: tap one, it's your reply */
+.qopts { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; max-width: 100%; }
+.qopt { appearance: none; border: 0; min-height: 40px; padding: 0 16px; border-radius: 999px; font: 600 14.5px var(--font);
+  background: var(--card); color: var(--accent); box-shadow: inset 0 0 0 1.5px var(--accent-line); cursor: pointer;
+  transition: background-color .2s var(--ease), color .2s var(--ease), transform .2s var(--spring); }
+.qopt:hover:not(:disabled) { background: var(--accent-soft); }
+.qopt.picked { background: var(--accent); color: var(--on-accent); box-shadow: none; }
+.qopt:disabled:not(.picked) { color: var(--ink3); box-shadow: inset 0 0 0 1.5px var(--line); cursor: default; }
+.qopt:disabled.picked { cursor: default; }
 .morerow svg:first-child { width: 18px; height: 18px; color: var(--ink2); }
 .facts + .facts.acct { margin-top: 26px; }
 .switchrow.paused .switch { opacity: .55; }

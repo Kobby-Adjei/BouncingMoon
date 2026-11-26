@@ -223,6 +223,8 @@ class Store:
             if "archived" not in {r["name"] for r in c.execute("PRAGMA table_info(marks)")}:   # archive: off your list
                 c.execute("ALTER TABLE marks ADD COLUMN archived REAL")
             msg_cols = {r["name"] for r in c.execute("PRAGMA table_info(messages)")}
+            if "options" not in msg_cols:            # quick answers: choices the reader can tap
+                c.execute("ALTER TABLE messages ADD COLUMN options TEXT")
             if "origin_session" not in msg_cols:     # the exact chat that sent it (routing only)
                 c.execute("ALTER TABLE messages ADD COLUMN origin_session TEXT")
             if "client" not in agent_cols:          # the app it connects from, as that app names itself
@@ -378,10 +380,24 @@ def with_context(c, msgs: list) -> list:
 
 
 def msg_out(r: sqlite3.Row) -> dict:
-    return {"id": r["id"], "from": r["sender"], "channel": r["channel"],
-            "thread": r["thread"], "reply_to": r["reply_to"], "time": r["time"],
-            "text": r["text"], "mentions": _loads(r["mentions"], []),
-            "artifacts": _loads(r["artifacts"], []), "job": r["job"]}
+    out = {"id": r["id"], "from": r["sender"], "channel": r["channel"],
+           "thread": r["thread"], "reply_to": r["reply_to"], "time": r["time"],
+           "text": r["text"], "mentions": _loads(r["mentions"], []),
+           "artifacts": _loads(r["artifacts"], []), "job": r["job"]}
+    opts = r["options"] if "options" in r.keys() else None
+    if opts:                                     # answers the reader can tap
+        out["options"] = _loads(opts, [])
+    return out
+
+
+def clean_options(options) -> Optional[str]:
+    """Up to six short answers, each once, as stored with a message; None when there are none."""
+    out = []
+    for o in options or ():
+        o = " ".join(str(o).split())[:60]
+        if o and o.lower() not in (x.lower() for x in out):
+            out.append(o)
+    return json.dumps(out[:6]) if out else None
 
 
 def job_out(r: sqlite3.Row) -> dict:
@@ -485,6 +501,7 @@ class MessageIn(BaseModel):
     artifacts: list[str] = Field(default_factory=list, max_length=10)
     media: list[str] = Field(default_factory=list, max_length=10)
     idem: Optional[str] = None
+    options: list[str] = Field(default_factory=list, max_length=6)   # quick answers the reader can tap
 
 
 class AckIn(BaseModel):
@@ -839,7 +856,7 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
                           " ON CONFLICT(thread,handle) DO UPDATE SET session=excluded.session", (m["thread"], h, session))
 
     def post(c, sender, text, channel=None, reply_to=None, mentions=(), artifacts=(),
-             idem=None, job=None, session=None, media=()) -> dict:
+             idem=None, job=None, session=None, media=(), options=()) -> dict:
         mentions = sorted({m.lstrip("@") for m in mentions})
         if idem:
             prev = c.execute("SELECT * FROM messages WHERE sender=? AND idem=?",
@@ -878,6 +895,9 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
             (sender, idem, channel, thread, reply_to, _now(), text,
              json.dumps(mentions), json.dumps(list(artifacts)), job, session))
         mid = cur.lastrowid
+        opts = clean_options(options)
+        if opts:
+            c.execute("UPDATE messages SET options=? WHERE id=?", (opts, mid))
         for m in dict.fromkeys(media):     # videos, images, audio, files that travel with this message
             c.execute("INSERT OR IGNORE INTO message_media(msg,media) VALUES (?,?)", (mid, m))
         if thread is None:
@@ -1640,7 +1660,7 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
         with store.tx() as c:
             return post(c, me["handle"], body.text, channel=body.channel,
                         reply_to=body.reply_to, mentions=body.mentions,
-                        artifacts=body.artifacts, idem=body.idem, session=session, media=body.media)
+                        artifacts=body.artifacts, idem=body.idem, session=session, media=body.media, options=body.options)
 
     @app.get("/messages")
     def read(channel: Optional[str] = None, thread: Optional[int] = None,

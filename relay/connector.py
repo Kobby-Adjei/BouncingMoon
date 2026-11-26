@@ -89,6 +89,10 @@ TOOLS = [
 "attach": {"type": "array", "maxItems": 5, "items": {"type": "string"},
                            "description": "Videos, images, audio or files to send with it: links (https://…) "
                                           "or media ids (m_…). The hub fetches links and watches videos itself."},
+                "options": {"type": "array", "maxItems": 6, "items": {"type": "string", "maxLength": 60},
+                            "description": "Short answers a person can tap instead of typing, e.g. [\"Post now\", "
+                                           "\"Tonight\", \"Not yet\"]. Only when the question has a few clear answers; "
+                                           "they can still write their own."},
                 "new_topic": {"type": "boolean", "default": False,
                               "description": "Set true only if you have an unanswered message from this contact "
                                              "and this is really a different subject, not your answer to it"},
@@ -127,7 +131,10 @@ TOOLS = [
                 "attach": {"type": "array", "maxItems": 5, "items": {"type": "string"},
                            "description": "Videos, images, audio or files to send with it: links (https://…) "
                                           "or media ids (m_…). The hub fetches links and watches videos itself."},
-                
+                "options": {"type": "array", "maxItems": 6, "items": {"type": "string", "maxLength": 60},
+                            "description": "Short answers a person can tap instead of typing, e.g. [\"Post now\", "
+                                           "\"Tonight\", \"Not yet\"]. Only when the question has a few clear answers; "
+                                           "they can still write their own."},
             },
             "required": ["message_id", "text"],
             "additionalProperties": False,
@@ -392,7 +399,7 @@ def mount(app, hub) -> None:
                         f"Not sent. {to} is waiting for your answer to message {waiting['id']} (\"{snippet}\"). "
                         f"To answer it, use reply with message_id {waiting['id']}, so it reaches the chat that "
                         f"asked. If this is a different subject, call ask again with new_topic: true.")
-            sent = start_conversation(c, me, text, DIRECT, [to], session, media)
+            sent = start_conversation(c, me, text, DIRECT, [to], session, media, options_of(args))
         eff = session or hub.CONVERSATION + str(sent["thread"])
         deadline = time.monotonic() + wait
         while True:
@@ -432,9 +439,9 @@ def mount(app, hub) -> None:
                 w = store.writes
                 store.changed.wait_for(lambda: store.writes != w, timeout=1.0)
 
-    def start_conversation(c, me, text, channel, mentions, session, media=()) -> dict:
+    def start_conversation(c, me, text, channel, mentions, session, media=(), options=()) -> dict:
         """A new thread from this chat. An app that sends no id is known by this conversation from now on."""
-        sent = hub.post(c, me, text, channel=channel, mentions=mentions, session=session, media=media)
+        sent = hub.post(c, me, text, channel=channel, mentions=mentions, session=session, media=media, options=options)
         if not session:                # no id from this app: hold the answers for this conversation
             own = hub.CONVERSATION + str(sent["thread"])
             hub.start_session(c, me, own)
@@ -681,6 +688,10 @@ def mount(app, hub) -> None:
                 + ("" if session else f" with thread {anchor['thread']}") + " to see them.",
                 {"upload_url": url, "thread": anchor["thread"]})
 
+    def options_of(args) -> list:
+        o = args.get("options") or []
+        return [str(x) for x in o][:20] if isinstance(o, list) else []     # cleaned (and cut to six) by the hub
+
     def tool_reply(me, args, session=None):
         text = clip(str(args.get("text", "")))
         media = attachments(me, args)
@@ -698,7 +709,7 @@ def mount(app, hub) -> None:
                 if b and b["session"].startswith(hub.CONVERSATION):
                     session = b["session"]
             mention = [parent["sender"]] if parent["sender"] not in (me, "relay") else []
-            out = hub.post(c, me, text, reply_to=mid, mentions=mention, session=session, media=media)
+            out = hub.post(c, me, text, reply_to=mid, mentions=mention, session=session, media=media, options=options_of(args))
         return f"Replied (message {out['id']})" + (f" with {len(media)} attachment(s): {', '.join(media)}." if media else "."), \
             {**out, "media": media}
 

@@ -39,6 +39,7 @@ async function seed() {
   const first = await api("POST", "/messages", { channel: "direct", text: "@claude send the 30-second cut to @codex and get it posted tonight", mentions: ["claude", "codex"] }, K);
   await api("POST", "/messages", { reply_to: first.id, text: "Sent to @codex.", media: [media.id] }, tok.claude);
   await api("POST", "/messages", { reply_to: first.id, text: "Watched it. I'll post it with “New drop. Link in bio.”" }, tok.codex);
+  await api("POST", "/messages", { reply_to: first.id, text: "When should it go out?", options: ["Post now", "Tonight at 8", "Not yet"] }, tok.codex);
   // one conversation muted, one pinned: they show a mark in the list
   const noisy = await api("POST", "/messages", { channel: "direct", text: "@muse three caption ideas for the cut", mentions: ["muse"] }, K);
   await api("POST", "/messages", { reply_to: noisy.id, text: "1. New drop. 2. Out now. 3. Link in bio." }, tok.muse);
