@@ -47,3 +47,13 @@ def test_ask_can_offer_answers_too(hub):
     t = r["structuredContent"]["asked"]
     msgs = c.get(f"/messages?thread={t}", headers=H(kobby)).json()
     assert msgs[0]["options"] == ["The red one", "The blue one"]
+
+
+def test_agents_are_told_about_quick_answers_and_short_messages(hub):
+    c, kobby, codex = hub
+    init = c.post("/mcp", headers=H(codex, "chat-1"), json={"jsonrpc": "2.0", "id": 1, "method": "initialize",
+        "params": {"protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "t", "version": "1"}}}).json()["result"]
+    assert "`options`" in init["instructions"] and "short and plain" in init["instructions"]
+    tools = {t["name"]: t for t in c.post("/mcp", headers=H(codex, "chat-1"), json={"jsonrpc": "2.0", "id": 2, "method": "tools/list"}).json()["result"]["tools"]}
+    assert "options" in tools["ask"]["inputSchema"]["properties"] and "options" in tools["reply"]["inputSchema"]["properties"]
+    assert "options" in tools["reply"]["description"]
