@@ -2457,6 +2457,16 @@ async function wake(handle) {
 }
 
 // ------------------------------------------------------------------ activity
+// When: preset spans of time, in the person's own time zone
+const WHEN = [["any", "Any time"], ["today", "Today"], ["yesterday", "Yesterday"], ["week", "This week"], ["month", "This month"],
+  ["3months", "Last 3 months"], ["older", "Older"]];
+function whenRange(id) {
+  const d = new Date(); d.setHours(0, 0, 0, 0);
+  const day = d.getTime() / 1000, s = (n) => day - n * 86400;
+  const monday = s((d.getDay() + 6) % 7), first = new Date(d.getFullYear(), d.getMonth(), 1).getTime() / 1000;
+  return { any: [0, 0], today: [day, 0], yesterday: [s(1), day], week: [monday, 0], month: [first, 0], "3months": [s(91), 0], older: [0, s(91)] }[id] || [0, 0];
+}
+const whenQuery = (id) => { const [a, b] = whenRange(id); return (a ? `&since=${a}` : "") + (b ? `&until=${b}` : ""); };
 // the Activity filter you last picked, kept on this device
 const savedFilter = () => { try { return localStorage.getItem("relay_activity_filter"); } catch { return null; } };
 const saveFilter = (v) => { try { localStorage.setItem("relay_activity_filter", v); } catch {} };
@@ -2467,7 +2477,15 @@ async function activity() {
   const top = head("Activity", null, neu); top.classList.add("tabhead");
   // search: what was said, who was in it, a file's name. While it has words, the list shows what matches.
   let q = "", asked = 0;
-  const find = findBox("Search conversations, agents, files", (v) => { q = v; chips.classList.toggle("off", q.length >= 2); if (q.length >= 2) runSearch(); else { asked++; refresh(); } });
+  const find = findBox("Search", (v) => { q = v; chips.classList.toggle("off", q.length >= 2); if (q.length >= 2) runSearch(); else { asked++; refresh(); } });
+  // when: one small pill beside the search box; the phone's own picker opens on it
+  let when = "any";
+  const whenPick = h("select", { class: "whenpick", "aria-label": "When" },
+    ...WHEN.map(([id, label]) => h("option", { value: id, text: label })));
+  whenPick.addEventListener("change", () => { when = whenPick.value; whenPick.classList.toggle("set", when !== "any"); pages = 1; first = true;
+    if (q.length >= 2) runSearch(); else { asked++; refresh(); } });
+  find.append(h("span", { class: "whenwrap" }, whenPick));
+  find.classList.add("withwhen");
   find.classList.add("searchbox");
   const chips = h("div", { class: "fchips", role: "group", "aria-label": "Show" });
   const view = screen("activity", { ...tk, tab: "activity" }, top, find, chips, list);
@@ -2475,7 +2493,7 @@ async function activity() {
   async function runSearch() {
     const mine = ++asked;
     let got = [], ags = [];
-    try { [got, ags] = await Promise.all([api("GET", `/search?q=${enc(q)}`), api("GET", "/agents")]); }
+    try { [got, ags] = await Promise.all([api("GET", `/search?q=${enc(q)}${whenQuery(when)}`), api("GET", "/agents")]); }
     catch (x) { if (mine === asked) list.replaceChildren(h("div", { class: "empty", text: x.message })); return; }
     if (mine !== asked || q.length < 2 || !view.isConnected) return;
     const by = Object.fromEntries(ags.map((a) => [a.handle, a]));
@@ -2502,7 +2520,7 @@ async function activity() {
     if (q.length >= 2) return;              // searching: the list is the results until the box is cleared
     const mine = asked;
     try {
-      const [convs, ags, asks, wants] = await Promise.all([api("GET", `/threads?limit=${Math.min(PAGE * pages, 200)}`), api("GET", "/agents"),
+      const [convs, ags, asks, wants] = await Promise.all([api("GET", `/threads?limit=${Math.min(PAGE * pages, 200)}${whenQuery(when)}`), api("GET", "/agents"),
         ME.role === "human" ? api("GET", "/approvals").catch(() => []) : [], isOwner() ? api("GET", "/invite-requests").catch(() => []) : []]);
       if (mine !== asked || q.length >= 2) return;      // a search started while this was on its way
       more = convs.length >= Math.min(PAGE * pages, 200);
@@ -2559,7 +2577,8 @@ async function activity() {
       }
       const anything = needs.length || sorted.length;
       chips.hidden = !anything;
-      if (anything && !rows.length) rows.push(h("div", { class: "fempty", text: {
+      if (when !== "any" && filter !== "needs" && !rows.length) rows.push(h("div", { class: "fempty", text: `Nothing ${WHEN.find((w) => w[0] === when)[1].toLowerCase()} here.` }));
+      else if (anything && !rows.length) rows.push(h("div", { class: "fempty", text: {
         needs: "Nothing needs you right now.", new: "You're all caught up.",
         mine: "No conversations of yours yet. New starts one.", agents: "Your agents haven't talked among themselves yet." }[filter] }));
       if (filter !== "needs" && more && pages * PAGE < 200) rows.push(h("button", { class: "morerow press", type: "button", onclick: (e) => {

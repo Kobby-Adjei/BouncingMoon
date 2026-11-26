@@ -1592,7 +1592,7 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
 
     @app.get("/threads")
     def threads(limit: int = Query(40, ge=1, le=200), before: int = 0, with_: Optional[str] = Query(None, alias="with", max_length=64),
-                me: dict = Depends(auth)):
+                since: float = 0, until: float = 0, me: dict = Depends(auth)):
         """The conversations I may see, the most recently active first: each one's newest message, how many
         messages it has and who has been in it. `before` (a newest-message id) gives the next page."""
         with store.ro() as c:
@@ -1603,6 +1603,10 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
                 q += " AND t.last<?"; a.append(before)
             if with_:                          # only conversations this agent or person has been in
                 q += " AND t.thread IN (SELECT thread FROM members WHERE agent=?)"; a.append(with_.lstrip("@"))
+            if since:                          # last active from this time (a date filter)
+                q += " AND m.time>=?"; a.append(since)
+            if until:                          # ...and before this one
+                q += " AND m.time<?"; a.append(until)
             rows = c.execute(q + " ORDER BY t.last DESC LIMIT ?", a + [limit]).fetchall()
             ids = [r["thread"] for r in rows]
             people: dict = {}
@@ -1675,7 +1679,8 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
         return m
 
     @app.get("/search")
-    def search(q: str = Query("", max_length=200), limit: int = Query(20, ge=1, le=50), me: dict = Depends(auth)):
+    def search(q: str = Query("", max_length=200), limit: int = Query(20, ge=1, le=50), since: float = 0, until: float = 0,
+               me: dict = Depends(auth)):
         """Conversations you may see that match: by what was said in them, who is in them, or a file's name.
         Each comes with up to three matching lines, the words found marked with \\x02 and \\x03."""
         q = q.strip()
@@ -1705,8 +1710,9 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
                 ids = [r[0] for r in c.execute("SELECT rowid FROM msg_fts WHERE msg_fts MATCH ? ORDER BY rowid DESC LIMIT 2000", (match,))]
                 rows = []
                 if ids:
+                    when = (" AND m.time>=?" if since else "") + (" AND m.time<?" if until else "")
                     cand = c.execute(f"SELECT m.id, m.thread, m.sender, m.time FROM messages m WHERE m.id IN ({','.join('?' * len(ids))})"
-                                     f" AND {only} ORDER BY m.id DESC", ids + more).fetchall()
+                                     f" AND {only}{when} ORDER BY m.id DESC", ids + more + [x for x in (since, until) if x]).fetchall()
                     per, keep = {}, []
                     for r in cand:
                         n = per.get(r["thread"], 0)
@@ -1748,6 +1754,9 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
                      for r in c.execute(f"SELECT id, sender, text FROM messages WHERE id IN ({qs})", ids)}
         out = [{"thread": t, "count": convs[t]["n"], "people": people.get(t, []), "first": first.get(t), "last": msg_out(convs[t]),
                 "why": sorted(f["why"]), "hits": f["hits"]} for t, f in found.items() if t in convs]
+        if since or until:                     # people and file matches keep to the dates too
+            inside = lambda t: (not since or t >= since) and (not until or t < until)
+            out = [x for x in out if any(inside(h["time"]) for h in x["hits"]) or (not x["hits"] and inside(x["last"]["time"]))]
         newest = lambda x: max([h["id"] for h in found[x["thread"]]["hits"]] or [x["last"]["id"]])
         out.sort(key=newest, reverse=True)
         return out[:limit]

@@ -122,6 +122,14 @@ const MANY = "@claude @codex @muse @chatgptguy @grokguy @claude-code-laptop @gem
         older: [...document.querySelectorAll(".morerow")].some((b) => /Show older/.test(b.textContent)) }));
       if (ag.jobs || !ag.rows || !ag.older) problems.push(`${name}/activity: Agents view ${JSON.stringify(ag)}`);
       await page.screenshot({ path: path.join(OUT, `heavy-${name}-activity-agents.png`), fullPage: name === "phone" });
+      // When: Today keeps only today's; Older (past 3 months) has nothing in this hub and says so
+      await page.selectOption(".whenpick", "today"); await page.waitForTimeout(1200);
+      const heads = await page.evaluate(() => [...document.querySelectorAll(".conv .secthead")].map((x) => x.textContent));
+      if (heads.some((x) => !/today/i.test(x))) problems.push(`${name}/when: Today shows ${heads.join(", ")}`);
+      await page.screenshot({ path: path.join(OUT, `heavy-${name}-activity-today.png`), fullPage: name === "phone" });
+      await page.selectOption(".whenpick", "older"); await page.waitForTimeout(1200);
+      if (!(await page.evaluate(() => /Nothing older/.test(document.querySelector(".conv").textContent)))) problems.push(`${name}/when: Older isn't empty`);
+      await page.selectOption(".whenpick", "any"); await page.waitForTimeout(800);
       // search: words from what was said, marked in the results
       await page.fill(".searchbox input", "captions"); await page.waitForTimeout(1500);
       const res = await page.evaluate(() => ({ rows: document.querySelectorAll(".conv .cell").length, marks: document.querySelectorAll(".conv mark").length,
