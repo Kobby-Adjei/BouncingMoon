@@ -206,6 +206,28 @@
 .conv .cell .t { font-weight: 560; }
 .conv .cell.unread .t { font-weight: 720; }
 .conv .cell.unread .preview { color: var(--ink); }
+/* pinned and muted conversations; the ⋯ menu in a conversation's header; a short "Pinned" note */
+.mutedmark { display: inline-flex; vertical-align: -2px; margin-right: 5px; color: var(--ink2); }
+.mutedmark svg { width: 14px; height: 14px; }
+.headright { display: flex; align-items: center; gap: 6px; flex: none; }
+.iconbtn { appearance: none; border: 0; background: transparent; color: var(--ink2); width: 44px; height: 44px; border-radius: 999px;
+  display: inline-grid; place-items: center; cursor: pointer; }
+.iconbtn:hover, .iconbtn[aria-expanded=true] { background: var(--fill); color: var(--ink); }
+.iconbtn svg { width: 22px; height: 22px; }
+.iconbtn[hidden] { display: none; }
+.popmenu { position: fixed; z-index: 60; min-width: 200px; padding: 6px; border-radius: 16px; background: var(--card);
+  box-shadow: 0 0 0 1px var(--line), 0 18px 40px -12px rgba(24, 23, 29, .28); transform-origin: top right;
+  animation: popin .16s var(--ease); }
+@keyframes popin { from { opacity: 0; transform: scale(.96) translateY(-4px); } }
+.popitem { appearance: none; border: 0; background: transparent; width: 100%; display: flex; align-items: center; gap: 12px;
+  min-height: 44px; padding: 0 12px; border-radius: 10px; font: inherit; font-size: 15px; color: var(--ink); cursor: pointer; text-align: left; }
+.popitem:hover, .popitem:focus-visible { background: var(--fill); outline: none; }
+.popitem svg { width: 20px; height: 20px; color: var(--ink2); flex: none; }
+.toast { position: fixed; z-index: 70; left: 50%; bottom: calc(96px + env(safe-area-inset-bottom)); transform: translate(-50%, 12px);
+  max-width: min(420px, calc(100vw - 32px)); padding: 11px 16px; border-radius: 999px; background: var(--ink); color: var(--bg);
+  font-size: 14px; line-height: 1.3; text-align: center; opacity: 0; pointer-events: none; transition: opacity .2s ease, transform .3s var(--ease); }
+.toast.show { opacity: 1; transform: translate(-50%, 0); }
+@media (prefers-reduced-motion: reduce) { .popmenu { animation: none; } .toast { transition: none; } }
 .newdot { display: inline-block; width: 8px; height: 8px; margin-right: 6px; border-radius: 50%; background: var(--accent); vertical-align: 1px;
   animation: pop .45s var(--spring) both; }
 /* under your newest message: Sent, then Read by claude · 3:29 */
@@ -671,6 +693,7 @@ pre.block.muted { color: var(--ink2); }
   .detail > .panehead .title { font-size: 15px; font-weight: 650; letter-spacing: -.015em; }
   .detail > .panehead .lede { font-size: 12px; margin-top: 1px; }
   .detail > .panehead .stackav .av { --s: 30px !important; }
+  .detail > .panehead .iconbtn { width: 36px; height: 36px; } .detail > .panehead .iconbtn svg { width: 20px; height: 20px; }
   .detail > .p-thread { padding-top: 12px; padding-bottom: 20px; }
   .detail .msg { max-width: 72%; }
   .detail .msg .bub { font-size: 14px; padding: 8px 12px; border-radius: 14px; }

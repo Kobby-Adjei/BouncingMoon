@@ -53,6 +53,9 @@ const ICONS = {
   reply: "M9.5 6.5L4.5 11.5l5 5M4.5 11.5h9.5a5.5 5.5 0 0 1 5.5 5.5v1",
   send: "M12 19V5M6 11l6-6 6 6",
   mail: "M4 6.5h16v11H4zM4.5 7l7.5 6 7.5-6",
+  pin: "M9 3.5h6M10 3.5v5.5l-3.5 4h11l-3.5-4V3.5M12 13v7.5",
+  muted: "M12 3a6 6 0 0 0-6 6v3.5L4.5 15h15L18 12.5V9a6 6 0 0 0-6-6zM9.5 18a2.5 2.5 0 0 0 5 0M3.5 3.5l17 17",
+  more: "M5.5 12h.01M12 12h.01M18.5 12h.01",
 };
 const icon = (name, sw) => svg("0 0 24 24", [{ d: ICONS[name], ...stroke, ...(sw ? { "stroke-width": sw } : {}) }]);
 const chev = () => svg("0 0 8 14", [{ d: "M1.5 1.5L6.5 7l-5 5.5", fill: "none", stroke: "currentColor", "stroke-width": "2", "stroke-linecap": "round", "stroke-linejoin": "round" }], "chev");
@@ -233,6 +236,38 @@ function linkup(p, name) {
   el.connect = () => orb.classList.add("sealed");
   el.disconnect = () => orb.classList.remove("sealed");
   return el;
+}
+
+// A short note at the bottom that something happened ("Pinned"), read out by screen readers, gone in a moment.
+function toast(text) {
+  let t = document.querySelector(".toast");
+  if (!t) { t = h("div", { class: "toast", role: "status", "aria-live": "polite" }); document.body.append(t); }
+  t.textContent = text; t.classList.remove("show"); void t.offsetWidth; t.classList.add("show");
+  clearTimeout(t._t); t._t = setTimeout(() => t.classList.remove("show"), 2600);
+}
+// A small menu under a button: picks are buttons; a tap outside, Escape or a pick closes it.
+function popMenu(btn, items) {
+  const open = document.querySelector(".popmenu");
+  if (open) { open._close(); if (open._for === btn) return; }
+  const m = h("div", { class: "popmenu", role: "menu" }, ...items.map((it) => h("button", { class: "popitem press", type: "button", role: "menuitem",
+    onclick: () => { close(); it.run(); } }, it.icon ? icon(it.icon) : null, h("span", { text: it.label }))));
+  const r = btn.getBoundingClientRect();
+  m.style.top = `${Math.round(r.bottom + 6)}px`;
+  m.style.right = `${Math.max(12, Math.round(innerWidth - r.right))}px`;
+  const away = (e) => { if (!m.contains(e.target) && e.target !== btn && !btn.contains(e.target)) close(); };
+  const esc = (e) => { if (e.key === "Escape") { close(); btn.focus(); } };
+  function close() {
+    (m._wrap || m).remove(); btn.setAttribute("aria-expanded", "false");
+    document.removeEventListener("pointerdown", away, true); document.removeEventListener("keydown", esc, true);
+    removeEventListener("hashchange", close);
+  }
+  m._close = close; m._for = btn;
+  const wrap = h("div", { role: "region", "aria-label": btn.getAttribute("aria-label") || "Options" }, m);
+  m._wrap = wrap;
+  document.body.append(wrap); btn.setAttribute("aria-expanded", "true");
+  document.addEventListener("pointerdown", away, true); document.addEventListener("keydown", esc, true);
+  addEventListener("hashchange", close);
+  const firstItem = m.querySelector("button"); if (firstItem) firstItem.focus({ preventScroll: true });
 }
 
 // ------------------------------------------------------------------ screens + navigation
@@ -2558,10 +2593,10 @@ async function activity() {
       const [convs, ags, asks, wants] = await Promise.all([api("GET", `/threads?limit=${Math.min(PAGE * pages, 200)}${whenQuery(when)}`), api("GET", "/agents"),
         ME.role === "human" ? api("GET", "/approvals").catch(() => []) : [], isOwner() ? api("GET", "/invite-requests").catch(() => []) : []]);
       if (mine !== asked || q.length >= 2) return;      // a search started while this was on its way
-      more = convs.length >= Math.min(PAGE * pages, 200);
+      more = convs.filter((c) => !c.pinned).length >= Math.min(PAGE * pages, 200);
       const by = Object.fromEntries(ags.map((a) => [a.handle, a]));
       const threads = new Map(convs.map((c) => [c.thread, { id: c.thread, msgs: [c.last], count: c.count, people: new Set(c.people),
-        first: c.first, unread: c.unread }]));
+        first: c.first, unread: c.unread && !c.muted, pinned: c.pinned, muted: c.muted }]));
       const oks = asks.map((r) => h("button", { class: "cell jobcell press", type: "button", "data-key": `approve/${r.id}`, onclick: () => nav(`approve/${r.id}`) },
         h("span", { class: "stackav" }, avatar(by[r.agent] || { handle: r.agent }, 44)),
         h("div", { class: "grow" }, h("div", { class: "t", text: `${r.agent} wants to ${VERB[r.method] || r.method}` }),
@@ -2573,7 +2608,7 @@ async function activity() {
           h("div", { class: "s one", text: (w.by ? `via ${w.by} · ` : "") + w.contact })),
         h("span", { class: "btn small", text: "Review" }))));
       needs.forEach((row, i) => { if (i) row.querySelector(".btn").classList.add("quiet"); });     // one solid button: the first
-      const sorted = [...threads.values()].sort((x, y) => y.msgs[y.msgs.length - 1].time - x.msgs[x.msgs.length - 1].time)
+      const sorted = [...threads.values()].sort((x, y) => (y.pinned - x.pinned) || y.msgs[y.msgs.length - 1].time - x.msgs[x.msgs.length - 1].time)
         // an agent's "asking you to OK" note on its own is the Review row, said twice: show it once
         .filter((t) => !(t.count === 1 && /^🔑 Asking /u.test(t.msgs[0].text || "")));
       // One thing in view at a time, not one endless scroll: what needs you, what's new, your own
@@ -2595,18 +2630,19 @@ async function activity() {
           // "claude: …" under a title that already says claude is the name twice
           const who = last.from === ME.handle ? "You: " : last.from === "relay" || (others.length === 1 && others[0] === last.from) ? "" : `${last.from}: `;
           const faces = (others.length ? others : ["relay"]).slice(0, 2).map((x) => avatar(by[x] || { handle: x }, others.length > 1 ? 38 : 46));
-          const sec = dayGroup(last.time);
+          const sec = t.pinned && filter !== "new" ? "Pinned" : dayGroup(last.time);
           if (sec !== section) { rows.push(secthead(sec)); section = sec; }
           // named after what it's about (the request that started it), with who's in it under that
           const about = t.first && t.first.from !== "relay" ? topic(t.first.text) : "";
           const title = about || names(others) || "Relay";
           const line = about ? `${names(others)}${t.count > 1 ? " · " + who + gist(last.text) : ""}` : who + gist(last.text);
           rows.push(h("button", { class: "cell press" + (t.unread ? " unread" : ""), type: "button", "data-key": `activity/${t.id}`,
-              "aria-label": t.unread ? `${title}, new` : null, onclick: () => nav(`activity/${t.id}`, { data: others }) },
+              "aria-label": [title, t.pinned ? "pinned" : "", t.muted ? "muted" : "", t.unread ? "new" : ""].filter(Boolean).join(", "), onclick: () => nav(`activity/${t.id}`, { data: others }) },
             h("span", { class: "stackav" }, ...faces),
             h("div", { class: "grow" },
               h("div", { class: "spread", style: "gap:8px" }, h("div", { class: "t one", text: title, title: others.join(", ") }),
-                h("span", { class: "when tnum" }, t.unread ? h("span", { class: "newdot", "aria-hidden": "true" }) : null, whenShort(last.time))),
+                h("span", { class: "when tnum" }, t.unread ? h("span", { class: "newdot", "aria-hidden": "true" }) : null,
+                  t.muted ? h("span", { class: "mutedmark", title: "Muted" }, icon("muted")) : null, whenShort(last.time))),
               h("div", { class: "s preview", text: line }))));
         }
       }
@@ -2869,6 +2905,7 @@ async function thread(id, people) {
       }
       if (!threadId && view.isConnected && route.startsWith("activity/to/")) setRoute(`activity/${m.thread}`, people);
       threadId = m.thread; input.value = ""; input.style.height = "auto"; justSent = true; refresh();
+      moreBtn.hidden = ME.role !== "human";
       if (listRefresh && listPane.dataset.tab === "activity") listRefresh();
     } catch (x) { alert(x.message); }
     send.disabled = false; input.focus(); paintPick(); paintGoes();
@@ -2876,10 +2913,25 @@ async function thread(id, people) {
   const by = {};
   const faces = h("span", { class: "stackav" });
   const title = names(people) || "Conversation";
-  const top = head(title, canPost ? null : "Sign in as yourself to reply.", faces);
+  // ⋯ : pin it to the top of Activity, or mute it. Only for people, once the conversation exists.
+  const moreBtn = h("button", { class: "iconbtn press", type: "button", "aria-label": "Conversation options", "aria-haspopup": "menu",
+    "aria-expanded": "false", hidden: "" }, icon("more", "3"));
+  moreBtn.addEventListener("click", async () => {
+    let st;
+    try { st = await api("PUT", `/threads/${threadId}/mark`, {}); } catch (x) { return alert(x.message); }
+    const set = async (body, said) => {
+      try { await api("PUT", `/threads/${threadId}/mark`, body); toast(said); if (listRefresh) listRefresh(); } catch (x) { alert(x.message); }
+    };
+    popMenu(moreBtn, [
+      { icon: "pin", label: st.pinned ? "Unpin" : "Pin to top", run: () => set({ pinned: !st.pinned }, st.pinned ? "Unpinned" : "Pinned to the top of Activity") },
+      { icon: "muted", label: st.muted ? "Unmute" : "Mute", run: () => set({ muted: !st.muted }, st.muted ? "Unmuted" : "Muted. No notifications from it; requests for your OK still reach you.") },
+    ]);
+  });
+  const top = head(title, canPost ? null : "Sign in as yourself to reply.", h("div", { class: "headright" }, faces, moreBtn));
   const h1 = top.querySelector(".title");          // a long title gets two lines at most, a size down
   if (h1) { h1.classList.add("clamp2"); if (title.length > 22) h1.classList.add("longtitle"); h1.title = people.join(", "); }
   const view = screen("thread", tk, top, list);
+  moreBtn.hidden = !(threadId && ME.role === "human");
   if (WIDE && view.isConnected) { top.classList.add("panehead"); detailPane.prepend(top); }   // a toolbar above the scrolling messages
   if (composer && view.isConnected) (WIDE ? detailPane : app).append(composer);    // phone: outside the sliding page, so "fixed" means the window
   try { for (const a of await api("GET", "/agents")) by[a.handle] = a; } catch {}

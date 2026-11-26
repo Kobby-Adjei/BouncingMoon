@@ -218,3 +218,41 @@ def test_conversations_and_search_narrow_by_date(hub):
     assert before == [old["thread"]]
     assert [x["thread"] for x in c.get(f"/search?q=launch&since={day}", headers=H(t["kobby"])).json()] == [new["thread"]]
     assert [x["thread"] for x in c.get(f"/search?q=launch&until={day}", headers=H(t["kobby"])).json()] == [old["thread"]]
+
+
+def test_a_pinned_conversation_stays_on_top_and_a_muted_one_stops_nagging(hub):
+    c, app, _, t = hub
+    old = say(c, t["kobby"], "@codex the old one", to=["codex"])
+    for i in range(5):
+        say(c, t["kobby"], f"@claude job {i}", to=["claude"])
+    r = c.put(f"/threads/{old['thread']}/mark", headers=H(t["kobby"]), json={"pinned": True})
+    assert r.json() == {"thread": old["thread"], "pinned": True, "muted": False}
+    first = talk(c.get("/threads?limit=3", headers=H(t["kobby"])).json())
+    assert first[0]["thread"] == old["thread"] and first[0]["pinned"] and len(first) == 4      # pinned, then a page
+    nxt = c.get(f"/threads?limit=3&before={first[-1]['last']['id']}", headers=H(t["kobby"])).json()
+    assert old["thread"] not in [x["thread"] for x in nxt]                                     # never twice
+    assert not any(x["pinned"] for x in c.get("/threads", headers=H(t["ama"])).json())        # only yours
+    # muted: a new answer there isn't counted as something new for the daily email, and doesn't buzz
+    say(c, t["codex"], "done", reply_to=old["id"])
+    with app.state.store.ro() as db:
+        before = db.execute("SELECT COUNT(*) FROM marks").fetchone()[0]
+    c.put(f"/threads/{old['thread']}/mark", headers=H(t["kobby"]), json={"muted": True})
+    row = next(x for x in c.get("/threads", headers=H(t["kobby"])).json() if x["thread"] == old["thread"])
+    assert row["muted"] and row["pinned"]
+    # unpin and unmute: nothing left stored
+    c.put(f"/threads/{old['thread']}/mark", headers=H(t["kobby"]), json={"pinned": False, "muted": False})
+    with app.state.store.ro() as db:
+        assert before == 1 and db.execute("SELECT COUNT(*) FROM marks").fetchone()[0] == 0
+
+
+def test_only_people_mark_only_conversations_they_can_see_and_pins_are_capped(hub):
+    c, _, _, t = hub
+    mine = say(c, t["kobby"], "@claude private", to=["claude"])
+    assert c.put(f"/threads/{mine['thread']}/mark", headers=H(t["ama"]), json={"pinned": True}).status_code == 404
+    assert c.put(f"/threads/{mine['thread']}/mark", headers=H(t["claude"]), json={"pinned": True}).status_code == 403
+    assert c.put("/threads/99999/mark", headers=H(t["kobby"]), json={"pinned": True}).status_code == 404
+    for i in range(10):
+        th = say(c, t["kobby"], f"@claude {i}", to=["claude"])["thread"]
+        assert c.put(f"/threads/{th}/mark", headers=H(t["kobby"]), json={"pinned": True}).status_code == 200
+    r = c.put(f"/threads/{mine['thread']}/mark", headers=H(t["kobby"]), json={"pinned": True})
+    assert r.status_code == 429 and "Unpin one" in r.json()["detail"]

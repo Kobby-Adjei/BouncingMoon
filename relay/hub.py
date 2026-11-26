@@ -74,6 +74,9 @@ CREATE TABLE IF NOT EXISTS shortcuts(id TEXT PRIMARY KEY, handle TEXT NOT NULL, 
 -- a person's small settings (the daily email on or off, when it last went)
 CREATE TABLE IF NOT EXISTS prefs(handle TEXT NOT NULL, key TEXT NOT NULL, value TEXT, PRIMARY KEY(handle, key));
 CREATE TABLE IF NOT EXISTS seen(handle TEXT NOT NULL, thread INTEGER NOT NULL, last INTEGER NOT NULL, PRIMARY KEY(handle, thread));
+-- a person's pinned conversations (kept on top) and muted ones (no notifications, not counted as new)
+CREATE TABLE IF NOT EXISTS marks(handle TEXT NOT NULL, thread INTEGER NOT NULL, pinned REAL, muted INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY(handle, thread));
 CREATE INDEX IF NOT EXISTS messages_channel ON messages(channel);
 CREATE TABLE IF NOT EXISTS subs(agent TEXT, channel TEXT, PRIMARY KEY(agent, channel));
 CREATE TABLE IF NOT EXISTS follows(agent TEXT, thread INTEGER, PRIMARY KEY(agent, thread));
@@ -425,6 +428,11 @@ class ShortcutIn(BaseModel):
     title: str = Field(default="", max_length=80)
     text: str = Field(min_length=1, max_length=4000)
     mentions: List[str] = Field(default_factory=list, max_length=20)
+
+
+class MarkIn(BaseModel):
+    pinned: Optional[bool] = None
+    muted: Optional[bool] = None
 
 
 class PrefsIn(BaseModel):
@@ -824,7 +832,8 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
                     "SELECT m.agent FROM members m JOIN agents a ON a.handle=m.agent WHERE m.thread=? AND a.role='human'", (thread,))}
                 people_in |= {m for m in mentions if (c.execute("SELECT role FROM agents WHERE handle=?", (m,)).fetchone() or {"role": ""})["role"] == "human"}
                 line = next((l.strip() for l in text.splitlines() if l.strip()), "")
-                for person in people_in - {sender}:
+                quiet = {r["handle"] for r in c.execute("SELECT handle FROM marks WHERE thread=? AND muted=1", (thread,))}
+                for person in people_in - {sender} - quiet:
                     pusher.notify(person, "answers", f"{sender} answered", line[:200] or "A new message",
                                   f"/app#activity/{thread}", tag=f"t{thread}")
         for m in {sender, *mentions} - {SYSTEM}:
@@ -1607,6 +1616,10 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
             only, more = visible(c, me["handle"])
             q = f"SELECT t.thread, t.n, m.* FROM convs t JOIN messages m ON m.id=t.last WHERE {only}"
             a = list(more)
+            marks = {r["thread"]: r for r in c.execute("SELECT * FROM marks WHERE handle=?", (me["handle"],))}
+            pins = sorted((t for t, r in marks.items() if r["pinned"]), key=lambda t: marks[t]["pinned"])
+            if pins:                           # pinned ones come first, on the first page only, and never twice
+                q += f" AND t.thread NOT IN ({','.join('?' * len(pins))})"; a += pins
             if before:
                 q += " AND t.last<?"; a.append(before)
             if with_:                          # only conversations this agent or person has been in
@@ -1616,6 +1629,10 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
             if until:                          # ...and before this one
                 q += " AND m.time<?"; a.append(until)
             rows = c.execute(q + " ORDER BY t.last DESC LIMIT ?", a + [limit]).fetchall()
+            if pins and not before:
+                pq = q.replace(f" AND t.thread NOT IN ({','.join('?' * len(pins))})", f" AND t.thread IN ({','.join('?' * len(pins))})", 1)
+                top = {r["thread"]: r for r in c.execute(pq, a)}
+                rows = [top[t] for t in pins if t in top] + rows
             ids = [r["thread"] for r in rows]
             people: dict = {}
             first: dict = {}
@@ -1635,7 +1652,39 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
                 return False                     # the newest is yours, or the hub's own note ("ama joined")
             return r["id"] > seen.get(r["thread"], floor)
         return [{"thread": r["thread"], "count": r["n"], "people": people.get(r["thread"], []), "last": msg_out(r),
-                 "first": first.get(r["thread"]), "unread": unread(r)} for r in rows]
+                 "first": first.get(r["thread"]), "unread": unread(r),
+                 "pinned": bool(r["thread"] in marks and marks[r["thread"]]["pinned"]),
+                 "muted": bool(r["thread"] in marks and marks[r["thread"]]["muted"])} for r in rows]
+
+    PINS_EACH = 10
+
+    @app.put("/threads/{thread}/mark")
+    def mark_thread(thread: int, body: MarkIn, me: dict = Depends(auth)):
+        """Pin a conversation to the top of your list, or mute it: no notifications, not counted as new.
+        Only for you; nobody else sees it."""
+        if me["role"] != "human":
+            raise HTTPException(403, "Pinning and muting are for people.")
+        h = me["handle"]
+        with store.tx() as c:
+            if not c.execute("SELECT 1 FROM convs WHERE thread=?", (thread,)).fetchone() or not can_see(c, h, thread):
+                raise HTTPException(404, "no such conversation")
+            r = c.execute("SELECT * FROM marks WHERE handle=? AND thread=?", (h, thread)).fetchone()
+            pinned, muted = (r["pinned"], r["muted"]) if r else (None, 0)
+            if body.pinned is not None:
+                if body.pinned and not pinned:
+                    if c.execute("SELECT COUNT(*) FROM marks WHERE handle=? AND pinned IS NOT NULL", (h,)).fetchone()[0] >= PINS_EACH:
+                        raise HTTPException(429, f"You can pin {PINS_EACH} conversations. Unpin one first.")
+                    pinned = _now()
+                elif not body.pinned:
+                    pinned = None
+            if body.muted is not None:
+                muted = 1 if body.muted else 0
+            if pinned is None and not muted:
+                c.execute("DELETE FROM marks WHERE handle=? AND thread=?", (h, thread))
+            else:
+                c.execute("INSERT INTO marks(handle,thread,pinned,muted) VALUES (?,?,?,?) ON CONFLICT(handle,thread)"
+                          " DO UPDATE SET pinned=excluded.pinned, muted=excluded.muted", (h, thread, pinned, muted))
+        return {"thread": thread, "pinned": pinned is not None, "muted": bool(muted)}
 
     # ---------------------------------------------------------------- shortcuts: a hand-off again, in one tap
     SHORTCUTS_EACH = 30
@@ -1928,7 +1977,11 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
             with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
                 z.writestr("README.txt", EXPORT_NOTE)
                 z.writestr("me.json", json.dumps({"name": h, "owner": bool(row["owner"]), "joined": row["created"],
-                                                  "last_seen": row["last_seen"], "email": email["email"] if email else None}, indent=2))
+                                                  "last_seen": row["last_seen"], "email": email["email"] if email else None,
+                                                  "pinned_conversations": [r["thread"] for r in c.execute(
+                                                      "SELECT thread FROM marks WHERE handle=? AND pinned IS NOT NULL ORDER BY pinned", (h,))],
+                                                  "muted_conversations": [r["thread"] for r in c.execute(
+                                                      "SELECT thread FROM marks WHERE handle=? AND muted=1", (h,))]}, indent=2))
                 z.writestr("agents.json", json.dumps(agents_out, indent=2))
                 for t in threads_:
                     msgs = [msg_out(r) for r in c.execute("SELECT * FROM messages WHERE thread=? ORDER BY id LIMIT 20000", (t,))]
@@ -1992,7 +2045,7 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
                                ("session_cursors", "handle"), ("delivered", "handle"), ("passkeys", "handle"),
                                ("oauth_tokens", "handle"), ("oauth_codes", "handle"), ("webauthn_challenges", "handle"),
                                ("push_subs", "handle"), ("reads", "handle"), ("seen", "handle"), ("shortcuts", "handle"),
-                               ("prefs", "handle"),
+                               ("prefs", "handle"), ("marks", "handle"),
                                ("agents", "handle")):
                 c.execute(f"DELETE FROM {table} WHERE {col} IN ({q})", hs)
             for table in ("oauth_tokens", "oauth_codes"):
@@ -2378,7 +2431,9 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
         return c.execute(
             "SELECT COUNT(*) FROM convs t JOIN messages m ON m.id=t.last JOIN members mb ON mb.thread=t.thread AND mb.agent=?"
             " LEFT JOIN seen s ON s.handle=? AND s.thread=t.thread"
-            " WHERE m.sender NOT IN (?, ?) AND m.id > COALESCE(s.last, ?)", (h, h, h, SYSTEM, floor)).fetchone()[0]
+            " WHERE m.sender NOT IN (?, ?) AND m.id > COALESCE(s.last, ?)"
+            " AND NOT EXISTS (SELECT 1 FROM marks k WHERE k.handle=? AND k.thread=t.thread AND k.muted=1)",
+            (h, h, h, SYSTEM, floor, h)).fetchone()[0]
 
     def digest_lines(h: str) -> list:
         lines = []
