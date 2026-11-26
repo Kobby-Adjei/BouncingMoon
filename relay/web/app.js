@@ -1232,7 +1232,9 @@ function addPick() {
     appAvatar(a, 52), h("span", { text: a.label }), h("span", { class: "sub", text: a.sub }));
   const groups = ADD_GROUPS.map(([title, lede, ids]) => {
     const apps = ids.map((id) => APPS.find((a) => a.id === id)).filter((a) => isOwner() || a.style === "allow");
-    return h("section", { class: "addgroup" }, h("h2", { class: "label", text: title }), h("p", { class: "hint", text: lede }),
+    // Codex needs a setup key only the owner makes: someone else's list says what's actually in it
+    const said = !isOwner() && ids.includes("codex") ? "Claude Code can answer on its own." : lede;
+    return h("section", { class: "addgroup" }, h("h2", { class: "label", text: title }), h("p", { class: "hint", text: said }),
       h("div", { class: "pick stagger" }, ...apps.map(opt)));
   });
   const person = isOwner() ? h("button", { class: "door press", type: "button", onclick: () => nav("add/person") },
@@ -2751,7 +2753,7 @@ async function activity() {
     markSelected();
   }
   // It grows without end, so it comes a page at a time: the newest conversations, then "Show older".
-  let pages = 1, more = false, filter = null;
+  let pages = 1, more = false, filter = null, roomy = false;
   const PAGE = 40;
   async function refresh() {
     if (q.length >= 2) return;              // searching: the list is the results until the box is cleared
@@ -2786,12 +2788,16 @@ async function activity() {
       const sets = { all: sorted, needs, new: sorted.filter((t) => t.unread), agents: sorted.filter((t) => !isMine(t)) };
       // picked once per visit (what needs you if anything does, else everything), then it stays put while you read
       if (!filter) filter = needs.length ? "needs" : "all";
+      // a few conversations need no filters: one list, what needs you on top. The tools come as it fills up.
+      // counted on the whole of Activity (not a date-filtered view of it), and once shown they stay for this visit
+      if (when === "any" && sorted.length + needs.length >= 6) roomy = true;
+      if (!roomy) filter = "all";
       const FILTERS = [["all", "All", 0], ["needs", "Needs you", needs.length], ["new", "New", sets.new.length], ["agents", "Agent chats", 0]];
       chips.replaceChildren(...FILTERS.map(([id, label, n]) => h("button", { class: "fchip press", type: "button", "aria-pressed": String(filter === id),
           onclick: () => { filter = id; first = true; refresh(); } },
         h("span", { text: label }), n ? h("span", { class: "fcount" + (id === "needs" ? " sun" : ""), text: n > 99 ? "99+" : String(n) }) : null)));
       const rows = [];
-      find.classList.toggle("nowhen", filter === "needs");          // what waits for you has no "when"
+      find.classList.toggle("nowhen", filter === "needs" || (sorted.length < 10 && when === "any"));   // "when" once there's history
       if (filter === "needs") rows.push(...needs);
       else {
         if (filter === "all" && needs.length) rows.push(secthead("Needs you"), ...needs);
@@ -2819,7 +2825,7 @@ async function activity() {
         }
       }
       const anything = needs.length || sorted.length;
-      chips.hidden = !anything;
+      chips.hidden = !roomy;
       if (when !== "any" && filter !== "needs" && !rows.length) rows.push(h("div", { class: "fempty" }, h("span", { text: `Nothing ${NOTHING_WHEN[when]}.` }),
         h("button", { class: "inline press", type: "button", onclick: () => setWhen("any") }, "Show any time")));
       else if (anything && !rows.length) rows.push(h("div", { class: "fempty", text: {
@@ -2829,7 +2835,7 @@ async function activity() {
         e.currentTarget.disabled = true; pages++; refresh(); } }, "Show older conversations", chev()));
       if (filter === "all" && shelved.length) rows.push(h("button", { class: "morerow press", type: "button", onclick: () => nav("activity/archived") },
         icon("archive"), "Archived conversations", chev()));
-      find.hidden = !anything;                        // nothing to search yet: no box
+      find.hidden = !roomy && !q;                     // a handful you can see at a glance: no box yet
       if (rows.length) {
         if (!list.isConnected) view.querySelector(".blank").replaceWith(list);
         list.replaceChildren(...rows);
@@ -3166,7 +3172,9 @@ async function thread(id, people) {
     // a long message folds: the conversation stays readable, the whole thing is one tap away
     const long = text.length > 700 || text.split("\n").length > 14;
     const more = long ? h("button", { class: "more press", type: "button", "aria-expanded": "false" }) : null;
-    const keep = !(m.id === threadId && mine && ME.role === "human") ? null : kept.has(m.id)
+    // worth keeping: a real request, not "hi" or a two-word hello
+    const worth = !/^(hi|hello|hey|yo|hiya|good (morning|afternoon|evening))\b/i.test(text.trim()) && text.trim().split(/\s+/).length >= 4;
+    const keep = !(m.id === threadId && mine && ME.role === "human" && worth) ? null : kept.has(m.id)
       ? h("span", { class: "more saved", text: "Saved · it's in New message" }) : h("button", { class: "more press savesc", type: "button" }, "Save as shortcut");
     if (keep && keep.tagName === "BUTTON") keep.addEventListener("click", async () => {
       const title = prompt("Name this shortcut", topic(text));
