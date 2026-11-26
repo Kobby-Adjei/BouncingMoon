@@ -14,3 +14,7 @@ relay-data/
 relay-demo-out/
 admin_token
 relay.db*
+
+# screen tours write their screenshots here
+relay-screens/
+relay-firstrun/
