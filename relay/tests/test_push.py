@@ -279,3 +279,77 @@ def test_a_pass_stops_working_when_its_device_is_turned_off_or_the_request_is_an
     act2 = [phone.read(s["body"]) for s in sent(app, svc)][-1]["act"]
     assert c.post(f"/approvals/{cid2}/decline", headers=H(t["kobby"])).status_code == 200   # answered in the app
     assert c.post("/push/act", json={"t": act2, "ok": True}).status_code == 409
+
+
+def session_of(c, tok):
+    """A signed-in session for this person (as the app holds after a passkey or email sign-in)."""
+    code = c.post("/auth/handoff", headers=H(tok)).json()["code"]
+    return c.post("/auth/handoff/claim", json={"code": code}).json()["token"]
+
+
+def test_a_device_whose_sign_in_ended_gets_no_more_passes_or_notifications(hub):
+    c, app, svc, t = hub
+    sess = session_of(c, t["kobby"])
+    stray = Phone("https://updates.push.services.mozilla.com/wpush/v2/stray")
+    on(c, sess, stray, kinds=["approvals"])                      # someone held this session for a moment
+    assert [d["this"] for d in c.get("/push/devices", headers=H(sess)).json()] == [True]
+    c.post("/auth/signout", headers=H(sess))                     # signed out: that device is let go
+    ask_for_ok(c, t)
+    assert [s for s in sent(app, svc) if s["url"] == stray.endpoint] == []
+    with app.state.store.ro() as db:
+        assert db.execute("SELECT COUNT(*) FROM push_subs WHERE endpoint=?", (stray.endpoint,)).fetchone()[0] == 0
+
+
+def test_a_session_that_simply_expires_takes_its_device_and_its_passes_with_it(hub):
+    c, app, svc, t = hub
+    sess = session_of(c, t["kobby"])
+    phone = Phone()
+    on(c, sess, phone)
+    ask_for_ok(c, t)
+    act = next(phone.read(s["body"]) for s in sent(app, svc) if "approve" in phone.read(s["body"])["url"]).get("act")
+    assert act
+    with app.state.store.tx() as db:                               # the session ends without a sign-out
+        db.execute("DELETE FROM sessions")
+    assert c.post("/push/act", json={"t": act, "ok": True}).status_code == 410
+
+
+def test_any_device_of_yours_can_be_removed_from_the_list(hub):
+    c, app, svc, t = hub
+    on(c, t["kobby"], Phone())
+    on(c, t["kobby"], Phone("https://web.push.apple.com/lost-phone"))
+    devs = c.get("/push/devices", headers=H(t["kobby"])).json()
+    assert len(devs) == 2 and all("endpoint" not in d for d in devs)
+    assert c.get("/push/devices", headers=H(t["ama"])).json() == []                     # only your own
+    assert c.post("/push/devices/remove", headers=H(t["ama"]), json={"endpoint": "dev_" + devs[1]["id"]}).json() == {"removed": False}
+    assert c.post("/push/devices/remove", headers=H(t["kobby"]), json={"endpoint": "dev_" + devs[1]["id"]}).json() == {"removed": True}
+    assert len(c.get("/push/devices", headers=H(t["kobby"])).json()) == 1
+
+
+def test_the_notification_shows_the_exact_address_and_buttons_only_when_it_shows_everything(hub):
+    c, app, svc, t = hub
+    phone = Phone()
+    on(c, t["kobby"], phone)
+    c.post("/keys", headers=H(t["kobby"]), json={"name": "gmail", "hosts": ["gmail.googleapis.com"], "secret": "ya29-not-real"})
+    c.post("/keys", headers=H(t["kobby"]), json={"name": "stripe", "hosts": ["api.stripe.com"], "secret": "sk_not_real"})
+
+    def call(key, method, url, body):
+        c.post("/mcp", headers=H(t["claude"], "chat-1"), json={"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {
+            "name": "call_api", "arguments": {"key": key, "method": method, "url": url, "json": body, "why": "x"}}})
+        return [phone.read(s["body"]) for s in sent(app, svc)][-1]
+    g = call("gmail", "DELETE", "https://gmail.googleapis.com/gmail/v1/users/me/messages/1", None)
+    assert g["title"] == "claude wants to delete on gmail.googleapis.com" and "DELETE gmail.googleapis.com/gmail" in g["body"]
+    assert "act" not in g and "Tap to review" in g["body"]                                    # deleting: open Relay
+    s = call("stripe", "POST", "https://api.stripe.com/v1/transfers", {"description": "Refresh the report (read-only)\n\n\n\n.", "amount": 5000000})
+    assert "\n\n" not in s["body"] and "POST api.stripe.com/v1/transfers" in s["body"] and "act" not in s     # more than it shows
+
+
+def test_approving_from_the_notification_tells_the_agent(hub):
+    c, app, svc, t = hub
+    phone = Phone()
+    on(c, t["kobby"], phone)
+    cid = ask_for_ok(c, t)
+    act = next(phone.read(s["body"]) for s in sent(app, svc) if "approve" in phone.read(s["body"])["url"])["act"]
+    assert c.post("/push/act", json={"t": act, "ok": False}).status_code == 200
+    got = c.post("/mcp", headers=H(t["claude"], "chat-1"), json={"jsonrpc": "2.0", "id": 2, "method": "tools/call",
+                 "params": {"name": "check_replies", "arguments": {}}}).json()["result"]["structuredContent"]["messages"]
+    assert any(m["text"].startswith("✋") for m in got)

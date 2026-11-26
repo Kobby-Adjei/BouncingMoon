@@ -41,7 +41,7 @@ import urllib.request
 import uuid
 import zipfile
 from contextlib import asynccontextmanager, contextmanager
-from typing import Any, List, Optional
+from typing import Annotated, Any, List, Optional
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
 from fastapi.responses import FileResponse, Response, StreamingResponse
@@ -509,7 +509,7 @@ class MessageIn(BaseModel):
     artifacts: list[str] = Field(default_factory=list, max_length=10)
     media: list[str] = Field(default_factory=list, max_length=10)
     idem: Optional[str] = None
-    options: list[str] = Field(default_factory=list, max_length=6)   # quick answers the reader can tap
+    options: list[Annotated[str, Field(max_length=200)]] = Field(default_factory=list, max_length=6)   # quick answers to tap
 
 
 class AckIn(BaseModel):
@@ -698,7 +698,7 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
                 if sess_stale:
                     c.execute("UPDATE sessions SET last_used=? WHERE token_hash=?", (now, th))
         return {"handle": r["handle"], "role": r["role"], "caps": _loads(r["caps"], []),
-                "owner": bool(r["owner"])}
+                "owner": bool(r["owner"]), "cred": th}
 
     def need_agent(me: dict) -> None:
         if me["role"] == "admin":
@@ -1237,9 +1237,8 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
         h = need_person(me)
         if not body.keys:
             raise HTTPException(400, "send the subscription's keys (p256dh and auth)")
-        kinds = body.kinds if body.kinds is not None else list(push_mod.KINDS)
-        try:
-            return pusher.subscribe(h, body.endpoint, body.keys.p256dh, body.keys.auth, kinds, body.label)
+        try:       # tied to this sign-in: when it ends (sign out, revoked, expired), the device gets nothing more
+            return pusher.subscribe(h, body.endpoint, body.keys.p256dh, body.keys.auth, body.kinds, body.label, cred=me.get("cred"))
         except ValueError as e:
             raise HTTPException(400, str(e)) from None
 
@@ -1255,9 +1254,45 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
             raise HTTPException(404, "This device isn't set up for notifications.")
         return got
 
+    def device_id(endpoint: str) -> str:
+        return hashlib.sha256(endpoint.encode()).hexdigest()[:16]
+
+    @app.get("/push/devices")
+    def push_devices(me: dict = Depends(auth)):
+        """Every device of yours that gets notifications, by name, so one you no longer have can be removed."""
+        h = need_person(me)
+        with store.ro() as c:
+            return [{"id": device_id(r["endpoint"]), "label": r["label"] or "A device", "kinds": _loads(r["kinds"], []),
+                     "added": r["created"], "last_ok": r["last_ok"], "this": r["cred"] == me.get("cred")}
+                    for r in c.execute("SELECT * FROM push_subs WHERE handle=? ORDER BY created", (h,))]
+
     @app.post("/push/devices/remove")
     def push_unsubscribe(body: PushDeviceIn, me: dict = Depends(auth)):
-        return {"removed": pusher.unsubscribe(need_person(me), body.endpoint)}
+        """A device by its endpoint (this browser) or by its id from the list (any device of yours)."""
+        h = need_person(me)
+        if body.endpoint.startswith("dev_"):
+            with store.tx() as c:
+                for r in c.execute("SELECT endpoint FROM push_subs WHERE handle=?", (h,)).fetchall():
+                    if "dev_" + device_id(r["endpoint"]) == body.endpoint:
+                        c.execute("DELETE FROM push_subs WHERE endpoint=?", (r["endpoint"],))
+                        c.execute("DELETE FROM push_actions WHERE endpoint=?", (r["endpoint"],))
+                        return {"removed": True}
+            return {"removed": False}
+        return {"removed": pusher.unsubscribe(h, body.endpoint)}
+
+    def cred_alive(c, handle: str, cred: Optional[str]) -> bool:
+        """Is this sign-in (by its hash) still good for this person: an unexpired session, or their own key?"""
+        if not cred:
+            return False
+        now = _now()
+        return bool(c.execute("SELECT 1 FROM sessions WHERE token_hash=? AND handle=? AND expires>?", (cred, handle, now)).fetchone()
+                    or c.execute("SELECT 1 FROM agents WHERE token_hash=? AND handle=?", (cred, handle)).fetchone()
+                    or c.execute("SELECT 1 FROM agent_keys WHERE token_hash=? AND handle=?", (cred, handle)).fetchone())
+
+    def device_alive(sub: dict) -> bool:
+        with store.ro() as c:
+            return cred_alive(c, sub["handle"], sub.get("cred"))
+    pusher.alive = device_alive
 
     @app.post("/push/test")
     def push_test(me: dict = Depends(auth)):
@@ -1725,7 +1760,7 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
             # ...or, muted as well, until someone mentions you there (a chatty agents' conversation stays put)
             shelf = (" EXISTS (SELECT 1 FROM marks k WHERE k.handle=? AND k.thread=t.thread AND k.archived IS NOT NULL AND"
                      " (k.archived >= m.time OR (k.muted=1 AND NOT EXISTS (SELECT 1 FROM messages x WHERE x.thread=t.thread"
-                     " AND x.time > k.archived AND x.mentions LIKE '%\"' || k.handle || '\"%'))))")
+                     " AND x.time > k.archived AND EXISTS (SELECT 1 FROM json_each(x.mentions) j WHERE j.value=k.handle)))))")
             q += (" AND" if archived else " AND NOT") + shelf; a.append(me["handle"])
             pins = [] if archived else sorted((t for t, r in marks.items() if r["pinned"]), key=lambda t: marks[t]["pinned"])
             if pins:                           # pinned ones come first, on the first page only, and never twice
@@ -1798,7 +1833,9 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
         with store.ro() as c:
             sql, a = visible(c, h)
             last = c.execute(f"SELECT MAX(t.last) FROM convs t JOIN messages m ON m.id=t.last WHERE {sql}", a).fetchone()[0] or 0
-            reads = c.execute("SELECT MAX(rowid) FROM reads").fetchone()[0] or 0
+            mine = circle(c, h) if h != "admin" else []
+            reads = c.execute(f"SELECT MAX(r.rowid) FROM reads r JOIN messages m ON m.id=r.msg WHERE m.sender IN ({','.join('?' * len(mine)) or "''"})",
+                              mine).fetchone()[0] or 0
             marks = c.execute("SELECT COUNT(*), COALESCE(SUM(pinned), 0), COALESCE(SUM(muted), 0), COALESCE(SUM(archived), 0) FROM marks WHERE handle=?",
                               (h,)).fetchone()
             owner = first_owner(c) == h
@@ -1859,7 +1896,8 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
             pinned, muted, shelved = (r["pinned"], r["muted"], r["archived"]) if r else (None, 0, None)
             last_time = c.execute("SELECT m.time FROM convs t JOIN messages m ON m.id=t.last WHERE t.thread=?", (thread,)).fetchone()["time"]
             if shelved is not None and shelved < last_time and not (muted and not c.execute(
-                    "SELECT 1 FROM messages WHERE thread=? AND time>? AND mentions LIKE ?", (thread, shelved, f'%"{h}"%')).fetchone()):
+                    "SELECT 1 FROM messages x WHERE thread=? AND time>? AND EXISTS (SELECT 1 FROM json_each(x.mentions) j WHERE j.value=?)",
+                    (thread, shelved, h)).fetchone()):
                 shelved = None                   # something new was said since (muted: someone mentioned you): it's back
             if body.pinned is not None:
                 if body.pinned and not pinned:
@@ -2348,11 +2386,17 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
     STARTED = time.time()
 
     def site_of(url: str) -> str:
-        host = (urllib.parse.urlsplit(url).hostname or url).lower()
-        for name, hosts in (("Instagram", ("instagram.com", "facebook.com")), ("YouTube", ("youtube.com", "googleapis.com")),
-                            ("TikTok", ("tiktok.com", "tiktokapis.com")), ("X", ("x.com", "twitter.com"))):
-            if any(host == x or host.endswith("." + x) for x in hosts):
-                return name
+        """A website's name, only when the address says exactly which one; otherwise the address itself."""
+        u = urllib.parse.urlsplit(url)
+        host, path = (u.hostname or url).lower(), u.path or ""
+        if host in ("graph.facebook.com", "graph.instagram.com"):
+            return "Instagram"
+        if host == "youtube.googleapis.com" or (host == "www.googleapis.com" and re.match(r"^/(upload/)?youtube/", path)):
+            return "YouTube"
+        if host == "open.tiktokapis.com":
+            return "TikTok"
+        if host in ("api.x.com", "api.twitter.com"):
+            return "X"
         return host
 
     def health_for(h: str) -> list:
@@ -2749,28 +2793,50 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
 
     ACT_SECONDS = 6 * 3600                       # how long Approve / Decline on a notification works
 
-    def said_of(call: dict) -> Optional[str]:
-        """The words a request carries (a caption, a message), for a person to read before saying yes."""
+    SAID = ("caption", "text", "message", "title", "description")
+    MEDIA = {"image_url", "video_url", "media_url", "media_type", "url", "link"}
+
+    def fields_of(call: dict) -> Optional[dict]:
+        """Everything a request sends, from its body and its address; None when the body isn't plain fields."""
         try:
             body = json.loads(call["body"]) if call.get("body") else {}
         except ValueError:
             return None
         if not isinstance(body, dict):
             return None
-        return next((body[k].strip()[:140] for k in ("caption", "text", "message", "title", "description")
-                     if isinstance(body.get(k), str) and body[k].strip()), None)
+        return {**dict(urllib.parse.parse_qsl(urllib.parse.urlsplit(call["url"]).query)), **body}
+
+    def said_of(call: dict) -> Optional[str]:
+        """The words a request carries (a caption, a message), flattened onto one line, for a person to read."""
+        f = fields_of(call) or {}
+        return next((" ".join(f[k].split())[:140] for k in SAID if isinstance(f.get(k), str) and f[k].strip()), None)
+
+    def fully_shown(call: dict) -> bool:
+        """Can a notification show all of this request? Then, and only then, it gets Approve and Decline: one
+        thing said and links to media, posted or changed. Deleting, or anything with more to it, opens Relay."""
+        f = fields_of(call)
+        if f is None or call["method"] not in ("POST", "PUT", "PATCH"):
+            return False
+        said = [k for k in f if k in SAID]
+        return len(said) <= 1 and all(k in SAID or k in MEDIA for k in f) and all(isinstance(v, (str, int, float)) for v in f.values())
 
     def ok_needed(owner, cid, agent, method, url, key_name):
         store.news(owner)                        # on their Activity now, not only as a notification
         verb = VERBS.get(method, method)
         try:
-            said = said_of(vault.call(cid))
+            call = vault.call(cid)
+            said, buttons = said_of(call), fully_shown(call)
         except Exception:
-            said = None
+            said, buttons = None, False
+        u = urllib.parse.urlsplit(url)
+        where = f"{method} {u.hostname}{u.path}"[:90]          # always the exact address, not only a site's name
 
         def act(sub: dict) -> dict:
             """A pass for this device only: it can approve or decline this one request, once, for a few hours.
-            It travels encrypted to the device, so the push service in between can't read it."""
+            It travels encrypted to the device, so the push service in between can't read it. Only for a device
+            whose sign-in is still good, and a request the notification shows in full."""
+            if not buttons or not device_alive(sub):
+                return {}
             tok = "rly_act_" + secrets.token_urlsafe(32)
             now = _now()
             with store.tx() as c:
@@ -2779,8 +2845,8 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
                           (_hash(tok), cid, owner, sub["endpoint"], now + ACT_SECONDS))
             return {"act": tok}
         pusher.notify(owner, "approvals", f"{agent} wants to {verb} on {site_of(url)}",
-                      (f"“{said}” · " if said else "") + f"With your {key_name} key.", f"/app#approve/{cid}", tag=cid,
-                      urgent=True, per_device=act)
+                      (f"“{said}”\n" if said else "") + f"{where} · {key_name} key" + ("" if buttons else " · Tap to review"),
+                      f"/app#approve/{cid}", tag=cid, urgent=True, per_device=act)
 
     @app.post("/push/act")
     def push_act(body: ActIn):
@@ -2789,14 +2855,16 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
         now = _now()
         with store.tx() as c:
             r = c.execute("SELECT * FROM push_actions WHERE token_hash=?", (_hash(body.t),)).fetchone()
-            if not r or r["used"] or r["expires"] < now or not c.execute(
-                    "SELECT 1 FROM push_subs WHERE endpoint=? AND handle=?", (r["endpoint"], r["handle"])).fetchone():
+            dev = r and c.execute("SELECT cred FROM push_subs WHERE endpoint=? AND handle=?", (r["endpoint"], r["handle"])).fetchone()
+            if not r or r["used"] or r["expires"] < now or not dev or not cred_alive(c, r["handle"], dev["cred"]):
                 raise HTTPException(410, "This button has expired. Open Relay to answer.")
             c.execute("UPDATE push_actions SET used=? WHERE cid=?", (now, r["cid"]))     # every device's pass for it
         try:
             got = vault.decide(r["handle"], r["cid"], body.ok)
         except HTTPException:
             raise HTTPException(409, "Already answered, or it expired.") from None
+        if vault.report_back:                    # the agent hears the outcome, as when answered in the app
+            vault.report_back(got, body.ok)
         return {"status": got["status"], "agent": got["agent"], "result_status": got.get("result_status"),
                 "site": site_of(got["url"])}
     vault.on_waiting = ok_needed

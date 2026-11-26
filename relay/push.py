@@ -38,7 +38,7 @@ PUSH_HOSTS = ("fcm.googleapis.com", "android.googleapis.com", "push.services.moz
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS push_subs(
   endpoint TEXT PRIMARY KEY, handle TEXT NOT NULL, p256dh TEXT NOT NULL, auth TEXT NOT NULL,
-  kinds TEXT NOT NULL, created REAL NOT NULL, last_ok REAL, fails INTEGER NOT NULL DEFAULT 0, label TEXT);
+  kinds TEXT NOT NULL, created REAL NOT NULL, last_ok REAL, fails INTEGER NOT NULL DEFAULT 0, label TEXT, cred TEXT);
 CREATE INDEX IF NOT EXISTS push_subs_handle ON push_subs(handle);
 """
 
@@ -87,6 +87,9 @@ class Pusher:
         self.store = store
         self.contact = contact                   # who runs this hub, for the push services: a URL or mailto:
         self.badge_for: Optional[Callable[[str], int]] = None   # how many things wait for a person (the icon's number)
+        # Is the sign-in that turned this device on still good? A device whose sign-in ended (signed out,
+        # revoked, expired) gets nothing more: it might not be in its person's hands any more.
+        self.alive: Optional[Callable[[dict], bool]] = None
         self.open = opener or (lambda req: urllib.request.urlopen(req, timeout=TIMEOUT))
         path = os.path.join(data_dir, "push_key.pem")
         if os.path.exists(path):
@@ -105,6 +108,8 @@ class Pusher:
             for stmt in SCHEMA.split(";"):
                 if stmt.strip():
                     c.execute(stmt)
+            if "cred" not in {r["name"] for r in c.execute("PRAGMA table_info(push_subs)")}:
+                c.execute("ALTER TABLE push_subs ADD COLUMN cred TEXT")      # the sign-in that turned it on
         self.q: "queue.Queue" = queue.Queue()
         self.last_answer: dict = {}
         self.background = background
@@ -112,7 +117,9 @@ class Pusher:
             threading.Thread(target=self._run, name="relay-push", daemon=True).start()
 
     # ------------------------------------------------------------ devices
-    def subscribe(self, handle: str, endpoint: str, p256dh: str, auth: str, kinds=KINDS, label: Optional[str] = None) -> dict:
+    def subscribe(self, handle: str, endpoint: str, p256dh: str, auth: str, kinds=None, label: Optional[str] = None,
+                  cred: Optional[str] = None) -> dict:
+        """Add or refresh a device. kinds None keeps what the device already had (all, for a new one)."""
         if not push_host_ok(endpoint):
             raise ValueError("That isn't a push service this hub sends to.")
         try:
@@ -121,12 +128,16 @@ class Pusher:
                 raise ValueError
         except Exception:
             raise ValueError("The device's push keys don't look right.") from None
-        kinds = [k for k in kinds if k in KINDS]
         with self.store.tx() as c:
-            c.execute("INSERT INTO push_subs(endpoint,handle,p256dh,auth,kinds,created,label) VALUES (?,?,?,?,?,?,?)"
+            had = c.execute("SELECT handle, kinds, label FROM push_subs WHERE endpoint=?", (endpoint,)).fetchone()
+            if kinds is None:
+                kinds = json.loads(had["kinds"]) if had and had["handle"] == handle else list(KINDS)
+            kinds = [k for k in kinds if k in KINDS]
+            label = (label or "")[:60] or (had["label"] if had and had["handle"] == handle else None)
+            c.execute("INSERT INTO push_subs(endpoint,handle,p256dh,auth,kinds,created,label,cred) VALUES (?,?,?,?,?,?,?,?)"
                       " ON CONFLICT(endpoint) DO UPDATE SET handle=excluded.handle, p256dh=excluded.p256dh,"
-                      " auth=excluded.auth, kinds=excluded.kinds, fails=0, label=excluded.label",
-                      (endpoint, handle, p256dh, auth, json.dumps(kinds), time.time(), (label or "")[:60] or None))
+                      " auth=excluded.auth, kinds=excluded.kinds, fails=0, label=excluded.label, cred=excluded.cred",
+                      (endpoint, handle, p256dh, auth, json.dumps(kinds), time.time(), label, cred))
         return {"endpoint": endpoint, "kinds": kinds}
 
     def device(self, handle: str, endpoint: str) -> Optional[dict]:
@@ -161,6 +172,13 @@ class Pusher:
         with self.store.ro() as c:
             subs = [dict(r) for r in c.execute("SELECT * FROM push_subs WHERE handle=?", (handle,))
                     if kind in json.loads(r["kinds"])]
+        if self.alive:                           # a device whose sign-in ended is forgotten, not told
+            gone = [s for s in subs if s.get("cred") and not self.alive(s)]
+            if gone:
+                with self.store.tx() as c:
+                    for s in gone:
+                        c.execute("DELETE FROM push_subs WHERE endpoint=?", (s["endpoint"],))
+                subs = [s for s in subs if s not in gone]
         note = {"title": title[:120], "body": body[:240], "url": url, "tag": tag or kind}
         if self.badge_for:                       # the number for the app icon
             try:

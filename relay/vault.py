@@ -139,6 +139,7 @@ class Vault:
         self.store, self.now = store, now
         self.on_waiting = None        # set by the hub: who to tell when a call needs an OK
         self.on_refused = None        # set by the hub: who to tell when a website turns a key away (401/403)
+        self.report_back = None       # set when mounted: tells the asking agent how a decision went
         self.aead = AESGCM(HKDF(algorithm=hashes.SHA256(), length=32, salt=b"relay-vault",
                                 info=b"keys v1").derive(secret.encode()))
         self.send = send or _http
@@ -592,14 +593,20 @@ def mount(app, hub, vault: Vault) -> None:
             raise HTTPException(404, "no such request")
         return got
 
-    def answer(cid: str, me: dict, ok: bool) -> dict:
-        got = vault.decide(person(me), cid, ok)
-        got["offer_trust"] = vault.trust_offer(person(me), got) if ok else None
-        if got["anchor"] and cid not in vault.watching:            # the result goes back to the chat that asked, in its conversation
+    def report(got: dict, ok: bool) -> None:
+        """The result goes back to the chat that asked, in its conversation (unless call_api is still waiting
+        on it and hands it over itself). From the app or from a notification alike."""
+        if got["anchor"] and got["id"] not in vault.watching:
             with hub.store.tx() as c:
                 if c.execute("SELECT 1 FROM messages WHERE id=?", (got["anchor"],)).fetchone():
                     hub.post(c, hub.SYSTEM, ("🔑 " if ok else "✋ ") + summary(got)[:4000],
                              reply_to=got["anchor"], mentions=[got["agent"]])
+    vault.report_back = report
+
+    def answer(cid: str, me: dict, ok: bool) -> dict:
+        got = vault.decide(person(me), cid, ok)
+        got["offer_trust"] = vault.trust_offer(person(me), got) if ok else None
+        report(got, ok)
         return got
 
     @app.post("/keys/{kid}/trust")

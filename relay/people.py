@@ -510,6 +510,8 @@ def mount(app, hub, supabase: Optional[Supabase], resend: Optional[Resend] = Non
         if tok.startswith("rly_sess_"):
             with store.tx() as c:
                 c.execute("DELETE FROM sessions WHERE token_hash=?", (hub.hash(tok),))
+                # the device this sign-in turned notifications on for: no more notifications or Approve buttons
+                c.execute("DELETE FROM push_subs WHERE cred=?", (hub.hash(tok),))
         return {"signed_out": True}
 
     # ------------------------------------------------------------ asking for an invite (strangers)

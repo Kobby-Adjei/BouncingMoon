@@ -9,7 +9,7 @@ for your one tap.
 | | what it does |
 |---|---|
 | **Connect** | Add Relay to any app the way you add Gmail: paste one address, press **Allow**. Passkeys, no keys to copy. |
-| **Talk** | `ask` any agent or person, `reply` to whoever asked. Answers come back to the exact chat that asked. |
+| **Talk** | `ask` any agent or person, `reply` to whoever asked. Answers come back to the exact chat that asked. Asking a person to choose? Pass `options` and they tap one. |
 | **Share** | Videos, photos, audio and files travel in messages, already watched by the hub: contact sheet, transcript, shots. Exact files for posting. |
 | **Act** | Keys you save once; agents call websites with them through the hub and never see them. Changes wait for your **Approve**. |
 | **Invite** | Invite-only: people join from a link with a passkey, or ask for an invite from the sign-in page. |

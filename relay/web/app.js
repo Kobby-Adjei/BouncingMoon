@@ -122,6 +122,7 @@ function sayTimeZone() {
   if (ME && ME.role === "human") api("PUT", "/me/prefs", { tz: -new Date().getTimezoneOffset() }).catch(() => {});
 }
 function forgetKept() {                       // signing out: what was kept on this device goes too
+  try { localStorage.removeItem("relay_asks"); } catch {}
   try { caches.keys().then((ks) => ks.filter((k) => k.startsWith("relay-data")).forEach((k) => caches.delete(k))); } catch {}
   try { navigator.serviceWorker.controller && navigator.serviceWorker.controller.postMessage({ relay: "forget" }); } catch {}
 }
@@ -175,6 +176,135 @@ function copyField(k, value, { secret = false } = {}) {
       h("div", { class: "val", text: secret ? value.slice(0, 10) + "•".repeat(14) : value })), b);
 }
 // where the phone can share (Messages, WhatsApp, Mail…), one press hands the link over
+// ------------------------------------------------------------------ QR codes, made here
+// An invite link as a QR code someone next to you scans with their camera. Made on this device (the link is
+// a secret, so it isn't sent anywhere to be drawn). Byte mode, error correction M, versions 1–15.
+function qrMatrix(text) {
+  const ECC = [0, 10, 16, 26, 18, 24, 16, 18, 22, 22, 26, 30, 22, 22, 24, 24];        // M: codewords per block
+  const BLOCKS = [0, 1, 1, 1, 2, 2, 4, 4, 4, 5, 5, 5, 8, 9, 9, 10];
+  const bytes = [...new TextEncoder().encode(text)];
+  const rawModules = (v) => { let r = (16 * v + 128) * v + 64; if (v >= 2) { const n = Math.floor(v / 7) + 2; r -= (25 * n - 10) * n - 55; if (v >= 7) r -= 36; } return r; };
+  const dataCodewords = (v) => Math.floor(rawModules(v) / 8) - ECC[v] * BLOCKS[v];
+  let ver = 1;
+  for (; ver <= 15; ver++) if (4 + (ver < 10 ? 8 : 16) + bytes.length * 8 <= dataCodewords(ver) * 8) break;
+  if (ver > 15) return null;
+  // the data: mode, length, bytes, terminator, padding
+  const bits = [];
+  const put = (val, n) => { for (let i = n - 1; i >= 0; i--) bits.push((val >>> i) & 1); };
+  put(4, 4); put(bytes.length, ver < 10 ? 8 : 16); for (const b of bytes) put(b, 8);
+  const cap = dataCodewords(ver) * 8;
+  put(0, Math.min(4, cap - bits.length)); put(0, (8 - bits.length % 8) % 8);
+  for (let pad = 0xEC; bits.length < cap; pad ^= 0xEC ^ 0x11) put(pad, 8);
+  const data = []; for (let i = 0; i < bits.length; i += 8) data.push(parseInt(bits.slice(i, i + 8).join(""), 2));
+  // Reed–Solomon over GF(256), blocks interleaved
+  const mul = (x, y) => { let z = 0; for (let i = 7; i >= 0; i--) { z = (z << 1) ^ ((z >>> 7) * 0x11D); z ^= ((y >>> i) & 1) * x; } return z & 0xFF; };
+  const deg = ECC[ver], div = new Array(deg).fill(0); div[deg - 1] = 1;
+  for (let i = 0, root = 1; i < deg; i++) { for (let j = 0; j < deg; j++) { div[j] = mul(div[j], root); if (j + 1 < deg) div[j] ^= div[j + 1]; } root = mul(root, 2); }
+  const rem = (dat) => { const r = new Array(deg).fill(0); for (const b of dat) { const f = b ^ r.shift(); r.push(0); div.forEach((c, i) => { r[i] ^= mul(c, f); }); } return r; };
+  const nb = BLOCKS[ver], raw = Math.floor(rawModules(ver) / 8), nShort = nb - raw % nb, shortLen = Math.floor(raw / nb);
+  const blocks = [];
+  for (let i = 0, k = 0; i < nb; i++) {
+    const dat = data.slice(k, k + shortLen - deg + (i < nShort ? 0 : 1)); k += dat.length;
+    const ecc = rem(dat); if (i < nShort) dat.push(0); blocks.push(dat.concat(ecc));
+  }
+  const words = [];
+  for (let i = 0; i < blocks[0].length; i++) for (let j = 0; j < nb; j++) if (i !== shortLen - deg || j >= nShort) words.push(blocks[j][i]);
+  // the grid: finders, timing, alignment, format and version areas, then the data
+  const size = ver * 4 + 17;
+  const M = Array.from({ length: size }, () => new Array(size).fill(false));
+  const F = Array.from({ length: size }, () => new Array(size).fill(false));
+  const set = (x, y, dark) => { M[y][x] = dark; F[y][x] = true; };
+  for (let i = 0; i < size; i++) { set(6, i, i % 2 === 0); set(i, 6, i % 2 === 0); }
+  for (const [cx, cy] of [[3, 3], [size - 4, 3], [3, size - 4]])
+    for (let dy = -4; dy <= 4; dy++) for (let dx = -4; dx <= 4; dx++) {
+      const x = cx + dx, y = cy + dy, d = Math.max(Math.abs(dx), Math.abs(dy));
+      if (x >= 0 && x < size && y >= 0 && y < size) set(x, y, d !== 2 && d !== 4);
+    }
+  if (ver > 1) {
+    const n = Math.floor(ver / 7) + 2, step = Math.ceil((ver * 4 + 4) / (n * 2 - 2)) * 2, pos = [6];
+    for (let p = size - 7; pos.length < n; p -= step) pos.splice(1, 0, p);
+    for (let i = 0; i < n; i++) for (let j = 0; j < n; j++) {
+      if ((i === 0 && j === 0) || (i === 0 && j === n - 1) || (i === n - 1 && j === 0)) continue;
+      for (let dy = -2; dy <= 2; dy++) for (let dx = -2; dx <= 2; dx++) set(pos[i] + dx, pos[j] + dy, Math.max(Math.abs(dx), Math.abs(dy)) !== 1);
+    }
+  }
+  const format = (mask) => {
+    const d = (0 << 3) | mask;                // M is 00
+    let r = d; for (let i = 0; i < 10; i++) r = (r << 1) ^ ((r >>> 9) * 0x537);
+    const b = ((d << 10) | r) ^ 0x5412, bit = (i) => ((b >>> i) & 1) === 1;
+    for (let i = 0; i <= 5; i++) set(8, i, bit(i));
+    set(8, 7, bit(6)); set(8, 8, bit(7)); set(7, 8, bit(8));
+    for (let i = 9; i < 15; i++) set(14 - i, 8, bit(i));
+    for (let i = 0; i < 8; i++) set(size - 1 - i, 8, bit(i));
+    for (let i = 8; i < 15; i++) set(8, size - 15 + i, bit(i));
+    set(8, size - 8, true);
+  };
+  format(0);
+  if (ver >= 7) {
+    let r = ver; for (let i = 0; i < 12; i++) r = (r << 1) ^ ((r >>> 11) * 0x1F25);
+    const b = (ver << 12) | r;
+    for (let i = 0; i < 18; i++) { const dark = ((b >>> i) & 1) === 1, a = size - 11 + (i % 3), c = Math.floor(i / 3); set(a, c, dark); set(c, a, dark); }
+  }
+  let i = 0;
+  for (let right = size - 1; right >= 1; right -= 2) {
+    if (right === 6) right = 5;
+    for (let v = 0; v < size; v++) for (let j = 0; j < 2; j++) {
+      const x = right - j, up = ((right + 1) & 2) === 0, y = up ? size - 1 - v : v;
+      if (!F[y][x] && i < words.length * 8) { M[y][x] = ((words[i >>> 3] >>> (7 - (i & 7))) & 1) === 1; i++; }
+    }
+  }
+  // the mask that reads best (long runs, 2×2 blocks, balance)
+  const MASKS = [(x, y) => (x + y) % 2 === 0, (x, y) => y % 2 === 0, (x) => x % 3 === 0, (x, y) => (x + y) % 3 === 0,
+    (x, y) => (Math.floor(x / 3) + Math.floor(y / 2)) % 2 === 0, (x, y) => (x * y) % 2 + (x * y) % 3 === 0,
+    (x, y) => ((x * y) % 2 + (x * y) % 3) % 2 === 0, (x, y) => ((x + y) % 2 + (x * y) % 3) % 2 === 0];
+  const apply = (m) => { for (let y = 0; y < size; y++) for (let x = 0; x < size; x++) if (!F[y][x] && MASKS[m](x, y)) M[y][x] = !M[y][x]; };
+  const score = () => {
+    let p = 0, dark = 0;
+    for (let k = 0; k < 2; k++) for (let a = 0; a < size; a++) {
+      let run = 1;
+      for (let b = 1; b < size; b++) {
+        const c = k ? M[b][a] : M[a][b], prev = k ? M[b - 1][a] : M[a][b - 1];
+        if (c === prev) { run++; if (run === 5) p += 3; else if (run > 5) p++; } else run = 1;
+      }
+    }
+    for (let y = 0; y < size - 1; y++) for (let x = 0; x < size - 1; x++) { const c = M[y][x]; if (c === M[y][x + 1] && c === M[y + 1][x] && c === M[y + 1][x + 1]) p += 3; }
+    for (const row of M) for (const c of row) if (c) dark++;
+    return p + Math.floor(Math.abs(dark * 20 - size * size * 10) / (size * size)) * 10;
+  };
+  let best = 0, bestScore = Infinity;
+  for (let m = 0; m < 8; m++) { apply(m); format(m); const sc = score(); if (sc < bestScore) { best = m; bestScore = sc; } apply(m); }
+  apply(best); format(best);
+  return M;
+}
+// the code as an SVG: dark squares on white (whatever the theme: cameras need the contrast), with its quiet margin
+function qrCode(text, label) {
+  const M = qrMatrix(text);
+  if (!M) return null;
+  const n = M.length, q = 4;
+  let d = "";
+  for (let y = 0; y < n; y++) for (let x = 0; x < n; x++) if (M[y][x]) d += `M${x + q} ${y + q}h1v1h-1z`;
+  const el = svg(`0 0 ${n + 2 * q} ${n + 2 * q}`, [{ d, fill: "#000" }], "qr");
+  el.setAttribute("role", "img"); el.setAttribute("aria-label", label);
+  el.setAttribute("shape-rendering", "crispEdges");
+  return el;
+}
+
+// Someone next to you: they point their phone's camera at it. Hidden until asked, like the link it carries.
+function qrInvite(link, handle) {
+  const card = h("div", { class: "qrcard", hidden: "" });
+  const b = h("button", { class: "btn ghost press", type: "button", "aria-expanded": "false" }, "Show a QR code");
+  b.addEventListener("click", () => {
+    const open = card.hidden;
+    if (open && !card.firstChild) {
+      const code = qrCode(link, `QR code with the invite link for ${handle}`);
+      if (!code) { card.append(h("p", { class: "hint", text: "This link is too long for a QR code. Send it instead." })); }
+      else card.append(code, h("p", { class: "hint center", text: `${handle} points their phone's camera at this. It works once.` }));
+    }
+    card.hidden = !open; b.setAttribute("aria-expanded", String(open));
+    b.textContent = open ? "Hide the QR code" : "Show a QR code";
+  });
+  return h("div", { class: "stack tight" }, b, card);
+}
 function shareBtn(text, url) {
   if (!navigator.share) return null;
   return h("button", { class: "btn press", type: "button", onclick: () => navigator.share({ text, url }).catch(() => {}) }, icon("share", "2.2"), "Share invite");
@@ -744,9 +874,29 @@ function watchWaiting() {
 function userSignOut() {
   const k = KEY;
   KEY = null;    // first, so a 401 here can't loop back into signOut
-  if (k)      // ends an email session on the hub; a key stays valid (the hub ignores those)
-    fetch("/auth/signout", { method: "POST", headers: { Authorization: "Bearer " + k }, cache: "no-store" }).catch(() => {});
+  // this device stops getting notifications (and Approve buttons) for this person: the next one to use it
+  // isn't them. The hub also lets go of the device this sign-in turned on.
+  pushSub().then(async (sub) => {
+    if (!sub) return;
+    if (k) await fetch("/push/devices/remove", { method: "POST", headers: { Authorization: "Bearer " + k, "Content-Type": "application/json" },
+      body: JSON.stringify({ endpoint: sub.endpoint }), cache: "no-store" }).catch(() => {});
+    await sub.unsubscribe().catch(() => {});
+  }).catch(() => {}).finally(() => {
+    if (k)      // ends an email session on the hub; a key stays valid (the hub ignores those)
+      fetch("/auth/signout", { method: "POST", headers: { Authorization: "Bearer " + k }, cache: "no-store" }).catch(() => {});
+  });
   signOut();
+}
+// Each time the app opens signed in: this device's notifications are tied to this sign-in (so they stop when
+// it ends), keeping the kinds already chosen. A device turned on before this existed gets tied now.
+async function relinkPush() {
+  try {
+    if (!ME || ME.role !== "human" || !pushable() || Notification.permission !== "granted") return;
+    const sub = await pushSub();
+    if (!sub) return;
+    const j = sub.toJSON();
+    await api("POST", "/push/devices", { endpoint: j.endpoint, keys: j.keys, label: deviceName() });
+  } catch {}
 }
 
 // ------------------------------------------------------------------ passkeys (Face ID, a fingerprint, the device PIN)
@@ -1406,7 +1556,7 @@ function inviteGuide(a, inv) {
   let status = stickyStatus(`Waiting for ${handle}…`);
   const body = person
     ? h("div", { class: "stack tight" }, h("p", { class: "hint", style: "margin:0", text: "Send it privately: a message, not a group. It works once, for 3 days. They join with Face ID or a fingerprint, no password." }),
-        copyField("Invite link", link), shareBtn(`Join me on Relay: our AIs can pass work to each other.`, link))
+        copyField("Invite link", link), shareBtn(`Join me on Relay: our AIs can pass work to each other.`, link), qrInvite(link, handle))
     : h("div", { class: "stack tight" },
         h("p", { class: "hint", style: "margin:0", text: `Paste into a terminal on the computer where ${a.label} is signed in. It answers by itself after that, on your own plan. Works once, for 24 h.` }),
         installBlock(code, a.connect),
@@ -1526,6 +1676,39 @@ function convRow(t, by) {
       h("div", { class: "s preview", text: line })));
 }
 
+// Pin, mute, archive from the list itself: long-press a row (a phone), right-click it (a computer), or the
+// keyboard's menu key. The same three as the ⋯ menu inside a conversation.
+function rowMenu(row, t, after) {
+  const open = (e) => {
+    if (e) e.preventDefault();
+    const set = async (body, said, undo) => {
+      try { await api("PUT", `/threads/${t.thread || t.id}/mark`, body); toast(said, undo); after(); } catch (x) { toast(x.message); }
+    };
+    const id = t.thread || t.id;
+    popMenu(row, [
+      { icon: "pin", label: t.pinned ? "Unpin" : "Pin to top", run: () => set({ pinned: !t.pinned }, t.pinned ? "Unpinned" : "Pinned to the top") },
+      { icon: "muted", label: t.muted ? "Unmute" : "Mute", run: () => set({ muted: !t.muted }, t.muted ? "Unmuted" : "Muted. Requests for your OK still come through.") },
+      { icon: "archive", label: t.archived ? "Move back to Activity" : "Archive", run: () => t.archived ? set({ archived: false }, "Back in Activity")
+        : set({ archived: true }, t.pinned ? "Archived and unpinned" : "Archived",
+          async () => { try { await api("PUT", `/threads/${id}/mark`, { archived: false, pinned: !!t.pinned }); after(); } catch {} }) },
+    ]);
+  };
+  row.setAttribute("aria-haspopup", "menu");
+  row.addEventListener("contextmenu", open);                 // right-click, Android's long-press, the menu key
+  // iPhone fires no contextmenu on a long-press: time it ourselves, and swallow the tap that ends it
+  let timer = null, x0 = 0, y0 = 0, fired = false;
+  row.addEventListener("pointerdown", (e) => {
+    if (e.pointerType !== "touch") return;
+    fired = false; x0 = e.clientX; y0 = e.clientY;
+    timer = setTimeout(() => { fired = true; if (navigator.vibrate) navigator.vibrate(10); open(); }, 500);
+  });
+  const cancel = () => { clearTimeout(timer); timer = null; };
+  row.addEventListener("pointermove", (e) => { if (timer && Math.hypot(e.clientX - x0, e.clientY - y0) > 8) cancel(); });
+  row.addEventListener("pointerup", cancel); row.addEventListener("pointercancel", cancel);
+  row.addEventListener("click", (e) => { if (fired) { e.preventDefault(); e.stopImmediatePropagation(); fired = false; } }, true);
+  return row;
+}
+
 // Archived: off Activity, kept here. Something new said in one brings it back by itself.
 async function archivedScreen() {
   const tk = ticket();
@@ -1534,7 +1717,8 @@ async function archivedScreen() {
   if (!fresh(tk)) return;
   const by = Object.fromEntries(ags.map((a) => [a.handle, a]));
   screen("archived", tk, head("Archived", "Something new said in one brings it back to Activity. Muted ones come back only when someone mentions you."),
-    convs.length ? h("div", { class: "group conv" }, ...convs.map((t) => convRow(t, by)))
+    convs.length ? h("div", { class: "group conv" }, ...convs.map((t) => rowMenu(convRow(t, by), { ...t, archived: true },
+      () => nav("activity/archived", { replace: true }))))
       : blank("Nothing archived", "Archive a conversation from its ⋯ menu to take it off Activity."));
 }
 
@@ -1893,6 +2077,23 @@ async function notifyScreen() {
       h("section", { class: "facts" }, h("h2", { class: "label", text: "Tell me when" }), h("div", { class: "group info" }, ...rows)),
       test, err, h("div", { class: "ways" }, off));
   }
+  // every other device that gets your notifications: one you no longer have can go from here
+  const others = h("section", { class: "facts mailfacts" });
+  api("GET", "/push/devices").then((devs) => {
+    const rest = devs.filter((d) => !(sub && d.this));
+    if (!rest.length) return;
+    others.replaceChildren(h("h2", { class: "label", text: sub ? "Your other devices" : "Your devices" }), h("div", { class: "group info" },
+      ...rest.map((d) => {
+        const rm = h("button", { class: "unpair press", type: "button", "aria-label": `Remove ${d.label}` }, "Remove");
+        const row = h("div", { class: "cell" }, h("div", { class: "grow" }, h("div", { class: "t", text: d.label }),
+          h("div", { class: "s", text: d.last_ok ? `Last notified ${since(d.last_ok)}` : `Added ${since(d.added)}` })), rm);
+        rm.addEventListener("click", async () => {
+          try { await api("POST", "/push/devices/remove", { endpoint: "dev_" + d.id }); row.remove(); toast(`${d.label} won't get notifications any more`); }
+          catch (x) { toast(x.message); }
+        });
+        return row;
+      })));
+  }).catch(() => {});
   // the daily email, for when notifications are off: once a day at most, only when something waits
   const mail = h("section", { class: "facts mailfacts" });
   api("GET", "/me/prefs").then((pr) => {
@@ -1918,7 +2119,7 @@ async function notifyScreen() {
     }
     mail.replaceChildren(h("h2", { class: "label", text: "Email" }), h("div", { class: "group info" }, row));
   }).catch(() => {});
-  screen("notify", tk, head0, body, mail);
+  screen("notify", tk, head0, body, others, mail);
 }
 
 // ------------------------------------------------------------------ keys: your agents use them, never see them
@@ -2849,7 +3050,7 @@ async function activity() {
           const about = t.first && t.first.from !== "relay" ? topic(t.first.text) : "";
           const title = about || names(others) || "Relay";
           const line = about ? `${names(others)}${t.count > 1 ? " · " + who + gist(last.text) : ""}` : who + gist(last.text);
-          rows.push(h("button", { class: "cell press" + (t.unread ? " unread" : ""), type: "button", "data-key": `activity/${t.id}`,
+          const row = (h("button", { class: "cell press" + (t.unread ? " unread" : ""), type: "button", "data-key": `activity/${t.id}`,
               "aria-label": [title, t.pinned ? "pinned" : "", t.muted ? "muted" : "", t.unread ? "new" : ""].filter(Boolean).join(", "), onclick: () => nav(`activity/${t.id}`, { data: others }) },
             h("span", { class: "stackav" }, ...faces),
             h("div", { class: "grow" },
@@ -2857,6 +3058,7 @@ async function activity() {
                 h("span", { class: "when tnum" }, t.unread ? h("span", { class: "newdot", "aria-hidden": "true" }) : null,
                   t.muted ? h("span", { class: "mutedmark", title: "Muted" }, icon("muted")) : null, whenShort(last.time))),
               h("div", { class: "s preview", text: line }))));
+          rows.push(ME.role === "human" ? rowMenu(row, t, () => { first = false; refresh(); }) : row);
         }
       }
       const anything = needs.length || sorted.length;
@@ -3383,7 +3585,7 @@ brandmini.append(mark(), h("span", { class: "word", text: "Relay" }));
   if (link && link.error) return signin(link.error, AUTH.email ? "email" : "key");
   const saved = store.get();
   if (saved) {
-    try { ME = await api("GET", "/agents/me", undefined, saved); KEY = saved; sayTimeZone(); return goTab(agents); }
+    try { ME = await api("GET", "/agents/me", undefined, saved); KEY = saved; sayTimeZone(); relinkPush(); return goTab(agents); }
     catch (x) {
       // no signal and nothing kept: stay signed in, say so, and try again when the signal comes back
       if (x.offline) { offline(false); addEventListener("online", () => location.reload(), { once: true });
