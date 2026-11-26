@@ -307,3 +307,11 @@ def test_a_muted_archived_conversation_stays_put_until_someone_mentions_you(hub)
     assert shelf() == [chat["thread"]]
     say(c, t["codex"], "@kobby we need you", to=["kobby"], reply_to=chat["id"])                   # mentioned: back
     assert shelf() == [] and chat["thread"] in [x["thread"] for x in c.get("/threads", headers=H(t["kobby"])).json()]
+
+
+def test_live_updates_dont_hint_at_reads_in_other_peoples_conversations(hub):
+    c, _, _, t = hub
+    secret = say(c, t["kobby"], "@claude private plan", to=["claude"])
+    before = c.get("/changes", headers=H(t["ama"])).json()["state"]
+    c.get("/inbox", headers={**H(t["claude"]), "X-Relay-Session": "s1"})          # kobby's agent reads it
+    assert c.get(f"/changes?since={before}&wait=0", headers=H(t["ama"])).json()["state"] == before

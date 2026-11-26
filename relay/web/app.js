@@ -122,6 +122,7 @@ function sayTimeZone() {
   if (ME && ME.role === "human") api("PUT", "/me/prefs", { tz: -new Date().getTimezoneOffset() }).catch(() => {});
 }
 function forgetKept() {                       // signing out: what was kept on this device goes too
+  try { localStorage.removeItem("relay_asks"); } catch {}
   try { caches.keys().then((ks) => ks.filter((k) => k.startsWith("relay-data")).forEach((k) => caches.delete(k))); } catch {}
   try { navigator.serviceWorker.controller && navigator.serviceWorker.controller.postMessage({ relay: "forget" }); } catch {}
 }
@@ -873,9 +874,29 @@ function watchWaiting() {
 function userSignOut() {
   const k = KEY;
   KEY = null;    // first, so a 401 here can't loop back into signOut
-  if (k)      // ends an email session on the hub; a key stays valid (the hub ignores those)
-    fetch("/auth/signout", { method: "POST", headers: { Authorization: "Bearer " + k }, cache: "no-store" }).catch(() => {});
+  // this device stops getting notifications (and Approve buttons) for this person: the next one to use it
+  // isn't them. The hub also lets go of the device this sign-in turned on.
+  pushSub().then(async (sub) => {
+    if (!sub) return;
+    if (k) await fetch("/push/devices/remove", { method: "POST", headers: { Authorization: "Bearer " + k, "Content-Type": "application/json" },
+      body: JSON.stringify({ endpoint: sub.endpoint }), cache: "no-store" }).catch(() => {});
+    await sub.unsubscribe().catch(() => {});
+  }).catch(() => {}).finally(() => {
+    if (k)      // ends an email session on the hub; a key stays valid (the hub ignores those)
+      fetch("/auth/signout", { method: "POST", headers: { Authorization: "Bearer " + k }, cache: "no-store" }).catch(() => {});
+  });
   signOut();
+}
+// Each time the app opens signed in: this device's notifications are tied to this sign-in (so they stop when
+// it ends), keeping the kinds already chosen. A device turned on before this existed gets tied now.
+async function relinkPush() {
+  try {
+    if (!ME || ME.role !== "human" || !pushable() || Notification.permission !== "granted") return;
+    const sub = await pushSub();
+    if (!sub) return;
+    const j = sub.toJSON();
+    await api("POST", "/push/devices", { endpoint: j.endpoint, keys: j.keys, label: deviceName() });
+  } catch {}
 }
 
 // ------------------------------------------------------------------ passkeys (Face ID, a fingerprint, the device PIN)
@@ -2056,6 +2077,23 @@ async function notifyScreen() {
       h("section", { class: "facts" }, h("h2", { class: "label", text: "Tell me when" }), h("div", { class: "group info" }, ...rows)),
       test, err, h("div", { class: "ways" }, off));
   }
+  // every other device that gets your notifications: one you no longer have can go from here
+  const others = h("section", { class: "facts mailfacts" });
+  api("GET", "/push/devices").then((devs) => {
+    const rest = devs.filter((d) => !(sub && d.this));
+    if (!rest.length) return;
+    others.replaceChildren(h("h2", { class: "label", text: sub ? "Your other devices" : "Your devices" }), h("div", { class: "group info" },
+      ...rest.map((d) => {
+        const rm = h("button", { class: "unpair press", type: "button", "aria-label": `Remove ${d.label}` }, "Remove");
+        const row = h("div", { class: "cell" }, h("div", { class: "grow" }, h("div", { class: "t", text: d.label }),
+          h("div", { class: "s", text: d.last_ok ? `Last notified ${since(d.last_ok)}` : `Added ${since(d.added)}` })), rm);
+        rm.addEventListener("click", async () => {
+          try { await api("POST", "/push/devices/remove", { endpoint: "dev_" + d.id }); row.remove(); toast(`${d.label} won't get notifications any more`); }
+          catch (x) { toast(x.message); }
+        });
+        return row;
+      })));
+  }).catch(() => {});
   // the daily email, for when notifications are off: once a day at most, only when something waits
   const mail = h("section", { class: "facts mailfacts" });
   api("GET", "/me/prefs").then((pr) => {
@@ -2081,7 +2119,7 @@ async function notifyScreen() {
     }
     mail.replaceChildren(h("h2", { class: "label", text: "Email" }), h("div", { class: "group info" }, row));
   }).catch(() => {});
-  screen("notify", tk, head0, body, mail);
+  screen("notify", tk, head0, body, others, mail);
 }
 
 // ------------------------------------------------------------------ keys: your agents use them, never see them
@@ -3547,7 +3585,7 @@ brandmini.append(mark(), h("span", { class: "word", text: "Relay" }));
   if (link && link.error) return signin(link.error, AUTH.email ? "email" : "key");
   const saved = store.get();
   if (saved) {
-    try { ME = await api("GET", "/agents/me", undefined, saved); KEY = saved; sayTimeZone(); return goTab(agents); }
+    try { ME = await api("GET", "/agents/me", undefined, saved); KEY = saved; sayTimeZone(); relinkPush(); return goTab(agents); }
     catch (x) {
       // no signal and nothing kept: stay signed in, say so, and try again when the signal comes back
       if (x.offline) { offline(false); addEventListener("online", () => location.reload(), { once: true });
