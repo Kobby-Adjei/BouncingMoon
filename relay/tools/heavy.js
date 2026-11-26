@@ -107,10 +107,21 @@ const MANY = "@claude @codex @muse @chatgptguy @grokguy @claude-code-laptop @gem
       await page.screenshot({ path: path.join(OUT, `heavy-${name}-long-newpill.png`) });
       // Activity: the rest of the reviews fold away; older conversations come on request
       await page.goto(HUB + "/app#activity"); await page.reload(); await page.waitForTimeout(2200);
-      const rows = await page.evaluate(() => [...document.querySelectorAll(".morerow")].map((b) => b.textContent));
-      if (!rows.some((t) => /Show \d+ more/.test(t))) problems.push(`${name}/activity: Needs you doesn't fold`);
-      if (!rows.some((t) => /Show older conversations/.test(t))) problems.push(`${name}/activity: no Show older conversations`);
-      await page.screenshot({ path: path.join(OUT, `heavy-${name}-activity-folded.png`), fullPage: name === "phone" });
+      // one view at a time: it opens on what needs you, and each chip shows only its own
+      const chipsSeen = await page.evaluate(() => [...document.querySelectorAll(".fchip")].map((b) => [b.textContent, b.getAttribute("aria-pressed")]));
+      if (chipsSeen.length !== 4 || chipsSeen[0][1] !== "true") problems.push(`${name}/activity: filters ${JSON.stringify(chipsSeen)}`);
+      // all four on one line, even with a phone's wider letters
+      const lines = await page.evaluate(() => { const st = document.createElement("style"); st.textContent = ".fchip { letter-spacing: .06em !important; }";
+        document.head.append(st); const tops = new Set([...document.querySelectorAll(".fchip")].map((b) => Math.round(b.getBoundingClientRect().top))); st.remove(); return tops.size; });
+      if (lines > 1) problems.push(`${name}/activity: the filters wrap onto ${lines} lines`);
+      const needRows = await page.evaluate(() => document.querySelectorAll(".conv .jobcell").length);
+      if (needRows !== 5) problems.push(`${name}/activity: Needs you shows ${needRows} of 5`);
+      await page.screenshot({ path: path.join(OUT, `heavy-${name}-activity-needs.png`), fullPage: name === "phone" });
+      await page.click(".fchip:has-text('Agents')"); await page.waitForTimeout(1200);
+      const ag = await page.evaluate(() => ({ jobs: document.querySelectorAll(".conv .jobcell").length, rows: document.querySelectorAll(".conv .cell").length,
+        older: [...document.querySelectorAll(".morerow")].some((b) => /Show older/.test(b.textContent)) }));
+      if (ag.jobs || !ag.rows || !ag.older) problems.push(`${name}/activity: Agents view ${JSON.stringify(ag)}`);
+      await page.screenshot({ path: path.join(OUT, `heavy-${name}-activity-agents.png`), fullPage: name === "phone" });
       // search: words from what was said, marked in the results
       await page.fill(".searchbox input", "captions"); await page.waitForTimeout(1500);
       const res = await page.evaluate(() => ({ rows: document.querySelectorAll(".conv .cell").length, marks: document.querySelectorAll(".conv mark").length,

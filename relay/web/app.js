@@ -2457,6 +2457,9 @@ async function wake(handle) {
 }
 
 // ------------------------------------------------------------------ activity
+// the Activity filter you last picked, kept on this device
+const savedFilter = () => { try { return localStorage.getItem("relay_activity_filter"); } catch { return null; } };
+const saveFilter = (v) => { try { localStorage.setItem("relay_activity_filter", v); } catch {} };
 async function activity() {
   const tk = ticket();
   const list = h("div", { class: "group conv" }, h("div", { class: "empty", text: "Loading…" }));
@@ -2464,9 +2467,10 @@ async function activity() {
   const top = head("Activity", null, neu); top.classList.add("tabhead");
   // search: what was said, who was in it, a file's name. While it has words, the list shows what matches.
   let q = "", asked = 0;
-  const find = findBox("Search conversations, agents, files", (v) => { q = v; if (q.length >= 2) runSearch(); else { asked++; refresh(); } });
+  const find = findBox("Search conversations, agents, files", (v) => { q = v; chips.classList.toggle("off", q.length >= 2); if (q.length >= 2) runSearch(); else { asked++; refresh(); } });
   find.classList.add("searchbox");
-  const view = screen("activity", { ...tk, tab: "activity" }, top, find, list);
+  const chips = h("div", { class: "fchips", role: "group", "aria-label": "Show" });
+  const view = screen("activity", { ...tk, tab: "activity" }, top, find, chips, list);
   let first = true;
   async function runSearch() {
     const mine = ++asked;
@@ -2492,7 +2496,7 @@ async function activity() {
     markSelected();
   }
   // It grows without end, so it comes a page at a time: the newest conversations, then "Show older".
-  let pages = 1, more = false, allNeeds = false;
+  let pages = 1, more = false, filter = null, filterPicked = false;
   const PAGE = 40;
   async function refresh() {
     if (q.length >= 2) return;              // searching: the list is the results until the box is cleared
@@ -2515,41 +2519,52 @@ async function activity() {
         h("div", { class: "grow" }, h("div", { class: "t one", text: `${w.name} would like an invite` }),
           h("div", { class: "s one", text: (w.by ? `via ${w.by} · ` : "") + w.contact })),
         h("span", { class: "btn small", text: "Review" }))));
-      // what needs you first, then the conversations newest first, under Today · Yesterday · This week · Earlier
       needs.forEach((row, i) => { if (i) row.querySelector(".btn").classList.add("quiet"); });     // one solid button: the first
-      // a pile of things to review never pushes the conversations off the screen: three, then the rest on request
-      const FOLD = 3;
-      const folded = !allNeeds && needs.length > FOLD + 1;
-      const rows = needs.length ? [secthead(needs.length > FOLD ? `Needs you · ${needs.length}` : "Needs you"), ...(folded ? needs.slice(0, FOLD) : needs)] : [];
-      if (folded) rows.push(h("button", { class: "morerow press", type: "button", onclick: () => { allNeeds = true; refresh(); } },
-        `Show ${needs.length - FOLD} more`, chev()));
-      let section = null;
       const sorted = [...threads.values()].sort((x, y) => y.msgs[y.msgs.length - 1].time - x.msgs[x.msgs.length - 1].time)
-        // an agent's "asking you to OK" note on its own is the Review row above, said twice: show it once
+        // an agent's "asking you to OK" note on its own is the Review row, said twice: show it once
         .filter((t) => !(t.count === 1 && /^🔑 Asking /u.test(t.msgs[0].text || "")));
-      for (const t of sorted) {
-        const last = t.msgs[t.msgs.length - 1];
-        const others = [...t.people].filter((p) => p !== ME.handle);
-        // "claude: …" under a title that already says claude is the name twice
-        const who = last.from === ME.handle ? "You: " : last.from === "relay" || (others.length === 1 && others[0] === last.from) ? "" : `${last.from}: `;
-        const faces = (others.length ? others : ["relay"]).slice(0, 2).map((x) => avatar(by[x] || { handle: x }, others.length > 1 ? 38 : 46));
-        const sec = dayGroup(last.time);
-        if (sec !== section) { rows.push(secthead(sec)); section = sec; }
-        // named after what it's about (the request that started it), with who's in it under that
-        const about = t.first && t.first.from !== "relay" ? topic(t.first.text) : "";
-        const title = about || names(others) || "Relay";
-        const line = about ? `${names(others)}${t.count > 1 ? " · " + who + gist(last.text) : ""}` : who + gist(last.text);
-        rows.push(h("button", { class: "cell press" + (t.unread ? " unread" : ""), type: "button", "data-key": `activity/${t.id}`,
-            "aria-label": t.unread ? `${title}, new` : null, onclick: () => nav(`activity/${t.id}`, { data: others }) },
-          h("span", { class: "stackav" }, ...faces),
-          h("div", { class: "grow" },
-            h("div", { class: "spread", style: "gap:8px" }, h("div", { class: "t one", text: title, title: others.join(", ") }),
-              h("span", { class: "when tnum" }, t.unread ? h("span", { class: "newdot", "aria-hidden": "true" }) : null, whenShort(last.time))),
-            h("div", { class: "s preview", text: line }))));
+      // One thing in view at a time, not one endless scroll: what needs you, what's new, your own
+      // conversations, or the ones your agents have among themselves.
+      const isMine = (t) => t.people.has(ME.handle);
+      const sets = { needs, new: sorted.filter((t) => t.unread), mine: sorted.filter(isMine), agents: sorted.filter((t) => !isMine(t)) };
+      if (!filterPicked) filter = needs.length ? "needs" : sets.new.length ? "new" : savedFilter() || "mine";
+      const FILTERS = [["needs", "Needs you", needs.length], ["new", "New", sets.new.length], ["mine", "Mine", 0], ["agents", "Agents", 0]];
+      chips.replaceChildren(...FILTERS.map(([id, label, n]) => h("button", { class: "fchip press", type: "button", "aria-pressed": String(filter === id),
+          onclick: () => { filter = id; filterPicked = true; saveFilter(id); first = true; refresh(); } },
+        h("span", { text: label }), n ? h("span", { class: "fcount" + (id === "needs" ? " sun" : ""), text: n > 99 ? "99+" : String(n) }) : null)));
+      const rows = [];
+      if (filter === "needs") rows.push(...needs);
+      else {
+        let section = null;
+        for (const t of sets[filter]) {
+          const last = t.msgs[t.msgs.length - 1];
+          const others = [...t.people].filter((p) => p !== ME.handle);
+          // "claude: …" under a title that already says claude is the name twice
+          const who = last.from === ME.handle ? "You: " : last.from === "relay" || (others.length === 1 && others[0] === last.from) ? "" : `${last.from}: `;
+          const faces = (others.length ? others : ["relay"]).slice(0, 2).map((x) => avatar(by[x] || { handle: x }, others.length > 1 ? 38 : 46));
+          const sec = dayGroup(last.time);
+          if (sec !== section) { rows.push(secthead(sec)); section = sec; }
+          // named after what it's about (the request that started it), with who's in it under that
+          const about = t.first && t.first.from !== "relay" ? topic(t.first.text) : "";
+          const title = about || names(others) || "Relay";
+          const line = about ? `${names(others)}${t.count > 1 ? " · " + who + gist(last.text) : ""}` : who + gist(last.text);
+          rows.push(h("button", { class: "cell press" + (t.unread ? " unread" : ""), type: "button", "data-key": `activity/${t.id}`,
+              "aria-label": t.unread ? `${title}, new` : null, onclick: () => nav(`activity/${t.id}`, { data: others }) },
+            h("span", { class: "stackav" }, ...faces),
+            h("div", { class: "grow" },
+              h("div", { class: "spread", style: "gap:8px" }, h("div", { class: "t one", text: title, title: others.join(", ") }),
+                h("span", { class: "when tnum" }, t.unread ? h("span", { class: "newdot", "aria-hidden": "true" }) : null, whenShort(last.time))),
+              h("div", { class: "s preview", text: line }))));
+        }
       }
-      find.hidden = !rows.length;                     // nothing to search yet: no box
-      if (more && pages * PAGE < 200) rows.push(h("button", { class: "morerow press", type: "button", onclick: (e) => {
+      const anything = needs.length || sorted.length;
+      chips.hidden = !anything;
+      if (anything && !rows.length) rows.push(h("div", { class: "fempty", text: {
+        needs: "Nothing needs you right now.", new: "You're all caught up.",
+        mine: "No conversations of yours yet. New starts one.", agents: "Your agents haven't talked among themselves yet." }[filter] }));
+      if (filter !== "needs" && more && pages * PAGE < 200) rows.push(h("button", { class: "morerow press", type: "button", onclick: (e) => {
         e.currentTarget.disabled = true; pages++; refresh(); } }, "Show older conversations", chev()));
+      find.hidden = !anything;                        // nothing to search yet: no box
       if (rows.length) {
         if (!list.isConnected) view.querySelector(".blank").replaceWith(list);
         list.replaceChildren(...rows);
