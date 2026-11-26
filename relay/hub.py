@@ -201,7 +201,9 @@ class Store:
         self.db_path = os.path.join(data_dir, "relay.db")
         self.changed = threading.Condition()   # notified after every write: a waiting inbox wakes at once
         self.writes = 0                         # counts them, so a write between a look and a wait isn't missed
-        self.on_write: list = []                # also told after every write (the app's live updates)
+        self.on_write: list = []                # also told after every write
+        self.on_news = None                     # the app's live updates: told whose view just changed
+        self.local = threading.local()          # news made inside a transaction waits for its commit
         c = self._connect()
         try:
             c.executescript(SCHEMA)
@@ -279,20 +281,39 @@ class Store:
         c.execute("PRAGMA busy_timeout=30000")
         return c
 
+    def news(self, *handles) -> None:
+        """Whose view just changed (a handle, or "*" for everyone): their open apps look again. Inside a
+        transaction it waits for the commit, so an app never looks before the change is there."""
+        hs = {h for h in handles if h}
+        if not hs:
+            return
+        if getattr(self.local, "depth", 0):
+            self.local.pending = getattr(self.local, "pending", set()) | hs
+        elif self.on_news:
+            self.on_news(hs)
+
     @contextmanager
     def tx(self):
         """Write transaction. BEGIN IMMEDIATE serialises writers, so a job can only
         ever be claimed once even with many nodes polling at the same moment."""
         c = self._connect()
+        self.local.depth = getattr(self.local, "depth", 0) + 1
         try:
             c.execute("BEGIN IMMEDIATE")
             yield c
             c.execute("COMMIT")
         except BaseException:
             c.execute("ROLLBACK")
+            if self.local.depth == 1:
+                self.local.pending = set()     # rolled back: nothing changed, nobody to tell
             raise
         finally:
             c.close()
+            self.local.depth -= 1
+        if not self.local.depth and getattr(self.local, "pending", None):
+            hs, self.local.pending = self.local.pending, set()
+            if self.on_news:
+                self.on_news(hs)
         with self.changed:                 # anyone long-polling looks again now, not on its next tick
             self.writes += 1
             self.changed.notify_all()
@@ -618,29 +639,39 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
         waker.rekey(_cipher(admin_token, None))
 
     # ---------------------------------------------------------------- auth
+    SEEN_EVERY = 15                              # seconds: "Active now" needs no finer than this
+
     def auth(authorization: str = Header(default="")) -> dict:
         tok = authorization.removeprefix("Bearer ").strip()
         if not tok:
             raise HTTPException(401, "missing bearer token")
         if secrets.compare_digest(tok, admin_token):
             return {"handle": "admin", "role": "admin", "caps": []}
-        with store.tx() as c:
+        # Looked up read-only: "last seen" is written at most every SEEN_EVERY seconds, not on every request
+        # (a write per request queued every request in the hub behind one lock).
+        th, now = _hash(tok), _now()
+        sess = None
+        with store.ro() as c:
             if tok.startswith("rly_oat_"):           # an app connected through "Allow" (OAuth)
                 r = c.execute("SELECT a.* FROM oauth_tokens t JOIN agents a ON a.handle=t.handle WHERE t.token_hash=?"
-                              " AND t.kind='access' AND t.revoked IS NULL AND t.expires>?", (_hash(tok), _now())).fetchone()
-            elif tok.startswith("rly_sess_"):          # a person signed in by email
-                sess = c.execute("SELECT handle FROM sessions WHERE token_hash=? AND expires>?",
-                                 (_hash(tok), _now())).fetchone()
+                              " AND t.kind='access' AND t.revoked IS NULL AND t.expires>?", (th, now)).fetchone()
+            elif tok.startswith("rly_sess_"):          # a person signed in by email or passkey
+                sess = c.execute("SELECT handle, last_used FROM sessions WHERE token_hash=? AND expires>?", (th, now)).fetchone()
                 r = c.execute("SELECT * FROM agents WHERE handle=?", (sess["handle"],)).fetchone() if sess else None
-                if r:
-                    c.execute("UPDATE sessions SET last_used=? WHERE token_hash=?", (_now(), _hash(tok)))
             else:
-                r = c.execute("SELECT * FROM agents WHERE token_hash=?", (_hash(tok),)).fetchone() or \
+                r = c.execute("SELECT * FROM agents WHERE token_hash=?", (th,)).fetchone() or \
                     c.execute("SELECT a.* FROM agent_keys k JOIN agents a ON a.handle=k.handle"
-                              " WHERE k.token_hash=?", (_hash(tok),)).fetchone()   # a key from a re-join code
-            if not r:
-                raise HTTPException(401, "unknown token")
-            c.execute("UPDATE agents SET last_seen=? WHERE handle=?", (_now(), r["handle"]))
+                              " WHERE k.token_hash=?", (th,)).fetchone()   # a key from a re-join code
+        if not r:
+            raise HTTPException(401, "unknown token")
+        stale = now - (r["last_seen"] or 0) >= SEEN_EVERY
+        sess_stale = bool(sess) and now - (sess["last_used"] or 0) >= SEEN_EVERY
+        if stale or sess_stale:
+            with store.tx() as c:
+                if stale:
+                    c.execute("UPDATE agents SET last_seen=? WHERE handle=?", (now, r["handle"]))
+                if sess_stale:
+                    c.execute("UPDATE sessions SET last_used=? WHERE token_hash=?", (now, th))
         return {"handle": r["handle"], "role": r["role"], "caps": _loads(r["caps"], []),
                 "owner": bool(r["owner"])}
 
@@ -776,10 +807,26 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
         r = c.execute("SELECT session FROM thread_sessions WHERE thread=? AND handle=?", (thread, h)).fetchone()
         return r["session"] if r else None
 
+    def news_thread(c, thread) -> None:
+        """Tell the open apps of everyone who can see this conversation that it changed."""
+        r = c.execute("SELECT channel FROM messages WHERE id=?", (thread,)).fetchone()
+        if r and r["channel"] != DIRECT:
+            return store.news("*")               # a channel: everyone can see it
+        boss = first_owner(c)
+        who = {boss}
+        for a in c.execute("SELECT handle, role, person FROM agents WHERE handle IN"
+                           " (SELECT agent FROM members WHERE thread=? UNION SELECT agent FROM follows WHERE thread=?)", (thread, thread)):
+            who.add(a["handle"] if a["role"] == "human" else (a["person"] or boss))
+        store.news(*who)
+
     def seen_by(c, h: str, ids) -> None:
         """Agent `h` has these messages in front of it now (a read, not a listener's long-poll)."""
         now = _now()
+        before = c.total_changes
         c.executemany("INSERT OR IGNORE INTO reads(msg,handle,time) VALUES (?,?,?)", [(i, h, now) for i in ids])
+        if ids and c.total_changes != before:   # a new read: "read" under the message, for whoever sees it
+            for t in {r["thread"] for r in c.execute(f"SELECT DISTINCT thread FROM messages WHERE id IN ({','.join('?' * len(ids))})", list(ids))}:
+                news_thread(c, t)
 
     def take(c, h: str, session: Optional[str], msgs: list) -> None:
         """A chat read these: the ones no chat of `h` owned yet are now its own, and so is their thread.
@@ -851,6 +898,7 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
                                   f"/app#activity/{thread}", tag=f"t{thread}")
         for m in {sender, *mentions} - {SYSTEM}:
             c.execute("INSERT OR IGNORE INTO members(thread,agent) VALUES (?,?)", (thread, m))
+        news_thread(c, thread)                   # their open apps show it now
         if sender != SYSTEM:
             c.execute("INSERT OR IGNORE INTO follows(agent,thread) VALUES (?,?)", (sender, thread))
         if session:                    # this chat is in the thread now: later messages in it come back here
@@ -1141,6 +1189,7 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
     def tell_owner(kind: str, title: str, body: str, url: str, tag: str) -> None:
         with store.ro() as c:
             owner = first_owner(c)
+        store.news(owner)                        # someone asking to join: on the owner's Activity now
         if owner:
             pusher.notify(owner, kind, title, body, url, tag=tag)
 
@@ -1691,15 +1740,25 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
     # One request at a time per open app, answered the moment something that person would see changes, instead
     # of the app asking for everything every few seconds. It waits on the event loop, not a worker thread, so a
     # hundred open apps hold no threads.
-    live_waiters: set = set()                    # (its event loop, its event): each woken on its own loop
+    live_waiters: dict = {}                      # handle -> {(its event loop, its event)}: each woken on its own loop
 
-    def live_wake() -> None:
-        for loop, ev in list(live_waiters):
-            try:
-                loop.call_soon_threadsafe(ev.set)
-            except RuntimeError:                 # that loop has closed
-                live_waiters.discard((loop, ev))
-    store.on_write.append(live_wake)
+    live_version: dict = {"*": 0}                # bumped per person on news: their open apps share one look per change
+    live_cache: dict = {}                        # handle -> ((version, everyone's version), state)
+
+    def live_wake(handles: set) -> None:
+        """Only the people whose view changed look again: a write elsewhere on the hub wakes nobody."""
+        if "*" in handles:
+            live_version["*"] += 1
+        for h in handles:
+            live_version[h] = live_version.get(h, 0) + 1
+        keys = list(live_waiters) if "*" in handles else [h for h in handles if h in live_waiters]
+        for h in keys:
+            for loop, ev in list(live_waiters.get(h, ())):
+                try:
+                    loop.call_soon_threadsafe(ev.set)
+                except RuntimeError:             # that loop has closed
+                    live_waiters.get(h, set()).discard((loop, ev))
+    store.on_news = live_wake
 
     def live_state(me: dict) -> str:
         """A short fingerprint of what this person sees: the newest message in a conversation they can see,
@@ -1725,11 +1784,18 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
         the new `state`; pass that back next time. The first call (no `since`) answers at once."""
         loop = asyncio.get_running_loop()
         deadline = time.monotonic() + wait
+        h = me["handle"]
         while True:
             woke = asyncio.Event()
-            live_waiters.add((loop, woke))       # listening before looking: a write in between isn't missed
+            live_waiters.setdefault(h, set()).add((loop, woke))   # listening before looking: news in between isn't missed
             try:
-                state = await asyncio.to_thread(live_state, me)
+                key = (live_version.get(h, 0), live_version["*"])
+                hit = live_cache.get(h)
+                if hit and hit[0] == key and time.monotonic() < deadline:
+                    state = hit[1]                   # another of their apps already looked since the last change
+                else:
+                    state = await asyncio.to_thread(live_state, me)
+                    live_cache[h] = (key, state)
                 left = deadline - time.monotonic()
                 if state != since or left <= 0:
                     return {"state": state}
@@ -1739,7 +1805,11 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
                     pass
                 await asyncio.sleep(0.25)         # a burst of writes (an agent streaming) is looked at once
             finally:
-                live_waiters.discard((loop, woke))
+                mine = live_waiters.get(h)
+                if mine is not None:
+                    mine.discard((loop, woke))
+                    if not mine:
+                        live_waiters.pop(h, None)
 
     PINS_EACH = 10
 
@@ -1771,6 +1841,7 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
                 shelved = max(_now(), last_time) if body.archived else None
                 if body.archived:
                     pinned = None                # off the list: not pinned to the top of it
+            store.news(h)                        # their other devices show it too
             if pinned is None and not muted and shelved is None:
                 c.execute("DELETE FROM marks WHERE handle=? AND thread=?", (h, thread))
             else:
@@ -2641,6 +2712,7 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
     VERBS = {"GET": "read", "POST": "post", "PUT": "change", "PATCH": "change", "DELETE": "delete"}
 
     def ok_needed(owner, cid, agent, method, url, key_name):
+        store.news(owner)                        # on their Activity now, not only as a notification
         host = urllib.parse.urlsplit(url).hostname or url
         pusher.notify(owner, "approvals", f"{agent} wants to {VERBS.get(method, method)}",
                       f"With your {key_name} key, on {host}. Tap to review.", f"/app#approve/{cid}", tag=cid, urgent=True)
