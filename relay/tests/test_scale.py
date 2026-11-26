@@ -192,3 +192,29 @@ def test_a_saved_hand_off_runs_again_in_one_tap(hub):
     assert c.post(f"/shortcuts/{sc['id']}/run", headers=H(t["ama"])).status_code == 404               # yours only
     assert c.delete(f"/shortcuts/{sc['id']}", headers=H(t["kobby"])).json() == {"removed": sc["id"]}
     assert c.get("/shortcuts", headers=H(t["kobby"])).json() == []
+
+
+def test_an_agents_card_lists_your_conversations_with_it(hub):
+    c, _, _, t = hub
+    a = say(c, t["kobby"], "@claude first job", to=["claude"])
+    say(c, t["kobby"], "@codex other job", to=["codex"])
+    b = say(c, t["kobby"], "@claude second job", to=["claude"])
+    got = [x["thread"] for x in c.get("/threads?with=claude", headers=H(t["kobby"])).json()]
+    assert got == [b["thread"], a["thread"]]                                     # newest first, only claude's
+    assert c.get("/threads?with=claude", headers=H(t["ama"])).json() == []        # still only what you may see
+
+
+def test_conversations_and_search_narrow_by_date(hub):
+    c, app, _, t = hub
+    old = say(c, t["kobby"], "@claude the old launch plan", to=["claude"])
+    new = say(c, t["kobby"], "@claude the new launch plan", to=["claude"])
+    with app.state.store.tx() as d:                               # the old one was last active ten days ago
+        d.execute("UPDATE messages SET time=time-864000 WHERE thread=?", (old["thread"],))
+    import time as _t
+    day = _t.time() - 86400
+    recent = [x["thread"] for x in c.get(f"/threads?since={day}", headers=H(t["kobby"])).json()]
+    assert new["thread"] in recent and old["thread"] not in recent
+    before = [x["thread"] for x in c.get(f"/threads?until={day}", headers=H(t["kobby"])).json()]
+    assert before == [old["thread"]]
+    assert [x["thread"] for x in c.get(f"/search?q=launch&since={day}", headers=H(t["kobby"])).json()] == [new["thread"]]
+    assert [x["thread"] for x in c.get(f"/search?q=launch&until={day}", headers=H(t["kobby"])).json()] == [old["thread"]]

@@ -1342,7 +1342,7 @@ async function profile(handle) {
   if (!a) return nav("agents", { replace: true });
   const p = providerOf(a);
   const quick = h("div", { class: "quick" },
-    h("button", { class: "q press", type: "button", onclick: () => nav(`activity/to/${enc(a.handle)}`) }, icon("chat"), "Message"),
+    h("button", { class: "q press", type: "button", onclick: () => nav(`activity/to/${enc(a.handle)}`) }, icon("chat"), "New message"),
     isOwner() && a.role !== "human" ? h("button", { class: "q press", type: "button", onclick: () => nav(`agents/${enc(a.handle)}/wake`) }, icon("reply"), "Instant replies") : null);      // a plain reply arrow, no "AI"-style symbols; a bell read as "notify me"
   const info = h("div", { class: "group info" },
     a.role !== "human" ? runsOn(a) : null,
@@ -1361,9 +1361,41 @@ async function profile(handle) {
   const r = reach(a);
   const sub = h("div", { class: "row small", style: "gap:8px" }, h("span", { class: "dot " + r.cls }),
     h("span", { text: a.role === "human" ? `Person · ${ago(a.last_seen)}` : a.last_seen && r.cls !== "off" ? `${r.text} · ${seenWords(a.last_seen)}` : r.text }));
-  screen("profile", tk,
+  // what you've already said to each other: the card is never a dead end, and Message starts a new one
+  const talks = h("section", { class: "facts" }, h("h2", { class: "label", text: `Conversations with ${a.handle}` }),
+    h("div", { class: "group conv" }, h("div", { class: "empty", text: "Loading…" })));
+  const view = screen("profile", tk,
     h("div", { class: "profile" }, avatar(a, 88), h("h1", { class: "title", text: a.handle }), sub, quick),
-    h("div", { class: "stack" }, h("section", { class: "facts" }, h("h2", { class: "label", text: "Details" }), info), danger));
+    h("div", { class: "stack" }, talks, h("section", { class: "facts" }, h("h2", { class: "label", text: "Details" }), info), danger));
+  let shown = 5;
+  async function fill() {
+    let convs = [], ags = [];
+    try { [convs, ags] = await Promise.all([api("GET", `/threads?with=${enc(a.handle)}&limit=${shown + 1}`), api("GET", "/agents")]); } catch {}
+    if (!view.isConnected) return;
+    const list = talks.querySelector(".conv");
+    if (!convs.length) return list.replaceChildren(h("div", { class: "empty", text: `Nothing yet. Message starts your first conversation with ${a.handle}.` }));
+    const by = Object.fromEntries(ags.map((x) => [x.handle, x]));
+    const rows = convs.slice(0, shown).map((t) => convRow(t, by));      // (replaceChildren would print a null as "null")
+    if (convs.length > shown) rows.push(h("button", { class: "morerow press", type: "button", onclick: () => { shown += 20; fill(); } }, "Show more", chev()));
+    list.replaceChildren(...rows);
+  }
+  fill();
+}
+// one conversation as a row: named after the request that started it, who's in it and the newest line under it,
+// bold with a dot while it has something you haven't seen
+function convRow(t, by) {
+  const others = (t.people || []).filter((x) => x !== ME.handle && x !== "relay");
+  const last = t.last;
+  const about = t.first && t.first.from !== "relay" ? topic(t.first.text) : "";
+  const who = last.from === ME.handle ? "You: " : last.from === "relay" || (others.length === 1 && others[0] === last.from) ? "" : `${last.from}: `;
+  const line = about ? `${names(others)}${t.count > 1 ? " · " + who + gist(last.text) : ""}` : who + gist(last.text);
+  return h("button", { class: "cell press" + (t.unread ? " unread" : ""), type: "button", "data-key": `activity/${t.thread}`,
+      onclick: () => nav(`activity/${t.thread}`, { data: others }) },
+    h("span", { class: "stackav" }, ...(others.length ? others : ["relay"]).slice(0, 2).map((x) => avatar(by[x] || { handle: x }, others.length > 1 ? 38 : 46))),
+    h("div", { class: "grow" },
+      h("div", { class: "spread", style: "gap:8px" }, h("div", { class: "t one", text: about || names(others) || "Relay" }),
+        h("span", { class: "when tnum" }, t.unread ? h("span", { class: "newdot", "aria-hidden": "true" }) : null, whenShort(last.time))),
+      h("div", { class: "s preview", text: line })));
 }
 
 // you: your email sign-in and sign out
@@ -2425,6 +2457,19 @@ async function wake(handle) {
 }
 
 // ------------------------------------------------------------------ activity
+// When: preset spans of time, in the person's own time zone
+const WHEN = [["any", "Any time"], ["today", "Today"], ["yesterday", "Yesterday"], ["week", "This week"], ["month", "This month"],
+  ["3months", "Last 3 months"], ["older", "Older"]];
+function whenRange(id) {
+  const d = new Date(); d.setHours(0, 0, 0, 0);
+  const day = d.getTime() / 1000, s = (n) => day - n * 86400;
+  const monday = s((d.getDay() + 6) % 7), first = new Date(d.getFullYear(), d.getMonth(), 1).getTime() / 1000;
+  return { any: [0, 0], today: [day, 0], yesterday: [s(1), day], week: [monday, 0], month: [first, 0], "3months": [s(91), 0], older: [0, s(91)] }[id] || [0, 0];
+}
+const whenQuery = (id) => { const [a, b] = whenRange(id); return (a ? `&since=${a}` : "") + (b ? `&until=${b}` : ""); };
+// the Activity filter you last picked, kept on this device
+const savedFilter = () => { try { return localStorage.getItem("relay_activity_filter"); } catch { return null; } };
+const saveFilter = (v) => { try { localStorage.setItem("relay_activity_filter", v); } catch {} };
 async function activity() {
   const tk = ticket();
   const list = h("div", { class: "group conv" }, h("div", { class: "empty", text: "Loading…" }));
@@ -2432,14 +2477,23 @@ async function activity() {
   const top = head("Activity", null, neu); top.classList.add("tabhead");
   // search: what was said, who was in it, a file's name. While it has words, the list shows what matches.
   let q = "", asked = 0;
-  const find = findBox("Search conversations, agents, files", (v) => { q = v; if (q.length >= 2) runSearch(); else { asked++; refresh(); } });
+  const find = findBox("Search", (v) => { q = v; chips.classList.toggle("off", q.length >= 2); if (q.length >= 2) runSearch(); else { asked++; refresh(); } });
+  // when: one small pill beside the search box; the phone's own picker opens on it
+  let when = "any";
+  const whenPick = h("select", { class: "whenpick", "aria-label": "When" },
+    ...WHEN.map(([id, label]) => h("option", { value: id, text: label })));
+  whenPick.addEventListener("change", () => { when = whenPick.value; whenPick.classList.toggle("set", when !== "any"); pages = 1; first = true;
+    if (q.length >= 2) runSearch(); else { asked++; refresh(); } });
+  find.append(h("span", { class: "whenwrap" }, whenPick));
+  find.classList.add("withwhen");
   find.classList.add("searchbox");
-  const view = screen("activity", { ...tk, tab: "activity" }, top, find, list);
+  const chips = h("div", { class: "fchips", role: "group", "aria-label": "Show" });
+  const view = screen("activity", { ...tk, tab: "activity" }, top, find, chips, list);
   let first = true;
   async function runSearch() {
     const mine = ++asked;
     let got = [], ags = [];
-    try { [got, ags] = await Promise.all([api("GET", `/search?q=${enc(q)}`), api("GET", "/agents")]); }
+    try { [got, ags] = await Promise.all([api("GET", `/search?q=${enc(q)}${whenQuery(when)}`), api("GET", "/agents")]); }
     catch (x) { if (mine === asked) list.replaceChildren(h("div", { class: "empty", text: x.message })); return; }
     if (mine !== asked || q.length < 2 || !view.isConnected) return;
     const by = Object.fromEntries(ags.map((a) => [a.handle, a]));
@@ -2460,13 +2514,13 @@ async function activity() {
     markSelected();
   }
   // It grows without end, so it comes a page at a time: the newest conversations, then "Show older".
-  let pages = 1, more = false, allNeeds = false;
+  let pages = 1, more = false, filter = null, filterPicked = false;
   const PAGE = 40;
   async function refresh() {
     if (q.length >= 2) return;              // searching: the list is the results until the box is cleared
     const mine = asked;
     try {
-      const [convs, ags, asks, wants] = await Promise.all([api("GET", `/threads?limit=${Math.min(PAGE * pages, 200)}`), api("GET", "/agents"),
+      const [convs, ags, asks, wants] = await Promise.all([api("GET", `/threads?limit=${Math.min(PAGE * pages, 200)}${whenQuery(when)}`), api("GET", "/agents"),
         ME.role === "human" ? api("GET", "/approvals").catch(() => []) : [], isOwner() ? api("GET", "/invite-requests").catch(() => []) : []]);
       if (mine !== asked || q.length >= 2) return;      // a search started while this was on its way
       more = convs.length >= Math.min(PAGE * pages, 200);
@@ -2483,41 +2537,53 @@ async function activity() {
         h("div", { class: "grow" }, h("div", { class: "t one", text: `${w.name} would like an invite` }),
           h("div", { class: "s one", text: (w.by ? `via ${w.by} · ` : "") + w.contact })),
         h("span", { class: "btn small", text: "Review" }))));
-      // what needs you first, then the conversations newest first, under Today · Yesterday · This week · Earlier
       needs.forEach((row, i) => { if (i) row.querySelector(".btn").classList.add("quiet"); });     // one solid button: the first
-      // a pile of things to review never pushes the conversations off the screen: three, then the rest on request
-      const FOLD = 3;
-      const folded = !allNeeds && needs.length > FOLD + 1;
-      const rows = needs.length ? [secthead(needs.length > FOLD ? `Needs you · ${needs.length}` : "Needs you"), ...(folded ? needs.slice(0, FOLD) : needs)] : [];
-      if (folded) rows.push(h("button", { class: "morerow press", type: "button", onclick: () => { allNeeds = true; refresh(); } },
-        `Show ${needs.length - FOLD} more`, chev()));
-      let section = null;
       const sorted = [...threads.values()].sort((x, y) => y.msgs[y.msgs.length - 1].time - x.msgs[x.msgs.length - 1].time)
-        // an agent's "asking you to OK" note on its own is the Review row above, said twice: show it once
+        // an agent's "asking you to OK" note on its own is the Review row, said twice: show it once
         .filter((t) => !(t.count === 1 && /^🔑 Asking /u.test(t.msgs[0].text || "")));
-      for (const t of sorted) {
-        const last = t.msgs[t.msgs.length - 1];
-        const others = [...t.people].filter((p) => p !== ME.handle);
-        // "claude: …" under a title that already says claude is the name twice
-        const who = last.from === ME.handle ? "You: " : last.from === "relay" || (others.length === 1 && others[0] === last.from) ? "" : `${last.from}: `;
-        const faces = (others.length ? others : ["relay"]).slice(0, 2).map((x) => avatar(by[x] || { handle: x }, others.length > 1 ? 38 : 46));
-        const sec = dayGroup(last.time);
-        if (sec !== section) { rows.push(secthead(sec)); section = sec; }
-        // named after what it's about (the request that started it), with who's in it under that
-        const about = t.first && t.first.from !== "relay" ? topic(t.first.text) : "";
-        const title = about || names(others) || "Relay";
-        const line = about ? `${names(others)}${t.count > 1 ? " · " + who + gist(last.text) : ""}` : who + gist(last.text);
-        rows.push(h("button", { class: "cell press" + (t.unread ? " unread" : ""), type: "button", "data-key": `activity/${t.id}`,
-            "aria-label": t.unread ? `${title}, new` : null, onclick: () => nav(`activity/${t.id}`, { data: others }) },
-          h("span", { class: "stackav" }, ...faces),
-          h("div", { class: "grow" },
-            h("div", { class: "spread", style: "gap:8px" }, h("div", { class: "t one", text: title, title: others.join(", ") }),
-              h("span", { class: "when tnum" }, t.unread ? h("span", { class: "newdot", "aria-hidden": "true" }) : null, whenShort(last.time))),
-            h("div", { class: "s preview", text: line }))));
+      // One thing in view at a time, not one endless scroll: what needs you, what's new, your own
+      // conversations, or the ones your agents have among themselves.
+      const isMine = (t) => t.people.has(ME.handle);
+      const sets = { needs, new: sorted.filter((t) => t.unread), mine: sorted.filter(isMine), agents: sorted.filter((t) => !isMine(t)) };
+      if (!filterPicked) filter = needs.length ? "needs" : sets.new.length ? "new" : savedFilter() || "mine";
+      const FILTERS = [["needs", "Needs you", needs.length], ["new", "New", sets.new.length], ["mine", "Mine", 0], ["agents", "Agents", 0]];
+      chips.replaceChildren(...FILTERS.map(([id, label, n]) => h("button", { class: "fchip press", type: "button", "aria-pressed": String(filter === id),
+          onclick: () => { filter = id; filterPicked = true; saveFilter(id); first = true; refresh(); } },
+        h("span", { text: label }), n ? h("span", { class: "fcount" + (id === "needs" ? " sun" : ""), text: n > 99 ? "99+" : String(n) }) : null)));
+      const rows = [];
+      if (filter === "needs") rows.push(...needs);
+      else {
+        let section = null;
+        for (const t of sets[filter]) {
+          const last = t.msgs[t.msgs.length - 1];
+          const others = [...t.people].filter((p) => p !== ME.handle);
+          // "claude: …" under a title that already says claude is the name twice
+          const who = last.from === ME.handle ? "You: " : last.from === "relay" || (others.length === 1 && others[0] === last.from) ? "" : `${last.from}: `;
+          const faces = (others.length ? others : ["relay"]).slice(0, 2).map((x) => avatar(by[x] || { handle: x }, others.length > 1 ? 38 : 46));
+          const sec = dayGroup(last.time);
+          if (sec !== section) { rows.push(secthead(sec)); section = sec; }
+          // named after what it's about (the request that started it), with who's in it under that
+          const about = t.first && t.first.from !== "relay" ? topic(t.first.text) : "";
+          const title = about || names(others) || "Relay";
+          const line = about ? `${names(others)}${t.count > 1 ? " · " + who + gist(last.text) : ""}` : who + gist(last.text);
+          rows.push(h("button", { class: "cell press" + (t.unread ? " unread" : ""), type: "button", "data-key": `activity/${t.id}`,
+              "aria-label": t.unread ? `${title}, new` : null, onclick: () => nav(`activity/${t.id}`, { data: others }) },
+            h("span", { class: "stackav" }, ...faces),
+            h("div", { class: "grow" },
+              h("div", { class: "spread", style: "gap:8px" }, h("div", { class: "t one", text: title, title: others.join(", ") }),
+                h("span", { class: "when tnum" }, t.unread ? h("span", { class: "newdot", "aria-hidden": "true" }) : null, whenShort(last.time))),
+              h("div", { class: "s preview", text: line }))));
+        }
       }
-      find.hidden = !rows.length;                     // nothing to search yet: no box
-      if (more && pages * PAGE < 200) rows.push(h("button", { class: "morerow press", type: "button", onclick: (e) => {
+      const anything = needs.length || sorted.length;
+      chips.hidden = !anything;
+      if (when !== "any" && filter !== "needs" && !rows.length) rows.push(h("div", { class: "fempty", text: `Nothing ${WHEN.find((w) => w[0] === when)[1].toLowerCase()} here.` }));
+      else if (anything && !rows.length) rows.push(h("div", { class: "fempty", text: {
+        needs: "Nothing needs you right now.", new: "You're all caught up.",
+        mine: "No conversations of yours yet. New starts one.", agents: "Your agents haven't talked among themselves yet." }[filter] }));
+      if (filter !== "needs" && more && pages * PAGE < 200) rows.push(h("button", { class: "morerow press", type: "button", onclick: (e) => {
         e.currentTarget.disabled = true; pages++; refresh(); } }, "Show older conversations", chev()));
+      find.hidden = !anything;                        // nothing to search yet: no box
       if (rows.length) {
         if (!list.isConnected) view.querySelector(".blank").replaceWith(list);
         list.replaceChildren(...rows);

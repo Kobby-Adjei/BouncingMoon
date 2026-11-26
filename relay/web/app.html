@@ -166,6 +166,27 @@
   background: var(--fill); color: var(--ink); font: 600 13.5px var(--font); cursor: pointer; }
 .saychip .c { padding: 4px 10px; border-radius: 999px; background: var(--accent); color: #fff; font-size: 12px; }
 .firstbtn { margin-top: 6px; }
+/* Activity: one view at a time. Chips, not tabs: they wrap on a narrow screen instead of scrolling sideways */
+.fchips { display: flex; flex-wrap: wrap; gap: 6px; margin: 0 0 12px; }
+.fchips[hidden], .fchips.off { display: none; }
+.fchip { appearance: none; border: 0; display: inline-flex; align-items: center; gap: 5px; height: 36px; padding: 0 10px; border-radius: 999px;
+  background: var(--fill); color: var(--ink); font: 600 13.5px var(--font); white-space: nowrap; cursor: pointer; transition: background-color .2s var(--ease), color .2s var(--ease); }
+.fchip:hover { background: var(--fill2); }
+.fchip[aria-pressed=true] { background: var(--ink); color: var(--bg); }
+.fcount { min-width: 18px; height: 18px; padding: 0 5px; border-radius: 999px; background: var(--accent); color: var(--on-accent);
+  font: 700 11px/18px var(--font); text-align: center; }
+.fcount.sun { background: var(--sun); color: var(--on-sun); }
+.fempty { padding: 36px 12px; text-align: center; color: var(--ink2); font-size: 15px; }
+/* When: a small pill beside the search box; the native picker does the choosing (a wheel on a phone) */
+.findbox.withwhen { display: flex; gap: 8px; align-items: center; }
+.findbox.withwhen .field { flex: 1; min-width: 0; }
+.whenwrap { flex: none; position: relative; display: inline-flex; }
+.whenpick { appearance: none; -webkit-appearance: none; border: 0; height: 48px; padding: 0 30px 0 14px; border-radius: 999px; background: var(--fill);
+  color: var(--ink); font: 600 14px var(--font); cursor: pointer; max-width: 150px; text-overflow: ellipsis; }
+.whenwrap::after { content: ""; position: absolute; right: 13px; top: 50%; width: 7px; height: 7px; margin-top: -5px; pointer-events: none;
+  border: solid currentColor; border-width: 0 1.8px 1.8px 0; transform: rotate(45deg); color: var(--ink2); }
+.whenpick.set { background: var(--accent-soft); color: var(--accent); }
+.whenpick:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .msg .more.saved { color: var(--green-ink); cursor: default; }
 .pickq { margin: 22px 0 10px; }
 .sclink { appearance: none; border: 0; background: none; padding: 0; color: inherit; font: inherit; text-align: left; cursor: pointer; display: grid; gap: 1px; min-width: 0; }
@@ -557,6 +578,8 @@ pre.block.muted { color: var(--ink2); }
   .listpane .conv .s { -webkit-line-clamp: 2; }
   .listpane .empty { text-align: left; padding: 8px 16px; font-size: 13px; }
   .listpane .findbox { padding: 0 8px; margin-bottom: 6px; } .listpane .findbox .field { height: 36px; font-size: 13.5px; }
+  .listpane .whenpick { height: 36px; font-size: 13px; padding: 0 26px 0 12px; max-width: 120px; } .listpane .whenwrap::after { right: 11px; }
+  .listpane .fchips { padding: 0 8px; gap: 4px; } .listpane .fchip { height: 30px; padding: 0 8px; font-size: 12.5px; gap: 4px; }
   .listpane .press:active { transform: none; }
 
   /* the detail pane: its own scroller; content keeps a readable width and sits in the middle of the pane */
