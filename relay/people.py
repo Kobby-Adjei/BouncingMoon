@@ -218,6 +218,28 @@ class Resend:
                                      "text": text, "html": page}).encode())
 
 
+    def send_digest(self, email: str, lines: list, url: str) -> tuple:
+        """Once a day at most, only when something waits: what it is, and one link to Relay."""
+        import html as _html
+        n = len(lines)
+        subject = lines[0] if n == 1 else f"{n} things wait for you on Relay"
+        text = "Waiting for you on Relay:\n\n" + "\n".join("- " + l for l in lines) + (f"\n\nOpen Relay: {url}" if url else "") + \
+            "\n\nYou get this because notifications are off on your devices. Turn it off in Relay: Me, Notifications."
+        items = "".join(f"<li style=\"margin:6px 0\">{_html.escape(l)}</li>" for l in lines)
+        button = (f"<a href=\"{_html.escape(url)}\" style=\"display:inline-block;background:#4f44e0;color:#fff;text-decoration:none;"
+                  f"padding:12px 22px;border-radius:999px;font-weight:600\">Open Relay</a>") if url else ""
+        page = ("<div style=\"background:#f6f4ef;padding:36px 16px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',"
+                "Helvetica,Arial,sans-serif;color:#18171d\"><div style=\"max-width:460px;margin:0 auto\">"
+                "<div style=\"font-size:20px;font-weight:700;margin-bottom:10px\">Waiting for you on Relay</div>"
+                f"<ul style=\"padding-left:20px;font-size:15px;line-height:1.45;margin:0 0 22px\">{items}</ul>{button}"
+                "<div style=\"font-size:12px;color:#6b6972;margin-top:28px;line-height:1.5\">You get this at most once a day, only when "
+                "something waits, because notifications are off on your devices. Turn it off in Relay: Me, Notifications.</div>"
+                "</div></div>")
+        return self.send("POST", "https://api.resend.com/emails",
+                         {"Authorization": f"Bearer {self.key}", "Content-Type": "application/json", "User-Agent": "relay-hub"},
+                         json.dumps({"from": self.sender, "to": [email], "subject": subject, "text": text, "html": page}).encode())
+
+
 def resend_refusal(status: int, body: bytes) -> tuple:
     """(status for the page, message) for a Resend error."""
     try:

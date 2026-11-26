@@ -288,3 +288,49 @@ def test_when_resend_refuses_supabase_sends_the_code_instead(tmp_path):
     rs.reply = (200, b'{"id":"e_3"}')
     c.post("/auth/email", json={"email": "kobby@example.com"})
     assert c.post("/auth/verify", json={"email": "kobby@example.com", "code": rs.code()}).status_code == 200
+
+
+# ------------------------------------------------------------------ the daily email; my data
+def test_the_daily_email_goes_only_when_something_waits_and_only_without_notifications(tmp_path, monkeypatch):
+    import json as _json
+    monkeypatch.setenv("RELAY_BACKUPS", "0")
+    sent = []
+    send = lambda m, u, h, b: (sent.append(_json.loads(b)), (200, b"{}"))[1]
+    app = create_app(data_dir=str(tmp_path), admin_token=ADMIN, resend_key="re_test", resend_send=send)
+    c = TestClient(app)
+    owner = c.post("/owner", headers=H(ADMIN), json={"handle": "kobby"}).json()["token"]
+    c.put("/people/kobby/email", headers=H(owner), json={"email": "kobby@example.com"})
+    assert app.state.send_digests() == 0 and sent == []                   # nothing waits: nothing sent
+    c.post("/invite-requests", json={"name": "Abena", "contact": "abena@example.com"})
+    assert app.state.send_digests() == 1
+    assert sent[0]["to"] == ["kobby@example.com"] and sent[0]["subject"] == "Abena would like an invite"
+    c.post("/invite-requests", json={"name": "Kofi", "contact": "kofi@example.com"})
+    assert app.state.send_digests() == 0                                  # once a day at most
+    assert c.put("/me/prefs", headers=H(owner), json={"digest": False}).json()["digest"] is False
+    with app.state.store.tx() as d:
+        d.execute("DELETE FROM prefs WHERE key='digest_sent'")
+    assert app.state.send_digests() == 0                                  # switched off
+    c.put("/me/prefs", headers=H(owner), json={"digest": True})
+    with app.state.store.tx() as d:                                      # notifications on a device: no email
+        d.execute("INSERT INTO push_subs(endpoint,handle,p256dh,auth,kinds,created) VALUES ('https://fcm.googleapis.com/x','kobby','k','a','[]',0)")
+    assert app.state.send_digests() == 0
+
+
+def test_download_my_data_is_everything_of_mine_and_nothing_of_anyone_elses(tmp_path, monkeypatch):
+    import io as _io, json as _json, zipfile as _zip
+    monkeypatch.setenv("RELAY_BACKUPS", "0")
+    c = TestClient(create_app(data_dir=str(tmp_path), admin_token=ADMIN))
+    owner = c.post("/owner", headers=H(ADMIN), json={"handle": "kobby"}).json()["token"]
+    claude = c.post("/agents", headers=H(owner), json={"handle": "claude"}).json()["token"]
+    inv = c.post("/invites", headers=H(owner), json={"handle": "ama", "role": "human"}).json()
+    ama = c.post("/invites/claim", json={"code": inv["code"]}).json()["token"]
+    mine = c.post("/messages", headers=H(owner), json={"channel": "direct", "text": "@claude my plan", "mentions": ["claude"]}).json()
+    c.post("/messages", headers=H(ama), json={"channel": "direct", "text": "ama's private note", "mentions": []})
+    z = _zip.ZipFile(_io.BytesIO(c.get("/me/export", headers=H(owner)).content))
+    names = z.namelist()
+    assert {"README.txt", "me.json", "agents.json", "shortcuts.json", "keys.json", "approvals.json", "devices.json"} <= set(names)
+    assert _json.loads(z.read("me.json"))["name"] == "kobby" and [a["name"] for a in _json.loads(z.read("agents.json"))] == ["claude"]
+    convo = _json.loads(z.read(f"conversations/{mine['thread']}.json"))
+    assert convo[0]["text"] == "@claude my plan"
+    assert not any("ama's private note" in z.read(n).decode() for n in names if n.startswith("conversations/"))
+    assert c.get("/me/export", headers=H(claude)).status_code == 403

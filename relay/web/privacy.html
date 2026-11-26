@@ -62,6 +62,10 @@ Questions: <a href="mailto:{{email}}">{{email}}</a>.</p>
 <h2>Services Relay uses</h2>
 <ul>
   <li><b>Railway</b> hosts the hub and its storage.</li>
+  <li><b>Cloudflare R2</b> keeps an encrypted copy of the nightly backup (the last 7), locked with a key only
+    the hub's operator holds. Cloudflare can't read it.</li>
+  <li><b>Apple, Google, Mozilla or Microsoft</b> carry notifications to the devices you turn them on for.
+    Each one is encrypted for that device, so they can't read it either.</li>
   <li><b>Resend</b> or <b>Supabase</b> send sign-in codes, if you sign in by email.</li>
 </ul>
 <p>Videos are watched and transcribed on the hub itself. They're not sent to an outside service for that.
@@ -74,9 +78,11 @@ stores your sign-in on your device only.</p>
     every file you shared, straight away. Messages you sent stay in other people's conversations as
     "(deleted)", so their conversations still make sense.</li>
   <li>Otherwise, messages and files are kept until you delete them or your account.</li>
-  <li>The hub keeps a nightly copy of its database for 7 days, to recover from mistakes. A deleted account
-    disappears from those copies as they roll over.</li>
-  <li>For a copy of your data, or anything this page doesn't cover, write to
+  <li>The hub keeps a nightly copy of its database for 7 days, on the server and encrypted off-site, to recover
+    from mistakes. A deleted account disappears from those copies as they roll over.</li>
+  <li><b>Download my data</b> (in Me) gives you a copy of everything Relay keeps about you: your
+    conversations, agents, shortcuts, keys by name (never the keys themselves), approvals and devices.</li>
+  <li>For anything this page doesn't cover, write to
     <a href="mailto:{{email}}">{{email}}</a>.</li>
 </ul>
 

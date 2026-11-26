@@ -152,7 +152,8 @@ def test_an_agent_answering_taps_the_person_on_the_shoulder_once_a_minute(hub):
     c.post("/messages", headers=H(t["claude"]), json={"reply_to": m["id"], "text": "Here's the draft:\nline two"})
     [got] = sent(app, svc)
     msg = phone.read(got["body"])
-    assert msg == {"title": "claude answered", "body": "Here's the draft:", "url": f"/app#activity/{m['thread']}", "tag": f"t{m['thread']}"}
+    assert msg == {"title": "claude answered", "body": "Here's the draft:", "url": f"/app#activity/{m['thread']}", "tag": f"t{m['thread']}",
+                   "badge": 0}
     c.post("/messages", headers=H(t["claude"]), json={"reply_to": m["id"], "text": "and a fix"})
     assert len(sent(app, svc)) == 1                               # the same conversation, a moment later: no second buzz
 
@@ -207,3 +208,13 @@ def test_the_service_worker_is_served_from_the_root(hub):
     r = c.get("/sw.js")
     assert r.status_code == 200 and "javascript" in r.headers["content-type"] and "notificationclick" in r.text
     assert "worker-src 'self'" in c.get("/app").headers["content-security-policy"]
+
+
+def test_each_notification_says_how_many_things_wait_for_the_app_icon(hub):
+    c, app, svc, t = hub
+    phone = Phone()
+    on(c, t["kobby"], phone)
+    c.post("/invite-requests", json={"name": "Kofi", "contact": "kofi@example.com"})
+    c.post("/invite-requests", json={"name": "Esi", "contact": "esi@example.com"})
+    msgs = [phone.read(s["body"]) for s in sent(app, svc)]
+    assert [m["badge"] for m in msgs] == [1, 2]                   # the number on the Home Screen icon

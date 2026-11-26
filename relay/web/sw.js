@@ -6,6 +6,9 @@ self.addEventListener("activate", (e) => e.waitUntil(self.clients.claim()));
 self.addEventListener("push", (e) => {
   let d = {};
   try { d = e.data ? e.data.json() : {}; } catch { d = { body: e.data && e.data.text() }; }
+  // the count on the Home Screen icon, as the hub saw it when it sent this
+  if (typeof d.badge === "number" && self.navigator && self.navigator.setAppBadge)
+    (d.badge ? self.navigator.setAppBadge(d.badge) : self.navigator.clearAppBadge()).catch(() => {});
   e.waitUntil(self.registration.showNotification(d.title || "Relay", {
     body: d.body || "",
     icon: "/icon-192.png",
