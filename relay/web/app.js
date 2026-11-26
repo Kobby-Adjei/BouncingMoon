@@ -78,7 +78,15 @@ async function api(method, path, body, key = KEY) {
   const headers = {};
   if (key) headers.Authorization = "Bearer " + key;
   if (body !== undefined) headers["Content-Type"] = "application/json";
-  const r = await fetch(path, { method, headers, body: body === undefined ? undefined : JSON.stringify(body), cache: "no-store" });
+  let r;
+  try { r = await fetch(path, { method, headers, body: body === undefined ? undefined : JSON.stringify(body), cache: "no-store" }); }
+  catch {                                   // no network, and nothing kept on this device for this
+    offline(true);
+    const e = new Error(method === "GET" ? "You're offline. Relay catches up when you're back." : "You're offline, so that wasn't sent. Try again when you're back.");
+    e.offline = true;
+    throw e;
+  }
+  offline(r.headers.get("X-Relay-Offline") === "1");
   let data = null;
   try { data = await r.json(); } catch {}
   if (!r.ok) {
@@ -88,6 +96,21 @@ async function api(method, path, body, key = KEY) {
     throw e;
   }
   return data;
+}
+
+// No signal: a small note at the top while the app shows what it last saw; gone as soon as the hub answers.
+let offNote = null;
+function offline(on) {
+  if (!on && !offNote) return;
+  if (!offNote) { offNote = h("div", { class: "offnote", role: "status", "aria-live": "polite" }); document.body.append(offNote); }
+  offNote.textContent = on ? "Offline · showing what you last saw" : "";
+  offNote.classList.toggle("show", on);
+}
+// Relay on this device: the app opens at once from a saved copy (sw.js), and notifications work
+if ("serviceWorker" in navigator) navigator.serviceWorker.register("/sw.js", { scope: "/" }).catch(() => {});
+function forgetKept() {                       // signing out: what was kept for this person goes too
+  try { caches.delete("relay-data"); } catch {}
+  try { navigator.serviceWorker.controller && navigator.serviceWorker.controller.postMessage({ relay: "forget" }); } catch {}
 }
 
 function ago(t) {
@@ -624,7 +647,7 @@ async function overview(tk) {
 }
 
 function signOut(message) {
-  KEY = null; ME = null; store.clear(); trail.length = 0; clearInterval(timer); timer = null;
+  KEY = null; ME = null; store.clear(); forgetKept(); trail.length = 0; clearInterval(timer); timer = null;
   clearInterval(waitTimer); waitTimer = null; segBadge.hidden = true; iconBadge(0);
   signin(message);
 }
@@ -3105,7 +3128,9 @@ async function thread(id, people) {
         for (const m of await api("GET", `/messages?thread=${threadId}&after=${top}&limit=200`)) byId.set(m.id, m);
       for (const m of msgs) byId.set(m.id, m);
       paint();
-    } catch {}
+    } catch (x) {         // never opened here before, and no signal: say so instead of "Loading…" for ever
+      if (x.offline && !loadedOnce) list.replaceChildren(h("div", { class: "empty", text: "You're offline. This conversation opens when you're back." }));
+    }
   }
   await refresh();
   if (!view.isConnected) return;
@@ -3165,7 +3190,12 @@ brandmini.append(mark(), h("span", { class: "word", text: "Relay" }));
   const saved = store.get();
   if (saved) {
     try { ME = await api("GET", "/agents/me", undefined, saved); KEY = saved; return goTab(agents); }
-    catch { store.clear(); }
+    catch (x) {
+      // no signal and nothing kept: stay signed in, say so, and try again when the signal comes back
+      if (x.offline) { offline(false); addEventListener("online", () => location.reload(), { once: true });
+        return app.replaceChildren(blank("You're offline", "Relay opens as soon as you're back online.")); }
+      store.clear(); forgetKept();
+    }
   }
   if (wantInvite && AUTH.claimed) return askInvite();
   signin();

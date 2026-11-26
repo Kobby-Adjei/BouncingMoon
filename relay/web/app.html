@@ -124,6 +124,13 @@
 .wapp { display: inline-flex; align-items: center; gap: 5px; color: var(--ink); font-weight: 600; }
 .wapp img, .wapp svg { width: 16px; height: 16px; }
 .doorhint { font-size: 13px; color: var(--ink2); flex: none; }
+/* at the bottom, clear of the top switch; above the message box when there is one */
+.offnote { position: fixed; z-index: 65; bottom: calc(20px + env(safe-area-inset-bottom)); left: 50%; transform: translate(-50%, 12px);
+  padding: 7px 14px; border-radius: 999px; background: var(--ink); color: var(--bg); font-size: 13px; font-weight: 550;
+  opacity: 0; pointer-events: none; transition: opacity .2s ease, transform .3s var(--ease); white-space: nowrap; }
+.offnote.show { opacity: 1; transform: translate(-50%, 0); }
+body:has(.composer) .offnote { bottom: calc(112px + env(safe-area-inset-bottom)); }
+@media (prefers-reduced-motion: reduce) { .offnote { transition: none; } }
 .doorhint.bad { color: var(--red); font-weight: 600; }
 .morb .mh.hbad { color: var(--red); }
 .hcheck { align-items: flex-start; }

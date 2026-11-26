@@ -20,6 +20,7 @@ One process. SQLite for state, the filesystem for blobs.
 """
 from __future__ import annotations
 
+import functools
 import hashlib
 import ipaddress
 import html
@@ -1180,7 +1181,21 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
     def service_worker():
         """Shows notifications and opens the right screen when one is tapped. Served from the root so it
         covers the whole app."""
-        return static("web/sw.js", "text/javascript")
+        with open(os.path.join(web_dir, "sw.js"), "rb") as f:
+            # the app's own files, as a version: a deploy that changes them makes a new service worker
+            body = f.read().replace(b"__SHELL_VERSION__", shell_version().encode())
+        return Response(body, media_type="text/javascript", headers=page_headers)
+
+    @functools.lru_cache(maxsize=1)
+    def shell_version() -> str:
+        d = hashlib.sha256()
+        for n in ("app.html", "app.js", "relay.css", "fuse.js", "icon.svg", "icon-192.png", "sw.js"):
+            try:
+                with open(os.path.join(web_dir, n), "rb") as f:
+                    d.update(f.read())
+            except OSError:
+                pass
+        return d.hexdigest()[:16]
 
     @app.get("/manifest.webmanifest", include_in_schema=False)
     def manifest():
