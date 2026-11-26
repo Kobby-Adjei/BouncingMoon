@@ -72,7 +72,7 @@ def test_the_owner_sees_the_hubs_health_and_others_only_their_own(hub, monkeypat
     assert app.state.alert_health() == 1
     assert app.state.alert_health() == 0                          # once a day
     [got] = [phone.read(s["body"]) for s in sent(app, svc)]
-    assert got["title"] == "Storage is 95% full" and got["url"] == "/app#me/health"
+    assert got["title"] == "Storage is full" and got["url"] == "/app#me/health"
     monkeypatch.setattr(M, "disk", lambda path: (60, 100))
     app.state.alert_health()
     monkeypatch.setattr(M, "disk", lambda path: (5, 100))         # a problem that comes and goes still taps once a day

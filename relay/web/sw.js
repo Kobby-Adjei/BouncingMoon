@@ -73,15 +73,40 @@ self.addEventListener("push", (e) => {
     badge: "/icon-192.png",
     tag: d.tag || undefined,          // a newer one about the same thing replaces the older
     renotify: !!d.tag,
-    data: { url: d.url || "/app" },
+    // an OK to give: answer right here (Android, computers). The pass works once, for this request only.
+    actions: d.act ? [{ action: "approve", title: "Approve" }, { action: "decline", title: "Decline" }] : undefined,
+    requireInteraction: !!d.act,
+    data: { url: d.url || "/app", act: d.act || null, tag: d.tag || null },
   }));
 });
 
 self.addEventListener("notificationclick", (e) => {
   e.notification.close();
-  const url = new URL((e.notification.data && e.notification.data.url) || "/app", self.location.origin).href;
-  e.waitUntil((async () => {
-    const open = await self.clients.matchAll({ type: "window", includeUncontrolled: true });
+  const data = e.notification.data || {};
+  const url = new URL(data.url || "/app", self.location.origin).href;
+  if ((e.action === "approve" || e.action === "decline") && data.act) {
+    const ok = e.action === "approve";
+    e.waitUntil((async () => {
+      let r = null, j = {};
+      try {
+        r = await fetch("/push/act", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ t: data.act, ok }) });
+        j = await r.json().catch(() => ({}));
+      } catch {}
+      if (r && r.ok) {               // said and done: a quiet note of what happened
+        const what = ok ? (j.status === "done" ? `Approved · ${j.agent} went ahead on ${j.site}` : j.status === "failed"
+          ? `Approved, but ${j.site} said no. Open Relay to see why.` : "Approved") : "Declined. Nothing was sent.";
+        return self.registration.showNotification(ok ? "Approved" : "Declined",
+          { body: what, icon: "/icon-192.png", badge: "/icon-192.png", tag: data.tag || undefined, data: { url } });
+      }
+      return openOrFocus(url);       // expired, already answered, or no signal: open it in Relay
+    })());
+    return;
+  }
+  e.waitUntil(openOrFocus(url));
+});
+
+async function openOrFocus(url) {
+  const open = await self.clients.matchAll({ type: "window", includeUncontrolled: true });
     for (const c of open) {                     // Relay is already open: take it there
       if (new URL(c.url).origin === self.location.origin && "focus" in c) {
         await c.focus();
@@ -89,6 +114,5 @@ self.addEventListener("notificationclick", (e) => {
         return c.postMessage({ relay: "open", url });
       }
     }
-    return self.clients.openWindow(url);
-  })());
-});
+  return self.clients.openWindow(url);
+}

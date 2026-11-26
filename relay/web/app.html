@@ -126,9 +126,12 @@
 .doorhint { font-size: 13px; color: var(--ink2); flex: none; }
 /* at the bottom, clear of the top switch; above the message box when there is one */
 .offnote { position: fixed; z-index: 65; bottom: calc(20px + env(safe-area-inset-bottom)); left: 50%; transform: translate(-50%, 12px);
-  padding: 7px 14px; border-radius: 999px; background: var(--ink); color: var(--bg); font-size: 13px; font-weight: 550;
+  padding: 9px 14px 9px 30px; border-radius: 999px; background: var(--card); color: var(--ink); font-size: 13px; font-weight: 550;
+  box-shadow: 0 0 0 1px var(--line), 0 8px 24px -12px rgba(24, 23, 29, .3);
   opacity: 0; pointer-events: none; transition: opacity .2s ease, transform .3s var(--ease); white-space: nowrap; }
 .offnote.show { opacity: 1; transform: translate(-50%, 0); }
+.offnote::before { content: ""; position: absolute; left: 14px; top: 50%; width: 7px; height: 7px; margin-top: -3.5px; border-radius: 50%; background: var(--orange); }
+body.isoffline .composer .send { opacity: .4; pointer-events: none; }     /* nothing can be sent without a signal */
 body:has(.composer) .offnote { bottom: calc(112px + env(safe-area-inset-bottom)); }
 @media (prefers-reduced-motion: reduce) { .offnote { transition: none; } }
 .doorhint.bad { color: var(--red); font-weight: 600; }
@@ -140,7 +143,27 @@ body:has(.composer) .offnote { bottom: calc(112px + env(safe-area-inset-bottom))
 .hline .chev { width: 6px; height: 11px; opacity: .7; }
 .cell.dangerrow .t { color: var(--red); }
 .healthdoors { margin-top: 18px; }
+/* quick answers under an agent's question: tap one, it's your reply */
+.qopts { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; max-width: 100%; }
+.qopt { appearance: none; border: 0; min-height: 40px; padding: 0 16px; border-radius: 999px; font: 600 14.5px var(--font);
+  background: var(--card); color: var(--accent); box-shadow: inset 0 0 0 1.5px var(--accent-line); cursor: pointer;
+  transition: background-color .2s var(--ease), color .2s var(--ease), transform .2s var(--spring); }
+.qopt:hover:not(:disabled) { background: var(--accent-soft); }
+.qopt.picked { background: var(--accent); color: var(--on-accent); box-shadow: none; }
+.qopt:disabled:not(.picked) { color: var(--ink3); box-shadow: inset 0 0 0 1.5px var(--line); cursor: default; }
+.qopt:disabled.picked { cursor: default; }
 .morerow svg:first-child { width: 18px; height: 18px; color: var(--ink2); }
+/* "Archived conversations" opens a screen: a row with its arrow pointing on, not "show more" pointing down */
+.morerow.archrow { justify-content: flex-start; gap: 12px; padding: 0 12px; color: var(--ink); font-weight: 500; }
+.morerow.archrow .chev { transform: none; margin-left: auto; color: var(--ink3); }
+/* the rows on Me: their glyphs big enough to read at 40px */
+.doors .morb .mh img, .doors .morb .mh svg { width: calc(var(--s) * .42); height: calc(var(--s) * .42); }
+@media (max-width: 600px) {                    /* Me on a phone: everything, Sign out included, in one screen */
+  .profile { margin: 4px 0 20px; }
+  .profile > .av { --s: 64px !important; }
+  .profile .title { font-size: 24px; margin-top: 4px; }
+  .gtile b { font-size: 20px; }
+}
 .facts + .facts.acct { margin-top: 26px; }
 .switchrow.paused .switch { opacity: .55; }
 .mailfacts:not(:empty) { margin-top: 26px; }
@@ -149,6 +172,12 @@ body:has(.composer) .offnote { bottom: calc(112px + env(safe-area-inset-bottom))
 .hcheck .hdot { flex: none; width: 10px; height: 10px; border-radius: 50%; margin: 6px 2px 0 4px; background: var(--green); }
 .hcheck.bad .hdot { background: var(--red); box-shadow: 0 0 0 4px var(--red-soft); }
 .hcheck .btn { align-self: center; }
+.hcheck .hicon { flex: none; width: 18px; height: 18px; margin: 2px 0 0 0; color: var(--ink2); }
+.hcheck .hicon svg { width: 18px; height: 18px; }
+button.hcheck { appearance: none; border: 0; background: none; width: 100%; text-align: left; font: inherit; color: inherit; cursor: pointer; }
+.hline.waiting { visibility: hidden; min-height: 36px; }
+.hline .one { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 260px; }
+.cell.offask .t { color: var(--ink); } .cell.offask { opacity: .85; }
 .page[data-page=friend] .facts { margin-top: 26px; }
 .title.clamp2 { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; }
 .title.longtitle { font-size: 24px; line-height: 1.15; }
@@ -197,7 +226,7 @@ body:has(.composer) .offnote { bottom: calc(112px + env(safe-area-inset-bottom))
 .fchips { transition: opacity .2s ease; }
 .fchips.off { opacity: .35; pointer-events: none; }       /* searching: kept in place so the list doesn't jump */
 .findbox.nowhen .whenwrap { display: none; }
-.findbox[hidden] { display: none; }
+.findbox[hidden] { display: none !important; }
 .fchip { appearance: none; border: 0; display: inline-flex; align-items: center; gap: 5px; height: 38px; padding: 0 9px; border-radius: 999px;
   background: var(--fill); color: var(--ink); font: 600 13px var(--font); white-space: nowrap; cursor: pointer; transition: background-color .2s var(--ease), color .2s var(--ease); }
 .fchip:hover { background: var(--fill2); }
@@ -241,6 +270,7 @@ body:has(.composer) .offnote { bottom: calc(112px + env(safe-area-inset-bottom))
 .mutedmark { display: inline-flex; vertical-align: -2px; margin-right: 5px; color: var(--ink2); }
 .mutedmark svg { width: 14px; height: 14px; }
 .headright { display: flex; align-items: center; gap: 6px; flex: none; }
+.headright .stackav .av:not(:last-child) .badge { display: none; }     /* one status ring, on the front face */
 .iconbtn { appearance: none; border: 0; background: transparent; color: var(--ink2); width: 44px; height: 44px; border-radius: 999px;
   display: inline-grid; place-items: center; cursor: pointer; }
 .iconbtn:hover, .iconbtn[aria-expanded=true] { background: var(--fill); color: var(--ink); }
@@ -255,9 +285,15 @@ body:has(.composer) .offnote { bottom: calc(112px + env(safe-area-inset-bottom))
 .popitem:hover, .popitem:focus-visible { background: var(--fill); outline: none; }
 .popitem svg { width: 20px; height: 20px; color: var(--ink2); flex: none; }
 .toast { position: fixed; z-index: 70; left: 50%; bottom: calc(96px + env(safe-area-inset-bottom)); transform: translate(-50%, 12px);
-  max-width: min(420px, calc(100vw - 32px)); padding: 11px 16px; border-radius: 999px; background: var(--ink); color: var(--bg);
-  font-size: 14px; line-height: 1.3; text-align: center; opacity: 0; pointer-events: none; transition: opacity .2s ease, transform .3s var(--ease); }
-.toast.show { opacity: 1; transform: translate(-50%, 0); }
+  max-width: min(420px, calc(100vw - 32px)); min-height: 44px; padding: 10px 16px; border-radius: 16px; background: var(--ink); color: var(--bg);
+  display: flex; align-items: center; gap: 14px; font-size: 14px; line-height: 1.35; opacity: 0; pointer-events: none;
+  transition: opacity .2s ease, transform .3s var(--ease); }
+.toast.show { opacity: 1; transform: translate(-50%, 0); pointer-events: auto; }
+.toast.inpane { position: absolute; bottom: 96px; }
+.toastact { appearance: none; border: 0; background: none; color: var(--accent-line); font: 700 14px var(--font); padding: 6px 2px; margin: -6px 0;
+  cursor: pointer; flex: none; min-height: 32px; }
+@media (prefers-color-scheme: dark) { .toast { background: #2c2b33; color: var(--ink); box-shadow: 0 0 0 1px var(--line), 0 12px 30px -10px rgba(0, 0, 0, .6); }
+  .toastact { color: var(--accent); } }
 @media (prefers-reduced-motion: reduce) { .popmenu { animation: none; } .toast { transition: none; } }
 .newdot { display: inline-block; width: 8px; height: 8px; margin-right: 6px; border-radius: 50%; background: var(--accent); vertical-align: 1px;
   animation: pop .45s var(--spring) both; }
@@ -279,7 +315,7 @@ body:has(.composer) .offnote { bottom: calc(112px + env(safe-area-inset-bottom))
 .plainask q { quotes: "“" "”"; font-weight: 500; overflow-wrap: anywhere; } .plainask a { color: var(--accent); overflow-wrap: anywhere; }
 .plainask .trust { font-size: 13.5px; color: var(--ink2); } .plainask .expires { font-size: 13px; font-weight: 600; color: var(--sun-ink, var(--ink)); }
 .addgroup { margin: 0 0 26px; } .addgroup .label { margin: 0 0 2px; font-size: 15px; font-weight: 650; color: var(--ink); } .addgroup .hint { margin: 0 0 14px; }
-.doorsub { display: block; font-size: 13px; color: var(--ink2); margin-top: 1px; } .doorsub.bad { color: var(--red); }
+.doorsub { display: block; font-size: 13px; color: var(--ink2); margin-top: 1px; } .doorsub.bad, .door .grow .doorsub.bad { color: var(--red); }
 @media (prefers-reduced-motion: reduce) { .asknudge, .asknudge .zz::after, .hellobox.in, .jump { animation: none !important; } }
 .hellobox:empty { display: none; }
 .hellobox.in { animation: pop .5s var(--spring) both; }
@@ -645,7 +681,7 @@ pre.block.muted { color: var(--ink2); }
   .listpane .press:active { transform: none; }
 
   /* the detail pane: its own scroller; content keeps a readable width and sits in the middle of the pane */
-  .detail { flex-direction: column; min-width: 0; min-height: 0; container: pane / inline-size; --cap: 680px; --gut: max(28px, calc((100% - var(--cap)) / 2)); }
+  .detail { position: relative; flex-direction: column; min-width: 0; min-height: 0; container: pane / inline-size; --cap: 680px; --gut: max(28px, calc((100% - var(--cap)) / 2)); }
   .detail > .page { flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain; max-width: none; margin: 0;
     padding: 36px var(--gut) 64px; }
   .detail[data-page=addname], .detail[data-page=key], .detail[data-page=added] { --cap: 400px; }

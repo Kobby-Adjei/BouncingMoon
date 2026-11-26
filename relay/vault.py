@@ -273,6 +273,7 @@ class Vault:
             c.execute("DELETE FROM vault_trust WHERE key_id=?", (kid,))
             c.execute("UPDATE vault_calls SET status='expired', decided=? WHERE key_id=? AND status='waiting'",
                       (self.now(), kid))
+            self._news(owner)
 
     # ------------------------------------------------------------ which keys an agent may use
     def person_of(self, c, agent: str) -> Optional[str]:
@@ -410,6 +411,11 @@ class Vault:
                 pass
         return cid
 
+    def _news(self, *handles) -> None:
+        news = getattr(self.store, "news", None)
+        if news:
+            news(*handles)
+
     def set_anchor(self, cid: str, anchor: int) -> None:
         with self.store.tx() as c:
             c.execute("UPDATE vault_calls SET anchor=? WHERE id=?", (anchor, cid))
@@ -512,6 +518,7 @@ class Vault:
                 raise HTTPException(409, "This request was already decided, or it expired.")
             c.execute("UPDATE vault_calls SET status=?, decided_by=?, decided=? WHERE id=? AND status='waiting'",
                       ("approved" if ok else "declined", owner, now, cid))
+            self._news(owner)                   # off "Needs you" on their other devices too
         return self.run(cid) if ok else self.call(cid)
 
     def wait(self, cid: str, seconds: Optional[float] = None) -> dict:

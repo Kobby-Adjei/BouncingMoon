@@ -77,6 +77,9 @@ CREATE TABLE IF NOT EXISTS shortcuts(id TEXT PRIMARY KEY, handle TEXT NOT NULL, 
 -- a person's small settings (the daily email on or off, when it last went)
 CREATE TABLE IF NOT EXISTS prefs(handle TEXT NOT NULL, key TEXT NOT NULL, value TEXT, PRIMARY KEY(handle, key));
 CREATE TABLE IF NOT EXISTS seen(handle TEXT NOT NULL, thread INTEGER NOT NULL, last INTEGER NOT NULL, PRIMARY KEY(handle, thread));
+-- Approve / Decline on a notification: a one-time pass per device, for one request, for a few hours
+CREATE TABLE IF NOT EXISTS push_actions(token_hash TEXT PRIMARY KEY, cid TEXT NOT NULL, handle TEXT NOT NULL,
+  endpoint TEXT NOT NULL, expires REAL NOT NULL, used REAL);
 -- a person's pinned conversations (kept on top) and muted ones (no notifications, not counted as new)
 CREATE TABLE IF NOT EXISTS marks(handle TEXT NOT NULL, thread INTEGER NOT NULL, pinned REAL, muted INTEGER NOT NULL DEFAULT 0,
   archived REAL, PRIMARY KEY(handle, thread));
@@ -201,7 +204,9 @@ class Store:
         self.db_path = os.path.join(data_dir, "relay.db")
         self.changed = threading.Condition()   # notified after every write: a waiting inbox wakes at once
         self.writes = 0                         # counts them, so a write between a look and a wait isn't missed
-        self.on_write: list = []                # also told after every write (the app's live updates)
+        self.on_write: list = []                # also told after every write
+        self.on_news = None                     # the app's live updates: told whose view just changed
+        self.local = threading.local()          # news made inside a transaction waits for its commit
         c = self._connect()
         try:
             c.executescript(SCHEMA)
@@ -221,6 +226,8 @@ class Store:
             if "archived" not in {r["name"] for r in c.execute("PRAGMA table_info(marks)")}:   # archive: off your list
                 c.execute("ALTER TABLE marks ADD COLUMN archived REAL")
             msg_cols = {r["name"] for r in c.execute("PRAGMA table_info(messages)")}
+            if "options" not in msg_cols:            # quick answers: choices the reader can tap
+                c.execute("ALTER TABLE messages ADD COLUMN options TEXT")
             if "origin_session" not in msg_cols:     # the exact chat that sent it (routing only)
                 c.execute("ALTER TABLE messages ADD COLUMN origin_session TEXT")
             if "client" not in agent_cols:          # the app it connects from, as that app names itself
@@ -279,20 +286,39 @@ class Store:
         c.execute("PRAGMA busy_timeout=30000")
         return c
 
+    def news(self, *handles) -> None:
+        """Whose view just changed (a handle, or "*" for everyone): their open apps look again. Inside a
+        transaction it waits for the commit, so an app never looks before the change is there."""
+        hs = {h for h in handles if h}
+        if not hs:
+            return
+        if getattr(self.local, "depth", 0):
+            self.local.pending = getattr(self.local, "pending", set()) | hs
+        elif self.on_news:
+            self.on_news(hs)
+
     @contextmanager
     def tx(self):
         """Write transaction. BEGIN IMMEDIATE serialises writers, so a job can only
         ever be claimed once even with many nodes polling at the same moment."""
         c = self._connect()
+        self.local.depth = getattr(self.local, "depth", 0) + 1
         try:
             c.execute("BEGIN IMMEDIATE")
             yield c
             c.execute("COMMIT")
         except BaseException:
             c.execute("ROLLBACK")
+            if self.local.depth == 1:
+                self.local.pending = set()     # rolled back: nothing changed, nobody to tell
             raise
         finally:
             c.close()
+            self.local.depth -= 1
+        if not self.local.depth and getattr(self.local, "pending", None):
+            hs, self.local.pending = self.local.pending, set()
+            if self.on_news:
+                self.on_news(hs)
         with self.changed:                 # anyone long-polling looks again now, not on its next tick
             self.writes += 1
             self.changed.notify_all()
@@ -357,10 +383,24 @@ def with_context(c, msgs: list) -> list:
 
 
 def msg_out(r: sqlite3.Row) -> dict:
-    return {"id": r["id"], "from": r["sender"], "channel": r["channel"],
-            "thread": r["thread"], "reply_to": r["reply_to"], "time": r["time"],
-            "text": r["text"], "mentions": _loads(r["mentions"], []),
-            "artifacts": _loads(r["artifacts"], []), "job": r["job"]}
+    out = {"id": r["id"], "from": r["sender"], "channel": r["channel"],
+           "thread": r["thread"], "reply_to": r["reply_to"], "time": r["time"],
+           "text": r["text"], "mentions": _loads(r["mentions"], []),
+           "artifacts": _loads(r["artifacts"], []), "job": r["job"]}
+    opts = r["options"] if "options" in r.keys() else None
+    if opts:                                     # answers the reader can tap
+        out["options"] = _loads(opts, [])
+    return out
+
+
+def clean_options(options) -> Optional[str]:
+    """Up to six short answers, each once, as stored with a message; None when there are none."""
+    out = []
+    for o in options or ():
+        o = " ".join(str(o).split())[:60]
+        if o and o.lower() not in (x.lower() for x in out):
+            out.append(o)
+    return json.dumps(out[:6]) if out else None
 
 
 def job_out(r: sqlite3.Row) -> dict:
@@ -441,6 +481,11 @@ class ShortcutIn(BaseModel):
     mentions: List[str] = Field(default_factory=list, max_length=20)
 
 
+class ActIn(BaseModel):
+    t: str = Field(min_length=20, max_length=100)
+    ok: bool
+
+
 class MarkIn(BaseModel):
     pinned: Optional[bool] = None
     muted: Optional[bool] = None
@@ -464,6 +509,7 @@ class MessageIn(BaseModel):
     artifacts: list[str] = Field(default_factory=list, max_length=10)
     media: list[str] = Field(default_factory=list, max_length=10)
     idem: Optional[str] = None
+    options: list[str] = Field(default_factory=list, max_length=6)   # quick answers the reader can tap
 
 
 class AckIn(BaseModel):
@@ -618,29 +664,39 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
         waker.rekey(_cipher(admin_token, None))
 
     # ---------------------------------------------------------------- auth
+    SEEN_EVERY = 15                              # seconds: "Active now" needs no finer than this
+
     def auth(authorization: str = Header(default="")) -> dict:
         tok = authorization.removeprefix("Bearer ").strip()
         if not tok:
             raise HTTPException(401, "missing bearer token")
         if secrets.compare_digest(tok, admin_token):
             return {"handle": "admin", "role": "admin", "caps": []}
-        with store.tx() as c:
+        # Looked up read-only: "last seen" is written at most every SEEN_EVERY seconds, not on every request
+        # (a write per request queued every request in the hub behind one lock).
+        th, now = _hash(tok), _now()
+        sess = None
+        with store.ro() as c:
             if tok.startswith("rly_oat_"):           # an app connected through "Allow" (OAuth)
                 r = c.execute("SELECT a.* FROM oauth_tokens t JOIN agents a ON a.handle=t.handle WHERE t.token_hash=?"
-                              " AND t.kind='access' AND t.revoked IS NULL AND t.expires>?", (_hash(tok), _now())).fetchone()
-            elif tok.startswith("rly_sess_"):          # a person signed in by email
-                sess = c.execute("SELECT handle FROM sessions WHERE token_hash=? AND expires>?",
-                                 (_hash(tok), _now())).fetchone()
+                              " AND t.kind='access' AND t.revoked IS NULL AND t.expires>?", (th, now)).fetchone()
+            elif tok.startswith("rly_sess_"):          # a person signed in by email or passkey
+                sess = c.execute("SELECT handle, last_used FROM sessions WHERE token_hash=? AND expires>?", (th, now)).fetchone()
                 r = c.execute("SELECT * FROM agents WHERE handle=?", (sess["handle"],)).fetchone() if sess else None
-                if r:
-                    c.execute("UPDATE sessions SET last_used=? WHERE token_hash=?", (_now(), _hash(tok)))
             else:
-                r = c.execute("SELECT * FROM agents WHERE token_hash=?", (_hash(tok),)).fetchone() or \
+                r = c.execute("SELECT * FROM agents WHERE token_hash=?", (th,)).fetchone() or \
                     c.execute("SELECT a.* FROM agent_keys k JOIN agents a ON a.handle=k.handle"
-                              " WHERE k.token_hash=?", (_hash(tok),)).fetchone()   # a key from a re-join code
-            if not r:
-                raise HTTPException(401, "unknown token")
-            c.execute("UPDATE agents SET last_seen=? WHERE handle=?", (_now(), r["handle"]))
+                              " WHERE k.token_hash=?", (th,)).fetchone()   # a key from a re-join code
+        if not r:
+            raise HTTPException(401, "unknown token")
+        stale = now - (r["last_seen"] or 0) >= SEEN_EVERY
+        sess_stale = bool(sess) and now - (sess["last_used"] or 0) >= SEEN_EVERY
+        if stale or sess_stale:
+            with store.tx() as c:
+                if stale:
+                    c.execute("UPDATE agents SET last_seen=? WHERE handle=?", (now, r["handle"]))
+                if sess_stale:
+                    c.execute("UPDATE sessions SET last_used=? WHERE token_hash=?", (now, th))
         return {"handle": r["handle"], "role": r["role"], "caps": _loads(r["caps"], []),
                 "owner": bool(r["owner"])}
 
@@ -776,10 +832,26 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
         r = c.execute("SELECT session FROM thread_sessions WHERE thread=? AND handle=?", (thread, h)).fetchone()
         return r["session"] if r else None
 
+    def news_thread(c, thread) -> None:
+        """Tell the open apps of everyone who can see this conversation that it changed."""
+        r = c.execute("SELECT channel FROM messages WHERE id=?", (thread,)).fetchone()
+        if r and r["channel"] != DIRECT:
+            return store.news("*")               # a channel: everyone can see it
+        boss = first_owner(c)
+        who = {boss}
+        for a in c.execute("SELECT handle, role, person FROM agents WHERE handle IN"
+                           " (SELECT agent FROM members WHERE thread=? UNION SELECT agent FROM follows WHERE thread=?)", (thread, thread)):
+            who.add(a["handle"] if a["role"] == "human" else (a["person"] or boss))
+        store.news(*who)
+
     def seen_by(c, h: str, ids) -> None:
         """Agent `h` has these messages in front of it now (a read, not a listener's long-poll)."""
         now = _now()
+        before = c.total_changes
         c.executemany("INSERT OR IGNORE INTO reads(msg,handle,time) VALUES (?,?,?)", [(i, h, now) for i in ids])
+        if ids and c.total_changes != before:   # a new read: "read" under the message, for whoever sees it
+            for t in {r["thread"] for r in c.execute(f"SELECT DISTINCT thread FROM messages WHERE id IN ({','.join('?' * len(ids))})", list(ids))}:
+                news_thread(c, t)
 
     def take(c, h: str, session: Optional[str], msgs: list) -> None:
         """A chat read these: the ones no chat of `h` owned yet are now its own, and so is their thread.
@@ -792,7 +864,7 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
                           " ON CONFLICT(thread,handle) DO UPDATE SET session=excluded.session", (m["thread"], h, session))
 
     def post(c, sender, text, channel=None, reply_to=None, mentions=(), artifacts=(),
-             idem=None, job=None, session=None, media=()) -> dict:
+             idem=None, job=None, session=None, media=(), options=()) -> dict:
         mentions = sorted({m.lstrip("@") for m in mentions})
         if idem:
             prev = c.execute("SELECT * FROM messages WHERE sender=? AND idem=?",
@@ -831,6 +903,9 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
             (sender, idem, channel, thread, reply_to, _now(), text,
              json.dumps(mentions), json.dumps(list(artifacts)), job, session))
         mid = cur.lastrowid
+        opts = clean_options(options)
+        if opts:
+            c.execute("UPDATE messages SET options=? WHERE id=?", (opts, mid))
         for m in dict.fromkeys(media):     # videos, images, audio, files that travel with this message
             c.execute("INSERT OR IGNORE INTO message_media(msg,media) VALUES (?,?)", (mid, m))
         if thread is None:
@@ -851,6 +926,7 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
                                   f"/app#activity/{thread}", tag=f"t{thread}")
         for m in {sender, *mentions} - {SYSTEM}:
             c.execute("INSERT OR IGNORE INTO members(thread,agent) VALUES (?,?)", (thread, m))
+        news_thread(c, thread)                   # their open apps show it now
         if sender != SYSTEM:
             c.execute("INSERT OR IGNORE INTO follows(agent,thread) VALUES (?,?)", (sender, thread))
         if session:                    # this chat is in the thread now: later messages in it come back here
@@ -1141,6 +1217,7 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
     def tell_owner(kind: str, title: str, body: str, url: str, tag: str) -> None:
         with store.ro() as c:
             owner = first_owner(c)
+        store.news(owner)                        # someone asking to join: on the owner's Activity now
         if owner:
             pusher.notify(owner, kind, title, body, url, tag=tag)
 
@@ -1591,7 +1668,7 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
         with store.tx() as c:
             return post(c, me["handle"], body.text, channel=body.channel,
                         reply_to=body.reply_to, mentions=body.mentions,
-                        artifacts=body.artifacts, idem=body.idem, session=session, media=body.media)
+                        artifacts=body.artifacts, idem=body.idem, session=session, media=body.media, options=body.options)
 
     @app.get("/messages")
     def read(channel: Optional[str] = None, thread: Optional[int] = None,
@@ -1645,7 +1722,10 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
             a = list(more)
             marks = {r["thread"]: r for r in c.execute("SELECT * FROM marks WHERE handle=?", (me["handle"],))}
             # archived: off your list until something new is said there (a newer message brings it back by itself)
-            shelf = " EXISTS (SELECT 1 FROM marks k WHERE k.handle=? AND k.thread=t.thread AND k.archived >= m.time)"
+            # ...or, muted as well, until someone mentions you there (a chatty agents' conversation stays put)
+            shelf = (" EXISTS (SELECT 1 FROM marks k WHERE k.handle=? AND k.thread=t.thread AND k.archived IS NOT NULL AND"
+                     " (k.archived >= m.time OR (k.muted=1 AND NOT EXISTS (SELECT 1 FROM messages x WHERE x.thread=t.thread"
+                     " AND x.time > k.archived AND x.mentions LIKE '%\"' || k.handle || '\"%'))))")
             q += (" AND" if archived else " AND NOT") + shelf; a.append(me["handle"])
             pins = [] if archived else sorted((t for t, r in marks.items() if r["pinned"]), key=lambda t: marks[t]["pinned"])
             if pins:                           # pinned ones come first, on the first page only, and never twice
@@ -1685,21 +1765,31 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
                  "first": first.get(r["thread"]), "unread": unread(r),
                  "pinned": bool(r["thread"] in marks and marks[r["thread"]]["pinned"]),
                  "muted": bool(r["thread"] in marks and marks[r["thread"]]["muted"]),
-                 "archived": bool(r["thread"] in marks and (marks[r["thread"]]["archived"] or 0) >= r["time"])} for r in rows]
+                 "archived": archived} for r in rows]
 
     # ---------------------------------------------------------------- live: the app hears about changes at once
     # One request at a time per open app, answered the moment something that person would see changes, instead
     # of the app asking for everything every few seconds. It waits on the event loop, not a worker thread, so a
     # hundred open apps hold no threads.
-    live_waiters: set = set()                    # (its event loop, its event): each woken on its own loop
+    live_waiters: dict = {}                      # handle -> {(its event loop, its event)}: each woken on its own loop
 
-    def live_wake() -> None:
-        for loop, ev in list(live_waiters):
-            try:
-                loop.call_soon_threadsafe(ev.set)
-            except RuntimeError:                 # that loop has closed
-                live_waiters.discard((loop, ev))
-    store.on_write.append(live_wake)
+    live_version: dict = {"*": 0}                # bumped per person on news: their open apps share one look per change
+    live_cache: dict = {}                        # handle -> ((version, everyone's version), state)
+
+    def live_wake(handles: set) -> None:
+        """Only the people whose view changed look again: a write elsewhere on the hub wakes nobody."""
+        if "*" in handles:
+            live_version["*"] += 1
+        for h in handles:
+            live_version[h] = live_version.get(h, 0) + 1
+        keys = list(live_waiters) if "*" in handles else [h for h in handles if h in live_waiters]
+        for h in keys:
+            for loop, ev in list(live_waiters.get(h, ())):
+                try:
+                    loop.call_soon_threadsafe(ev.set)
+                except RuntimeError:             # that loop has closed
+                    live_waiters.get(h, set()).discard((loop, ev))
+    store.on_news = live_wake
 
     def live_state(me: dict) -> str:
         """A short fingerprint of what this person sees: the newest message in a conversation they can see,
@@ -1725,11 +1815,18 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
         the new `state`; pass that back next time. The first call (no `since`) answers at once."""
         loop = asyncio.get_running_loop()
         deadline = time.monotonic() + wait
+        h = me["handle"]
         while True:
             woke = asyncio.Event()
-            live_waiters.add((loop, woke))       # listening before looking: a write in between isn't missed
+            live_waiters.setdefault(h, set()).add((loop, woke))   # listening before looking: news in between isn't missed
             try:
-                state = await asyncio.to_thread(live_state, me)
+                key = (live_version.get(h, 0), live_version["*"])
+                hit = live_cache.get(h)
+                if hit and hit[0] == key and time.monotonic() < deadline:
+                    state = hit[1]                   # another of their apps already looked since the last change
+                else:
+                    state = await asyncio.to_thread(live_state, me)
+                    live_cache[h] = (key, state)
                 left = deadline - time.monotonic()
                 if state != since or left <= 0:
                     return {"state": state}
@@ -1739,7 +1836,11 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
                     pass
                 await asyncio.sleep(0.25)         # a burst of writes (an agent streaming) is looked at once
             finally:
-                live_waiters.discard((loop, woke))
+                mine = live_waiters.get(h)
+                if mine is not None:
+                    mine.discard((loop, woke))
+                    if not mine:
+                        live_waiters.pop(h, None)
 
     PINS_EACH = 10
 
@@ -1750,14 +1851,16 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
         if me["role"] != "human":
             raise HTTPException(403, "Pinning and muting are for people.")
         h = me["handle"]
-        with store.tx() as c:
+        asking = body.pinned is None and body.muted is None and body.archived is None     # only asking how it stands
+        with (store.ro() if asking else store.tx()) as c:
             if not c.execute("SELECT 1 FROM convs WHERE thread=?", (thread,)).fetchone() or not can_see(c, h, thread):
                 raise HTTPException(404, "no such conversation")
             r = c.execute("SELECT * FROM marks WHERE handle=? AND thread=?", (h, thread)).fetchone()
             pinned, muted, shelved = (r["pinned"], r["muted"], r["archived"]) if r else (None, 0, None)
             last_time = c.execute("SELECT m.time FROM convs t JOIN messages m ON m.id=t.last WHERE t.thread=?", (thread,)).fetchone()["time"]
-            if shelved is not None and shelved < last_time:
-                shelved = None                   # something new was said since: it's back on the list
+            if shelved is not None and shelved < last_time and not (muted and not c.execute(
+                    "SELECT 1 FROM messages WHERE thread=? AND time>? AND mentions LIKE ?", (thread, shelved, f'%"{h}"%')).fetchone()):
+                shelved = None                   # something new was said since (muted: someone mentioned you): it's back
             if body.pinned is not None:
                 if body.pinned and not pinned:
                     if c.execute("SELECT COUNT(*) FROM marks WHERE handle=? AND pinned IS NOT NULL", (h,)).fetchone()[0] >= PINS_EACH:
@@ -1771,6 +1874,9 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
                 shelved = max(_now(), last_time) if body.archived else None
                 if body.archived:
                     pinned = None                # off the list: not pinned to the top of it
+            if asking:
+                return {"thread": thread, "pinned": pinned is not None, "muted": bool(muted), "archived": shelved is not None}
+            store.news(h)                        # their other devices show it too
             if pinned is None and not muted and shelved is None:
                 c.execute("DELETE FROM marks WHERE handle=? AND thread=?", (h, thread))
             else:
@@ -2213,7 +2319,7 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
                                ("session_cursors", "handle"), ("delivered", "handle"), ("passkeys", "handle"),
                                ("oauth_tokens", "handle"), ("oauth_codes", "handle"), ("webauthn_challenges", "handle"),
                                ("push_subs", "handle"), ("reads", "handle"), ("seen", "handle"), ("shortcuts", "handle"),
-                               ("prefs", "handle"), ("marks", "handle"),
+                               ("prefs", "handle"), ("marks", "handle"), ("push_actions", "handle"),
                                ("agents", "handle")):
                 c.execute(f"DELETE FROM {table} WHERE {col} IN ({q})", hs)
             for table in ("oauth_tokens", "oauth_codes"):
@@ -2274,10 +2380,10 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
             age = time.time() - os.path.getmtime(os.path.join(folder, local[-1])) if local else None
             if age is not None and age > 36 * 3600:
                 out.append({"id": "backup", "ok": False, "title": f"No backup for {int(age // 86400) or 1} day{'s' if age >= 2 * 86400 else ''}",
-                            "detail": "The nightly copy didn't happen. The hub may be short of space; see Storage.", "url": None})
+                            "detail": "The nightly copy didn't happen. The hub may be short of space: check the storage line below.", "url": None})
             elif age is None and time.time() - STARTED > 3 * 3600:
                 out.append({"id": "backup", "ok": False, "title": "No backup yet",
-                            "detail": "The nightly copy hasn't run. The hub may be short of space; see Storage.", "url": None})
+                            "detail": "The nightly copy hasn't run. The hub may be short of space: check the storage line below.", "url": None})
             else:
                 out.append({"id": "backup", "ok": True, "title": "Backed up every night",
                             "detail": "The first copy is on its way" if age is None else "Last copy today" if age < 86400 else "Last copy yesterday",
@@ -2294,9 +2400,10 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
             free, total = media_mod.disk(store.dir)
             used = round(100 * (1 - free / total)) if total else 0
             stop = round(100 * (1 - media_mod.KEEP_FREE))
-            if total and used >= stop - 5:
-                out.append({"id": "storage", "ok": False, "title": f"Storage is {used}% full",
-                            "detail": f"New files stop at {stop}%. Remove old videos, or give the volume more room in Railway.", "url": None})
+            if total and used >= stop - 15:          # warned well before new files stop, not at the edge
+                out.append({"id": "storage", "ok": False, "title": "Storage is getting full" if used < stop else "Storage is full",
+                            "detail": f"{used}% used; new files stop at {stop}%. Remove old videos to make room, or ask "
+                                      "whoever hosts your hub for more space.", "url": None})
             else:
                 out.append({"id": "storage", "ok": True, "title": "Room to spare", "detail": f"Storage {used}% used", "url": None})
         return sorted(out, key=lambda x: x["ok"])
@@ -2640,10 +2747,58 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
     app.state.vault = vault
     VERBS = {"GET": "read", "POST": "post", "PUT": "change", "PATCH": "change", "DELETE": "delete"}
 
+    ACT_SECONDS = 6 * 3600                       # how long Approve / Decline on a notification works
+
+    def said_of(call: dict) -> Optional[str]:
+        """The words a request carries (a caption, a message), for a person to read before saying yes."""
+        try:
+            body = json.loads(call["body"]) if call.get("body") else {}
+        except ValueError:
+            return None
+        if not isinstance(body, dict):
+            return None
+        return next((body[k].strip()[:140] for k in ("caption", "text", "message", "title", "description")
+                     if isinstance(body.get(k), str) and body[k].strip()), None)
+
     def ok_needed(owner, cid, agent, method, url, key_name):
-        host = urllib.parse.urlsplit(url).hostname or url
-        pusher.notify(owner, "approvals", f"{agent} wants to {VERBS.get(method, method)}",
-                      f"With your {key_name} key, on {host}. Tap to review.", f"/app#approve/{cid}", tag=cid, urgent=True)
+        store.news(owner)                        # on their Activity now, not only as a notification
+        verb = VERBS.get(method, method)
+        try:
+            said = said_of(vault.call(cid))
+        except Exception:
+            said = None
+
+        def act(sub: dict) -> dict:
+            """A pass for this device only: it can approve or decline this one request, once, for a few hours.
+            It travels encrypted to the device, so the push service in between can't read it."""
+            tok = "rly_act_" + secrets.token_urlsafe(32)
+            now = _now()
+            with store.tx() as c:
+                c.execute("DELETE FROM push_actions WHERE expires<?", (now,))
+                c.execute("INSERT INTO push_actions(token_hash,cid,handle,endpoint,expires) VALUES (?,?,?,?,?)",
+                          (_hash(tok), cid, owner, sub["endpoint"], now + ACT_SECONDS))
+            return {"act": tok}
+        pusher.notify(owner, "approvals", f"{agent} wants to {verb} on {site_of(url)}",
+                      (f"“{said}” · " if said else "") + f"With your {key_name} key.", f"/app#approve/{cid}", tag=cid,
+                      urgent=True, per_device=act)
+
+    @app.post("/push/act")
+    def push_act(body: ActIn):
+        """Approve or Decline pressed on a notification. The pass is the only credential: one request, one
+        device that still gets notifications, once, for a few hours."""
+        now = _now()
+        with store.tx() as c:
+            r = c.execute("SELECT * FROM push_actions WHERE token_hash=?", (_hash(body.t),)).fetchone()
+            if not r or r["used"] or r["expires"] < now or not c.execute(
+                    "SELECT 1 FROM push_subs WHERE endpoint=? AND handle=?", (r["endpoint"], r["handle"])).fetchone():
+                raise HTTPException(410, "This button has expired. Open Relay to answer.")
+            c.execute("UPDATE push_actions SET used=? WHERE cid=?", (now, r["cid"]))     # every device's pass for it
+        try:
+            got = vault.decide(r["handle"], r["cid"], body.ok)
+        except HTTPException:
+            raise HTTPException(409, "Already answered, or it expired.") from None
+        return {"status": got["status"], "agent": got["agent"], "result_status": got.get("result_status"),
+                "site": site_of(got["url"])}
     vault.on_waiting = ok_needed
     vault.on_refused = alert_health                 # a website turned a key away: say so now, not tomorrow
 
