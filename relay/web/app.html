@@ -316,6 +316,9 @@ button.hcheck { appearance: none; border: 0; background: none; width: 100%; text
 .segbadge[hidden] { display: none; }
 /* an approval in plain words first: what it says, what it carries, that the key stays hidden, when it expires */
 .plainask { display: grid; gap: 10px; padding: 16px 18px; border-radius: 20px; background: var(--fill); }
+/* on a phone, sending the page to the computer is the step; the terminal's own copy button steps back */
+.computernote ~ .steps .msgcard .btn:not(.ok) { background: var(--fill); color: var(--ink); }
+.computernote ~ .steps .msgcard .btn:not(.ok):hover { background: var(--fill2); }
 .plainask p { margin: 0; } .plainask .says { display: grid; gap: 2px; font-size: 16px; }
 .plainask .k { font-size: 12.5px; font-weight: 600; color: var(--ink2); }
 .plainask q { quotes: "“" "”"; font-weight: 500; overflow-wrap: anywhere; } .plainask a { color: var(--accent); overflow-wrap: anywhere; }
