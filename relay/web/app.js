@@ -1342,7 +1342,7 @@ async function profile(handle) {
   if (!a) return nav("agents", { replace: true });
   const p = providerOf(a);
   const quick = h("div", { class: "quick" },
-    h("button", { class: "q press", type: "button", onclick: () => nav(`activity/to/${enc(a.handle)}`) }, icon("chat"), "Message"),
+    h("button", { class: "q press", type: "button", onclick: () => nav(`activity/to/${enc(a.handle)}`) }, icon("chat"), "New message"),
     isOwner() && a.role !== "human" ? h("button", { class: "q press", type: "button", onclick: () => nav(`agents/${enc(a.handle)}/wake`) }, icon("reply"), "Instant replies") : null);      // a plain reply arrow, no "AI"-style symbols; a bell read as "notify me"
   const info = h("div", { class: "group info" },
     a.role !== "human" ? runsOn(a) : null,
@@ -1361,9 +1361,41 @@ async function profile(handle) {
   const r = reach(a);
   const sub = h("div", { class: "row small", style: "gap:8px" }, h("span", { class: "dot " + r.cls }),
     h("span", { text: a.role === "human" ? `Person · ${ago(a.last_seen)}` : a.last_seen && r.cls !== "off" ? `${r.text} · ${seenWords(a.last_seen)}` : r.text }));
-  screen("profile", tk,
+  // what you've already said to each other: the card is never a dead end, and Message starts a new one
+  const talks = h("section", { class: "facts" }, h("h2", { class: "label", text: `Conversations with ${a.handle}` }),
+    h("div", { class: "group conv" }, h("div", { class: "empty", text: "Loading…" })));
+  const view = screen("profile", tk,
     h("div", { class: "profile" }, avatar(a, 88), h("h1", { class: "title", text: a.handle }), sub, quick),
-    h("div", { class: "stack" }, h("section", { class: "facts" }, h("h2", { class: "label", text: "Details" }), info), danger));
+    h("div", { class: "stack" }, talks, h("section", { class: "facts" }, h("h2", { class: "label", text: "Details" }), info), danger));
+  let shown = 5;
+  async function fill() {
+    let convs = [], ags = [];
+    try { [convs, ags] = await Promise.all([api("GET", `/threads?with=${enc(a.handle)}&limit=${shown + 1}`), api("GET", "/agents")]); } catch {}
+    if (!view.isConnected) return;
+    const list = talks.querySelector(".conv");
+    if (!convs.length) return list.replaceChildren(h("div", { class: "empty", text: `Nothing yet. Message starts your first conversation with ${a.handle}.` }));
+    const by = Object.fromEntries(ags.map((x) => [x.handle, x]));
+    const rows = convs.slice(0, shown).map((t) => convRow(t, by));      // (replaceChildren would print a null as "null")
+    if (convs.length > shown) rows.push(h("button", { class: "morerow press", type: "button", onclick: () => { shown += 20; fill(); } }, "Show more", chev()));
+    list.replaceChildren(...rows);
+  }
+  fill();
+}
+// one conversation as a row: named after the request that started it, who's in it and the newest line under it,
+// bold with a dot while it has something you haven't seen
+function convRow(t, by) {
+  const others = (t.people || []).filter((x) => x !== ME.handle && x !== "relay");
+  const last = t.last;
+  const about = t.first && t.first.from !== "relay" ? topic(t.first.text) : "";
+  const who = last.from === ME.handle ? "You: " : last.from === "relay" || (others.length === 1 && others[0] === last.from) ? "" : `${last.from}: `;
+  const line = about ? `${names(others)}${t.count > 1 ? " · " + who + gist(last.text) : ""}` : who + gist(last.text);
+  return h("button", { class: "cell press" + (t.unread ? " unread" : ""), type: "button", "data-key": `activity/${t.thread}`,
+      onclick: () => nav(`activity/${t.thread}`, { data: others }) },
+    h("span", { class: "stackav" }, ...(others.length ? others : ["relay"]).slice(0, 2).map((x) => avatar(by[x] || { handle: x }, others.length > 1 ? 38 : 46))),
+    h("div", { class: "grow" },
+      h("div", { class: "spread", style: "gap:8px" }, h("div", { class: "t one", text: about || names(others) || "Relay" }),
+        h("span", { class: "when tnum" }, t.unread ? h("span", { class: "newdot", "aria-hidden": "true" }) : null, whenShort(last.time))),
+      h("div", { class: "s preview", text: line })));
 }
 
 // you: your email sign-in and sign out

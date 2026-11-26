@@ -110,6 +110,10 @@ async function seed() {
         return hits.slice(0, 3);
       });
       for (const o of out) problems.push(`${variant}/${name}: sticks out: ${o}`);
+      // a slip in the code shows up as the word itself: "null", "undefined", "NaN" on the screen
+      const slips = await page.evaluate(() => document.body.innerText.split("\n").map((l) => l.trim())
+        .filter((l) => /^(null|undefined|NaN)$/.test(l) || /\bundefined\b|\bNaN\b/.test(l)).slice(0, 3));
+      for (const o of slips) problems.push(`${variant}/${name}: shows a code slip: "${o}"`);
       // a button's words must fit inside it, with room to spare: phones use wider fonts than this browser
       // (an iPhone showed "Instant replies" spilling out of its tile), so check with letters 6% wider too
       const spill = await page.evaluate(() => {

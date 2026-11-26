@@ -1591,7 +1591,8 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
         return rows[::-1] if latest else rows
 
     @app.get("/threads")
-    def threads(limit: int = Query(40, ge=1, le=200), before: int = 0, me: dict = Depends(auth)):
+    def threads(limit: int = Query(40, ge=1, le=200), before: int = 0, with_: Optional[str] = Query(None, alias="with", max_length=64),
+                me: dict = Depends(auth)):
         """The conversations I may see, the most recently active first: each one's newest message, how many
         messages it has and who has been in it. `before` (a newest-message id) gives the next page."""
         with store.ro() as c:
@@ -1600,6 +1601,8 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
             a = list(more)
             if before:
                 q += " AND t.last<?"; a.append(before)
+            if with_:                          # only conversations this agent or person has been in
+                q += " AND t.thread IN (SELECT thread FROM members WHERE agent=?)"; a.append(with_.lstrip("@"))
             rows = c.execute(q + " ORDER BY t.last DESC LIMIT ?", a + [limit]).fetchall()
             ids = [r["thread"] for r in rows]
             people: dict = {}
