@@ -75,5 +75,11 @@ def test_the_owner_sees_the_hubs_health_and_others_only_their_own(hub, monkeypat
     assert got["title"] == "Storage is 95% full" and got["url"] == "/app#me/health"
     monkeypatch.setattr(M, "disk", lambda path: (60, 100))
     app.state.alert_health()
-    with app.state.store.ro() as db:                              # fixed: forgotten, so the next break taps again
+    monkeypatch.setattr(M, "disk", lambda path: (5, 100))         # a problem that comes and goes still taps once a day
+    assert app.state.alert_health() == 0
+    with app.state.store.tx() as db:                              # a day after it was fixed: the next break taps again
+        db.execute("UPDATE prefs SET value='0' WHERE key LIKE 'alert:%'")
+    monkeypatch.setattr(M, "disk", lambda path: (60, 100))
+    app.state.alert_health()
+    with app.state.store.ro() as db:
         assert db.execute("SELECT COUNT(*) FROM prefs WHERE key LIKE 'alert:%'").fetchone()[0] == 0

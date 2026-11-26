@@ -213,7 +213,9 @@ def test_the_service_worker_is_served_from_the_root(hub):
     assert "__SHELL_VERSION__" not in r.text and re.search(r'VERSION = "[0-9a-f]{16}"', r.text)
     # what it may keep for offline: never keys, approvals' details or files
     keep = re.search(r"const KEEP = (/.*/);", r.text).group(1)
-    assert "keys" not in keep and "media" not in keep and "artifacts" not in keep
+    assert "keys" not in keep and "media" not in keep and "artifacts" not in keep and "approvals" not in keep
+    # kept apart per person, and only when they chose to stay signed in
+    assert "X-Relay-Keep" in r.text and "crypto.subtle.digest" in r.text
 
 
 def test_each_notification_says_how_many_things_wait_for_the_app_icon(hub):

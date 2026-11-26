@@ -355,9 +355,34 @@ def test_the_daily_email_comes_in_the_morning_says_what_and_where_and_stops_in_o
     clock["t"] += 3 * 3600
     assert app.state.send_digests() == 0                                  # once a local day
     path = stop.replace("https://relay.example", "")
-    assert c.get(path.replace("t=kobby.", "t=kobby.0")).status_code == 400   # a forged link does nothing
-    assert c.post(path).status_code == 200                                # a mail app's one click
+    assert c.post(path.replace("t=kobby.", "t=kobby.0")).status_code == 400  # a forged link does nothing
+    assert c.post("/email/stop?t=kobby.%C3%A9").status_code == 400            # nor an odd one
+    opened = c.get(path)                                                  # opening it (or a mail scanner) only asks
+    assert opened.status_code == 200 and "<form method=post" in opened.text and "form-action 'self'" in opened.headers["content-security-policy"]
+    assert c.get("/me/prefs", headers=H(owner)).json()["digest"] is True
+    assert c.post(path).status_code == 200                                # the button, or a mail app's one click
     assert c.get("/me/prefs", headers=H(owner)).json()["digest"] is False
+
+
+def test_links_in_emails_never_come_from_a_requests_host(tmp_path, monkeypatch):
+    import json as _json
+    monkeypatch.setenv("RELAY_BACKUPS", "0")
+    monkeypatch.delenv("RELAY_PUBLIC_URL", raising=False)
+    monkeypatch.delenv("RAILWAY_PUBLIC_DOMAIN", raising=False)
+    sent = []
+    app = create_app(data_dir=str(tmp_path), admin_token=ADMIN, resend_key="re_test",
+                     resend_send=lambda m, u, h, b: (sent.append(_json.loads(b)), (200, b"{}"))[1])
+    c = TestClient(app)
+    owner = c.post("/owner", headers=H(ADMIN), json={"handle": "kobby"}).json()["token"]
+    c.put("/people/kobby/email", headers=H(owner), json={"email": "kobby@example.com"})
+    c.get("/health/live", headers={"Host": "evil.example", "X-Forwarded-Proto": "https"})     # anyone can send this
+    c.post("/invite-requests", json={"name": "Abena", "contact": "abena@example.com"})
+    assert app.state.send_digests() == 1
+    assert "evil.example" not in _json.dumps(sent[0])
+    monkeypatch.setenv("RAILWAY_PUBLIC_DOMAIN", "relay-hub.up.railway.app")                   # Railway's own address
+    with app.state.store.tx() as d:
+        d.execute("DELETE FROM prefs WHERE key='digest_sent'")
+    assert app.state.send_digests() == 1 and "https://relay-hub.up.railway.app/app#activity" in sent[1]["html"]
 
 
 def test_download_my_data_is_everything_of_mine_and_nothing_of_anyone_elses(tmp_path, monkeypatch):

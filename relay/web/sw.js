@@ -1,14 +1,15 @@
 // Relay on this device: it opens at once, and shows what you last saw when there's no signal.
 // - The app itself (one page, its script and styles) is kept here, a copy per version of the hub: the hub
 //   stamps that version below, so a new deploy brings a new copy and the old one is dropped.
-// - What the app last loaded for you (conversations, agents, what waits for you) is kept too, and used only
-//   when the network can't be reached. Signing out deletes it. Everything else always goes to the hub.
+// - What the app last loaded for you (conversations, agents) is kept too, and used only when the network can't
+//   be reached: only when you chose to stay signed in, kept apart per person, and deleted when you sign out or
+//   the app starts with nobody signed in. Never a key, an approval or a file. Everything else goes to the hub.
 // - Notifications: shows what the hub sent, and a tap opens the screen it's about.
 const VERSION = "__SHELL_VERSION__";
 const SHELL = "relay-shell-" + VERSION, DATA = "relay-data";
 const SHELL_FILES = ["/app", "/static/app.js", "/static/relay.css", "/static/fuse.js", "/icon.svg", "/icon-192.png"];
 // only these, and only GET: never a key, an approval's details, a file or anything that changes something
-const KEEP = /^\/(threads|agents|agents\/me|approvals|invite-requests|messages|me\/health|shortcuts)(\?|$)/;
+const KEEP = /^\/(threads|agents|agents\/me|invite-requests|messages|me\/health|shortcuts)(\?|$)/;
 const OPEN = /^\/(auth\/config|providers)$/;      // the same for everyone: kept the same way, no sign-in needed
 
 self.addEventListener("install", (e) => e.waitUntil((async () => {
@@ -29,15 +30,17 @@ self.addEventListener("fetch", (e) => {
     e.respondWith(caches.open(SHELL).then(async (c) => (await c.match(u.pathname)) || fetch(r)));
     return;
   }
-  if (KEEP.test(u.pathname + u.search) && r.headers.get("Authorization") || OPEN.test(u.pathname)) {
+  const mine = KEEP.test(u.pathname + u.search) && r.headers.get("Authorization") && r.headers.get("X-Relay-Keep") === "1";
+  if (mine || OPEN.test(u.pathname)) {
     // what you last saw: the network first, always; the kept copy only when the network can't be reached
     e.respondWith((async () => {
+      const box = OPEN.test(u.pathname) ? DATA + "-open" : await whose(r);
       try {
         const res = await fetch(r);
-        if (res.ok) { const c = await caches.open(DATA); await c.put(u.pathname + u.search, res.clone()); }
+        if (res.ok) { const c = await caches.open(box); await c.put(u.pathname + u.search, res.clone()); }
         return res;
       } catch (err) {
-        const kept = await (await caches.open(DATA)).match(u.pathname + u.search);
+        const kept = await (await caches.open(box)).match(u.pathname + u.search);
         if (!kept) throw err;
         const h = new Headers(kept.headers); h.set("X-Relay-Offline", "1");
         return new Response(await kept.blob(), { status: kept.status, headers: h });
@@ -46,8 +49,16 @@ self.addEventListener("fetch", (e) => {
   }
 });
 
-self.addEventListener("message", (e) => {      // signing out: forget what was kept for you
-  if (e.data && e.data.relay === "forget") e.waitUntil(caches.delete(DATA));
+// each person's copy is kept apart: a box named after a hash of their sign-in, so one never sees another's
+async function whose(r) {
+  const d = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(r.headers.get("Authorization") || ""));
+  return DATA + "-" + [...new Uint8Array(d)].slice(0, 8).map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+async function forget() {
+  for (const k of await caches.keys()) if (k.startsWith(DATA)) await caches.delete(k);
+}
+self.addEventListener("message", (e) => {      // signing out: forget what was kept
+  if (e.data && e.data.relay === "forget") e.waitUntil(forget());
 });
 
 self.addEventListener("push", (e) => {

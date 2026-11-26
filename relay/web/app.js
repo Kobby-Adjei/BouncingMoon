@@ -62,7 +62,9 @@ const chev = () => svg("0 0 8 14", [{ d: "M1.5 1.5L6.5 7l-5 5.5", fill: "none", 
 
 const store = {
   get() { try { return localStorage.getItem("relay_key") || sessionStorage.getItem("relay_key"); } catch { return null; } },
+  kept(k) { try { return localStorage.getItem("relay_key") === k; } catch { return false; } },
   set(k, remember) {
+    if (this.get() !== k) forgetKept();         // someone new signing in: nothing of the last person's stays
     try { (remember ? localStorage : sessionStorage).setItem("relay_key", k);
           (remember ? sessionStorage : localStorage).removeItem("relay_key"); } catch {}
   },
@@ -78,6 +80,8 @@ async function api(method, path, body, key = KEY) {
   const headers = {};
   if (key) headers.Authorization = "Bearer " + key;
   if (body !== undefined) headers["Content-Type"] = "application/json";
+  // keep a copy for offline only when you chose to stay signed in on this device (the sign-in is in localStorage)
+  if (key && method === "GET" && store.kept(key)) headers["X-Relay-Keep"] = "1";
   let r;
   try { r = await fetch(path, { method, headers, body: body === undefined ? undefined : JSON.stringify(body), cache: "no-store" }); }
   catch {                                   // no network, and nothing kept on this device for this
@@ -112,8 +116,8 @@ if ("serviceWorker" in navigator) navigator.serviceWorker.register("/sw.js", { s
 function sayTimeZone() {
   if (ME && ME.role === "human") api("PUT", "/me/prefs", { tz: -new Date().getTimezoneOffset() }).catch(() => {});
 }
-function forgetKept() {                       // signing out: what was kept for this person goes too
-  try { caches.delete("relay-data"); } catch {}
+function forgetKept() {                       // signing out: what was kept on this device goes too
+  try { caches.keys().then((ks) => ks.filter((k) => k.startsWith("relay-data")).forEach((k) => caches.delete(k))); } catch {}
   try { navigator.serviceWorker.controller && navigator.serviceWorker.controller.postMessage({ relay: "forget" }); } catch {}
 }
 
@@ -3288,6 +3292,7 @@ brandmini.append(mark(), h("span", { class: "word", text: "Relay" }));
       store.clear(); forgetKept();
     }
   }
+  forgetKept();                              // nobody signed in: nothing kept for offline stays on this device
   if (wantInvite && AUTH.claimed) return askInvite();
   signin();
 })();

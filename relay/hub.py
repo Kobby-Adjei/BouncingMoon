@@ -44,7 +44,7 @@ from contextlib import asynccontextmanager, contextmanager
 from typing import Any, List, Optional
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
-from fastapi.responses import FileResponse, Response
+from fastapi.responses import FileResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field
 
 from . import media as media_mod
@@ -2050,13 +2050,29 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
         words = re.sub(r"[^\w\s.,'-]", "", re.sub(r"@\S+", "", text or "")).split()
         return " ".join(words)[:n].strip(" .,-") or "Conversation"
 
+    exporting: set = set()                       # one download at a time per person
+    exporting_lock = threading.Lock()
+
     @app.get("/me/export")
     def export_me(me: dict = Depends(auth)):
-        """A zip of everything this person has on the hub, readable as plain JSON."""
+        """A zip of everything this person has on the hub, readable as plain JSON. Built on disk and streamed,
+        one at a time per person, so a big history can't fill the hub's memory."""
         if me["role"] != "human":
             raise HTTPException(403, "Sign in as yourself to download your data.")
         h = me["handle"]
-        buf = io.BytesIO()
+        with exporting_lock:
+            if h in exporting:
+                raise HTTPException(429, "Your download is already being made. Wait for it to finish.")
+            exporting.add(h)
+        try:
+            return export_zip(h)
+        finally:
+            with exporting_lock:
+                exporting.discard(h)
+
+    def export_zip(h: str):
+        buf = tempfile.SpooledTemporaryFile(max_size=8 << 20, dir=store.tmp)
+        page = tempfile.SpooledTemporaryFile(max_size=2 << 20, mode="w+", encoding="utf-8", dir=store.tmp)
         with store.ro() as c:
             boss = first_owner(c)
             mine = [r["handle"] for r in c.execute(
@@ -2068,7 +2084,7 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
             email = c.execute("SELECT email FROM people_emails WHERE handle=?", (h,)).fetchone()
             agents_out = [{"name": r["handle"], "app": r["provider"], "connected_from": r["client"], "created": r["created"],
                            "last_seen": r["last_seen"]} for r in c.execute(f"SELECT * FROM agents WHERE handle IN ({','.join('?' * len(mine)) or "''"}) AND role='agent'", mine)]
-            threads_ = [r["thread"] for r in c.execute(f"SELECT DISTINCT thread FROM members WHERE agent IN ({qs})", who)]
+            threads_ = [r["thread"] for r in c.execute(f"SELECT DISTINCT thread FROM members WHERE agent IN ({qs}) ORDER BY thread DESC", who)]
             with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
                 z.writestr("README.txt", EXPORT_NOTE)
                 z.writestr("me.json", json.dumps({"name": h, "owner": bool(row["owner"]), "joined": row["created"],
@@ -2078,7 +2094,8 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
                                                   "muted_conversations": [r["thread"] for r in c.execute(
                                                       "SELECT thread FROM marks WHERE handle=? AND muted=1", (h,))]}, indent=2))
                 z.writestr("agents.json", json.dumps(agents_out, indent=2))
-                index = []
+                esc = html.escape
+                count = 0
                 for t in threads_:
                     msgs = [msg_out(r) for r in c.execute("SELECT * FROM messages WHERE thread=? ORDER BY id LIMIT 20000", (t,))]
                     for m in msgs:
@@ -2094,21 +2111,24 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
                         f"{when_read(m['time'])} · {m['from']}:\n{m.get('text') or ''}"
                         + "".join(f"\n[file: {f.get('name') or f.get('id')}]" for f in (m.get("media") or []) if isinstance(f, dict))
                         for m in msgs) + "\n")
-                    index.append((start["time"], title, who, name, msgs))
-                index.sort(key=lambda x: -x[0])
-                esc = html.escape
-                page = ["<!doctype html><meta charset=utf-8><meta name=viewport content='width=device-width,initial-scale=1'>",
-                        f"<title>Your Relay data</title><body style=\"font:16px/1.5 -apple-system,system-ui,sans-serif;max-width:720px;"
-                        f"margin:0 auto;padding:24px 16px;color:#18171d;background:#f6f4ef\"><h1>Your Relay data</h1>",
-                        f"<p>{esc(h)} · downloaded {esc(when_read(time.time()))} · {len(index)} conversation{'s' if len(index) != 1 else ''}</p>"]
-                for t0, title, who, name, msgs in index:
-                    page.append(f"<details style=\"background:#fff;border-radius:14px;padding:12px 16px;margin:10px 0\"><summary><b>{esc(title)}</b>"
-                                f"<br><small>{esc(when_read(t0))} · {esc(', '.join(who))} · {len(msgs)} message{'s' if len(msgs) != 1 else ''}</small></summary>")
+                    count += 1               # newest first: written to the page as it goes, not held in memory
+                    page.write(f"<details style=\"background:#fff;border-radius:14px;padding:12px 16px;margin:10px 0\"><summary><b>{esc(title)}</b>"
+                               f"<br><small>{esc(when_read(start['time']))} · {esc(', '.join(who))} · {len(msgs)} message{'s' if len(msgs) != 1 else ''}"
+                               "</small></summary>\n")
                     for m in msgs:
-                        page.append(f"<p><small>{esc(when_read(m['time']))}</small><br><b>{esc(m['from'])}</b>: "
-                                    f"{esc(m.get('text') or '').replace(chr(10), '<br>')}</p>")
-                    page.append("</details>")
-                z.writestr("index.html", "\n".join(page))
+                        page.write(f"<p><small>{esc(when_read(m['time']))}</small><br><b>{esc(m['from'])}</b>: "
+                                   f"{esc(m.get('text') or '').replace(chr(10), '<br>')}</p>\n")
+                    page.write("</details>\n")
+                    del msgs
+                page.seek(0)
+                with z.open("index.html", "w") as out:
+                    out.write(("<!doctype html><meta charset=utf-8><meta name=viewport content='width=device-width,initial-scale=1'>"
+                               f"<title>Your Relay data</title><body style=\"font:16px/1.5 -apple-system,system-ui,sans-serif;max-width:720px;"
+                               f"margin:0 auto;padding:24px 16px;color:#18171d;background:#f6f4ef\"><h1>Your Relay data</h1>"
+                               f"<p>{esc(h)} · downloaded {esc(when_read(time.time()))} · {count} conversation{'s' if count != 1 else ''}</p>\n").encode())
+                    for chunk in iter(lambda: page.read(1 << 16), ""):
+                        out.write(chunk.encode())
+                page.close()
                 z.writestr("shortcuts.json", json.dumps([{"title": r["title"], "text": r["text"], "to": _loads(r["mentions"], []),
                                                           "uses": r["uses"]} for r in c.execute("SELECT * FROM shortcuts WHERE handle=?", (h,))], indent=2))
                 z.writestr("keys.json", json.dumps([{"name": r["name"], "websites": _loads(r["hosts"], []), "ask": r["ask"],
@@ -2123,8 +2143,18 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
                     "notifications": [{"device": r["label"], "kinds": _loads(r["kinds"], []), "added": r["created"]}
                                       for r in c.execute("SELECT label, kinds, created FROM push_subs WHERE handle=?", (h,))]}, indent=2))
         name = time.strftime(f"relay-{h}-%Y-%m-%d.zip", time.gmtime())
-        return Response(buf.getvalue(), media_type="application/zip",
-                        headers={"Content-Disposition": f'attachment; filename="{name}"', "Cache-Control": "no-store"})
+        size = buf.tell()
+        buf.seek(0)
+
+        def stream():
+            try:
+                for chunk in iter(lambda: buf.read(1 << 16), b""):
+                    yield chunk
+            finally:
+                buf.close()
+        return StreamingResponse(stream(), media_type="application/zip",
+                                 headers={"Content-Disposition": f'attachment; filename="{name}"', "Cache-Control": "no-store",
+                                          "Content-Length": str(size)})
 
     @app.post("/me/delete")
     def delete_me(body: DeleteIn, me: dict = Depends(auth)):
@@ -2269,8 +2299,9 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
                     pusher.notify(h, "approvals", x["title"], x["detail"], f"/app#{x['url'] or 'me/health'}", tag=x["id"], urgent=True)
                     set_pref(c, h, f"alert:{x['id']}", str(now))
                     sent += 1
-            for gone in set(known) - {x["id"] for x in problems}:     # fixed: a new break later taps again
-                c.execute("DELETE FROM prefs WHERE handle=? AND key=?", (h, f"alert:{gone}"))
+            for gone in set(known) - {x["id"] for x in problems}:     # fixed, and a day has passed: a new break taps again
+                if now - known[gone] >= HEALTH_GAP:                    # (a problem that flickers still taps once a day)
+                    c.execute("DELETE FROM prefs WHERE handle=? AND key=?", (h, f"alert:{gone}"))
         return sent
 
     def alert_everyone() -> int:
@@ -2681,6 +2712,16 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
         lines += [{"text": x["title"], "url": f"/app#{x['url'] or 'me/health'}", "ask": False} for x in health_for(h) if not x["ok"]][:3]
         return lines
 
+    def mail_home() -> str:
+        """Where links in emails point: the hub's configured address only (RELAY_PUBLIC_URL, or the domain Railway
+        gives it), never one taken from a request, which anyone can make up. Unknown: emails go without links."""
+        if public_url:
+            return public_url
+        dom = (os.environ.get("RAILWAY_PUBLIC_DOMAIN") or "").strip().lower()
+        return f"https://{dom}" if re.fullmatch(r"[a-z0-9.-]+\.[a-z]{2,}", dom) else ""
+
+    STOP_RE = re.compile(r"^[a-z0-9._-]{1,64}\.[0-9a-f]{32}$")
+
     def stop_token(h: str) -> str:
         """Stops this person's daily email from the email itself, without signing in. Only does that."""
         return h + "." + hmac.new(hub_secret.encode(), b"digest-stop:" + h.encode(), hashlib.sha256).hexdigest()[:32]
@@ -2703,7 +2744,7 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
             people_ = [(r["handle"], r["email"]) for r in c.execute(
                 "SELECT e.handle, e.email FROM people_emails e JOIN agents a ON a.handle=e.handle AND a.role='human'"
                 " WHERE NOT EXISTS (SELECT 1 FROM push_subs p WHERE p.handle=e.handle AND p.kinds LIKE '%\"approvals\"%')")]
-        home = public_url or seen_https["origin"] or ""
+        home = mail_home()
         for h, email in people_:
             with store.ro() as c:
                 if pref(c, h, "digest") == "off":
@@ -2773,24 +2814,44 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
                 set_pref(c, me["handle"], "tz", str(body.tz))
             return prefs_out(c, me["handle"])
 
-    # Stop the daily email from the email itself: the link carries a token that can do only that. GET for a
-    # person's click, POST for a mail app's one-click unsubscribe (RFC 8058).
-    @app.api_route("/email/stop", methods=["GET", "POST"], include_in_schema=False)
-    def stop_email(t: str = Query("", max_length=200)):
-        h = t.rsplit(".", 1)[0]
-        ok = bool(h) and hmac.compare_digest(t, stop_token(h))
-        if ok:
-            with store.tx() as c:
-                if c.execute("SELECT 1 FROM agents WHERE handle=? AND role='human'", (h,)).fetchone():
-                    set_pref(c, h, "digest", "off")
-                else:
-                    ok = False
-        msg = ("You won't get Relay's daily email any more. Turn it back on in Relay: Me, Notifications."
-               if ok else "That link didn't work. Turn the daily email off in Relay: Me, Notifications.")
+    # Stop the daily email from the email itself: the link carries a token that can do only that. Opening the
+    # link only asks (mail scanners open links on their own); the button, or a mail app's one-click unsubscribe
+    # (a POST, RFC 8058), switches it off.
+    def stop_page(msg: str, t: str = "", status: int = 200) -> Response:
+        button = (f"<form method=post action=\"/email/stop?t={html.escape(t, quote=True)}\"><button style=\"font:600 16px -apple-system,"
+                  "system-ui,sans-serif;background:#4f44e0;color:#fff;border:0;border-radius:999px;padding:12px 22px;cursor:pointer\">"
+                  "Stop these emails</button></form>") if t else ""
         page = ("<!doctype html><meta charset=utf-8><meta name=viewport content='width=device-width,initial-scale=1'>"
                 "<title>Relay</title><body style=\"font:17px/1.5 -apple-system,system-ui,sans-serif;background:#f6f4ef;color:#18171d;"
-                f"display:grid;place-items:center;min-height:90vh;margin:0;padding:24px\"><p style=\"max-width:30em\">{html.escape(msg)}</p>")
-        return Response(page, status_code=200 if ok else 400, media_type="text/html; charset=utf-8", headers=page_headers)
+                f"display:grid;place-items:center;min-height:90vh;margin:0;padding:24px\"><div style=\"max-width:30em\"><p>{html.escape(msg)}</p>"
+                f"{button}</div>")
+        headers = {**page_headers, "Content-Security-Policy": page_headers["Content-Security-Policy"].replace(
+            "form-action 'none'", "form-action 'self'")}
+        return Response(page, status_code=status, media_type="text/html; charset=utf-8", headers=headers)
+
+    def stop_who(t: str) -> Optional[str]:
+        if not STOP_RE.match(t or ""):
+            return None
+        h = t.rsplit(".", 1)[0]
+        if not hmac.compare_digest(t.encode(), stop_token(h).encode()):
+            return None
+        with store.ro() as c:
+            return h if c.execute("SELECT 1 FROM agents WHERE handle=? AND role='human'", (h,)).fetchone() else None
+
+    @app.get("/email/stop", include_in_schema=False)
+    def stop_email_ask(t: str = Query("", max_length=200)):
+        if not stop_who(t):
+            return stop_page("That link didn't work. Turn the daily email off in Relay: Me, Notifications.", status=400)
+        return stop_page("Stop Relay's daily email? You can turn it back on in Relay: Me, Notifications.", t)
+
+    @app.post("/email/stop", include_in_schema=False)
+    def stop_email(t: str = Query("", max_length=200)):
+        h = stop_who(t)
+        if not h:
+            return stop_page("That link didn't work. Turn the daily email off in Relay: Me, Notifications.", status=400)
+        with store.tx() as c:
+            set_pref(c, h, "digest", "off")
+        return stop_page("You won't get Relay's daily email any more. Turn it back on in Relay: Me, Notifications.")
 
     # ---------------------------------------------------------------- connect apps with "Allow" (OAuth)
     def new_session(handle: str) -> dict:
