@@ -84,7 +84,8 @@ TOOLS = [
         "description": "Start a new conversation: send a message to a contact (by saved name or address, e.g. "
                        "'codex' or 'Muse') and wait for their answer. Returns the answer, or 'pending' with a "
                        "message id if they have not answered within wait_seconds; then use check_replies later. "
-                       "Never use ask to answer a message you were sent: use reply with its id.",
+                       "Never use ask to answer a message you were sent: use reply with its id. To send a document "
+                       "you wrote (a plan, a report, a table), pass it in `files` instead of pasting it into the message.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -137,7 +138,9 @@ TOOLS = [
         "name": "reply",
         "title": "Reply",
         "description": "Answer a message by its id (from check_replies). The sender is notified. If you need a "
-                       "person to choose (yes or no, a time, one of a few versions), add `options` so they can tap one.",
+                       "person to choose (yes or no, a time, one of a few versions), add `options` so they can tap one. "
+                       "To send a document you wrote (a plan, a report, a table), pass it in `files` instead of pasting "
+                       "it into the message: it arrives as a file people can download and agents can read.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -392,6 +395,19 @@ def mount(app, hub) -> None:
         return f"Saved: {out['name']} → {out['address']}", out
 
     FILE_TEXT_MAX = 2 * 2**20                # a document an agent writes out: 2 MB of text
+    FILE_TIP = ("\nTip: that message was a whole document. Next time send it as a file: pass `files` with a name "
+                "and its text, e.g. [{\"name\": \"plan.md\", \"content\": \"…\"}]. People can open and download it, "
+                "agents read it with view_media, and the message itself stays short.")
+
+    def file_tip(text: str, args) -> str:
+        """A document pasted into a message instead of sent as a file: say so, once per send, so the agent learns."""
+        if args.get("files") or args.get("attach"):
+            return ""
+        lines = text.splitlines()
+        heads = sum(1 for l in lines if re.match(r"#{1,4} \S", l))
+        table = any(re.match(r"\s*\|?\s*:?-{3,}", l) for l in lines)
+        long_doc = len(text) > 3000 or (len(text) > 1200 and (heads >= 2 or table or len(lines) > 30))
+        return FILE_TIP if long_doc else ""
 
     def attachments(me, args) -> list:
         """attach: links (fetched and watched by the hub), media ids the caller may see, or hub file ids."""
@@ -458,7 +474,7 @@ def mount(app, hub) -> None:
                     else:
                         c.execute("INSERT OR IGNORE INTO delivered(msg,handle,session) VALUES (?,?,?)", (ans["id"], me, eff))
                         hub.seen_by(c, me, [ans["id"]])
-                return (f"{to} answered (message {ans['id']}):\n{ans['text']}",
+                return (f"{to} answered (message {ans['id']}):\n{ans['text']}" + file_tip(text, args),
                         {"status": "answered", "to": to, "asked": sent["id"], "answer": ans})
             if time.monotonic() >= deadline:
                 with store.ro() as c:
@@ -473,7 +489,7 @@ def mount(app, hub) -> None:
                        f"replies for {to} in Relay, so it answers by itself).")
                 return (f"Sent to {to} as message {sent['id']}. No answer yet"
                         f"{f' after {wait} s' if wait else ''}. {why} The answer will come back to this chat: call "
-                        f"check_replies with thread {sent['thread']} to get it.",
+                        f"check_replies with thread {sent['thread']} to get it." + file_tip(text, args),
                         {"status": "pending", "to": to, "asked": sent["id"], "wakes": instant})
             with store.changed:                # wake as soon as anything is written (the answer, usually)
                 w = store.writes
@@ -791,8 +807,8 @@ def mount(app, hub) -> None:
                     session = b["session"]
             mention = [parent["sender"]] if parent["sender"] not in (me, "relay") else []
             out = hub.post(c, me, text, reply_to=mid, mentions=mention, session=session, media=media, options=options_of(args))
-        return f"Replied (message {out['id']})" + (f" with {len(media)} attachment(s): {', '.join(media)}." if media else "."), \
-            {**out, "media": media}
+        return f"Replied (message {out['id']})" + (f" with {len(media)} attachment(s): {', '.join(media)}." if media else ".") \
+            + file_tip(text, args), {**out, "media": media}
 
     def tool_saved_keys(me, args):
         keys = hub.vault.usable(me)

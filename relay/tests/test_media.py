@@ -464,3 +464,20 @@ def test_a_person_attaches_a_file_from_the_app(tmp_path):
     shown = c.get(f"/messages?thread={sent.json()['thread']}", headers=H(kobby)).json()
     card = shown[-1]["media"][0]
     assert card["kind"] == "document" and card["read"] and card["words"] == 4
+
+
+def test_an_agent_that_pastes_a_document_is_told_to_send_files(hub):
+    c, t, media = hub
+    doc = "# Plan\n\n## Week 1\nFilm.\n\n## Week 2\nEdit.\n\n| day | task |\n| --- | --- |\n" + "| mon | shoot |\n" * 80
+    pasted = ok(call(c, t["claude"], "ask", {"to": "muse", "message": doc, "wait_seconds": 0}, "A"))
+    assert "Tip: that message was a whole document" in pasted["content"][0]["text"]
+    short = ok(call(c, t["claude"], "reply", {"message_id": pasted["structuredContent"]["asked"], "text": "Thanks, will do."}, "A"))
+    assert "Tip:" not in short["content"][0]["text"]
+    sent = ok(call(c, t["claude"], "reply", {"message_id": pasted["structuredContent"]["asked"], "text": "As a file:",
+                                             "files": [{"name": "plan.md", "content": doc}]}, "A"))
+    assert "Tip:" not in sent["content"][0]["text"]
+    tools = c.post("/mcp", headers={"Authorization": f"Bearer {t['claude']}"},
+                   json={"jsonrpc": "2.0", "id": 1, "method": "tools/list"}).json()["result"]["tools"]
+    for name in ("ask", "reply"):
+        tool = next(x for x in tools if x["name"] == name)
+        assert "`files`" in tool["description"] and "files" in tool["inputSchema"]["properties"]
