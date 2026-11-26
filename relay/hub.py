@@ -23,6 +23,7 @@ from __future__ import annotations
 import hashlib
 import ipaddress
 import html
+import io
 import json
 import logging
 import os
@@ -35,6 +36,7 @@ import time
 import urllib.parse
 import urllib.request
 import uuid
+import zipfile
 from contextlib import asynccontextmanager, contextmanager
 from typing import Any, List, Optional
 
@@ -69,6 +71,8 @@ CREATE TABLE IF NOT EXISTS reads(msg INTEGER NOT NULL, handle TEXT NOT NULL, tim
 -- a person's saved hand-offs: one tap sends the same request to the same agents again
 CREATE TABLE IF NOT EXISTS shortcuts(id TEXT PRIMARY KEY, handle TEXT NOT NULL, title TEXT NOT NULL, text TEXT NOT NULL,
   mentions TEXT NOT NULL, created REAL NOT NULL, used REAL, uses INTEGER NOT NULL DEFAULT 0);
+-- a person's small settings (the daily email on or off, when it last went)
+CREATE TABLE IF NOT EXISTS prefs(handle TEXT NOT NULL, key TEXT NOT NULL, value TEXT, PRIMARY KEY(handle, key));
 CREATE TABLE IF NOT EXISTS seen(handle TEXT NOT NULL, thread INTEGER NOT NULL, last INTEGER NOT NULL, PRIMARY KEY(handle, thread));
 CREATE INDEX IF NOT EXISTS messages_channel ON messages(channel);
 CREATE TABLE IF NOT EXISTS subs(agent TEXT, channel TEXT, PRIMARY KEY(agent, channel));
@@ -421,6 +425,10 @@ class ShortcutIn(BaseModel):
     title: str = Field(default="", max_length=80)
     text: str = Field(min_length=1, max_length=4000)
     mentions: List[str] = Field(default_factory=list, max_length=20)
+
+
+class PrefsIn(BaseModel):
+    digest: Optional[bool] = None
 
 
 class DeleteIn(BaseModel):
@@ -1890,6 +1898,58 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
         threading.Thread(target=nightly_backups, name="relay-backups", daemon=True).start()
 
     # ---------------------------------------------------------------- delete my account
+    # ---------------------------------------------------------------- download my data
+    EXPORT_NOTE = ("Your data from Relay.\n\n"
+                   "me.json: your account. agents.json: your agents. conversations/: every conversation you or your agents\n"
+                   "are in, one file each, every message in order. shortcuts.json, keys.json (names and websites only:\n"
+                   "the keys themselves never leave the hub), approvals.json (what your agents asked to do with them, and\n"
+                   "what you said), devices.json (passkeys and notification devices, by name).\n"
+                   "Files people shared are listed in the messages that carried them, not copied here.\n")
+
+    @app.get("/me/export")
+    def export_me(me: dict = Depends(auth)):
+        """A zip of everything this person has on the hub, readable as plain JSON."""
+        if me["role"] != "human":
+            raise HTTPException(403, "Sign in as yourself to download your data.")
+        h = me["handle"]
+        buf = io.BytesIO()
+        with store.ro() as c:
+            boss = first_owner(c)
+            mine = [r["handle"] for r in c.execute(
+                "SELECT handle FROM agents WHERE role='agent' AND (person=? OR (? AND (person IS NULL OR person NOT IN"
+                " (SELECT handle FROM agents WHERE role='human'))))", (h, 1 if boss == h else 0))]
+            who = [h] + mine
+            qs = ",".join("?" * len(who))
+            row = c.execute("SELECT handle, created, last_seen, owner FROM agents WHERE handle=?", (h,)).fetchone()
+            email = c.execute("SELECT email FROM people_emails WHERE handle=?", (h,)).fetchone()
+            agents_out = [{"name": r["handle"], "app": r["provider"], "connected_from": r["client"], "created": r["created"],
+                           "last_seen": r["last_seen"]} for r in c.execute(f"SELECT * FROM agents WHERE handle IN ({','.join('?' * len(mine)) or "''"}) AND role='agent'", mine)]
+            threads_ = [r["thread"] for r in c.execute(f"SELECT DISTINCT thread FROM members WHERE agent IN ({qs})", who)]
+            with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+                z.writestr("README.txt", EXPORT_NOTE)
+                z.writestr("me.json", json.dumps({"name": h, "owner": bool(row["owner"]), "joined": row["created"],
+                                                  "last_seen": row["last_seen"], "email": email["email"] if email else None}, indent=2))
+                z.writestr("agents.json", json.dumps(agents_out, indent=2))
+                for t in threads_:
+                    msgs = [msg_out(r) for r in c.execute("SELECT * FROM messages WHERE thread=? ORDER BY id LIMIT 20000", (t,))]
+                    z.writestr(f"conversations/{t}.json", json.dumps(msgs, indent=1))
+                z.writestr("shortcuts.json", json.dumps([{"title": r["title"], "text": r["text"], "to": _loads(r["mentions"], []),
+                                                          "uses": r["uses"]} for r in c.execute("SELECT * FROM shortcuts WHERE handle=?", (h,))], indent=2))
+                z.writestr("keys.json", json.dumps([{"name": r["name"], "websites": _loads(r["hosts"], []), "ask": r["ask"],
+                                                     "created": r["created"], "last_used": r["last_used"]}
+                                                    for r in c.execute("SELECT * FROM vault_keys WHERE owner=?", (h,))], indent=2))
+                z.writestr("approvals.json", json.dumps([{"agent": r["agent"], "method": r["method"], "url": r["url"], "why": r["why"],
+                                                          "status": r["status"], "asked": r["created"], "decided": r["decided"]}
+                                                         for r in c.execute("SELECT * FROM vault_calls WHERE owner=? ORDER BY created", (h,))], indent=2))
+                z.writestr("devices.json", json.dumps({
+                    "passkeys": [{"name": r["name"], "added": r["created"], "last_used": r["last_used"]}
+                                 for r in c.execute("SELECT name, created, last_used FROM passkeys WHERE handle=?", (h,))],
+                    "notifications": [{"device": r["label"], "kinds": _loads(r["kinds"], []), "added": r["created"]}
+                                      for r in c.execute("SELECT label, kinds, created FROM push_subs WHERE handle=?", (h,))]}, indent=2))
+        name = time.strftime(f"relay-{h}-%Y-%m-%d.zip", time.gmtime())
+        return Response(buf.getvalue(), media_type="application/zip",
+                        headers={"Content-Disposition": f'attachment; filename="{name}"', "Cache-Control": "no-store"})
+
     @app.post("/me/delete")
     def delete_me(body: DeleteIn, me: dict = Depends(auth)):
         """A person leaves: they, their agents, sign-ins, connections, saved keys and everything they shared
@@ -1932,6 +1992,7 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
                                ("session_cursors", "handle"), ("delivered", "handle"), ("passkeys", "handle"),
                                ("oauth_tokens", "handle"), ("oauth_codes", "handle"), ("webauthn_challenges", "handle"),
                                ("push_subs", "handle"), ("reads", "handle"), ("seen", "handle"), ("shortcuts", "handle"),
+                               ("prefs", "handle"),
                                ("agents", "handle")):
                 c.execute(f"DELETE FROM {table} WHERE {col} IN ({q})", hs)
             for table in ("oauth_tokens", "oauth_codes"):
@@ -2269,6 +2330,15 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
         pusher.notify(owner, "approvals", f"{agent} wants to {VERBS.get(method, method)}",
                       f"With your {key_name} key, on {host}. Tap to review.", f"/app#approve/{cid}", tag=cid, urgent=True)
     vault.on_waiting = ok_needed
+
+    def waiting_for(person: str) -> int:
+        """What waits for this person: OKs to give, and for the owner, people asking to join."""
+        n = len(vault.waiting(person))
+        with store.ro() as c:
+            if first_owner(c) == person:
+                n += c.execute("SELECT COUNT(*) FROM invite_requests WHERE status='waiting'").fetchone()[0]
+        return n
+    pusher.badge_for = waiting_for
     if not os.environ.get("RELAY_VAULT_KEY"):
         vault.rekey(admin_token)                    # saved keys sealed with the admin token move to the hub's own
 
@@ -2290,6 +2360,97 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
     people.mount(app, SimpleNamespace(store=store, auth=auth, now=_now, hash=_hash, client_ip=client_ip,
                                       check_new_agent=check_new_agent, public_url=public_url,
                                       new_session=lambda h: new_session(h), tell_owner=tell_owner), supabase, resend)
+
+    # ---------------------------------------------------------------- the daily email: for people without notifications
+    DIGEST_GAP = 20 * 3600                       # once a day at most
+
+    def pref(c, h: str, key: str) -> Optional[str]:
+        r = c.execute("SELECT value FROM prefs WHERE handle=? AND key=?", (h, key)).fetchone()
+        return r["value"] if r else None
+
+    def set_pref(c, h: str, key: str, value: str) -> None:
+        c.execute("INSERT INTO prefs(handle,key,value) VALUES (?,?,?) ON CONFLICT(handle,key) DO UPDATE SET value=excluded.value",
+                  (h, key, value))
+
+    def unread_for(c, h: str) -> int:
+        """Conversations of this person's with something they haven't seen."""
+        floor = int((c.execute("SELECT value FROM meta WHERE key='seen_floor'").fetchone() or {"value": 0})["value"])
+        return c.execute(
+            "SELECT COUNT(*) FROM convs t JOIN messages m ON m.id=t.last JOIN members mb ON mb.thread=t.thread AND mb.agent=?"
+            " LEFT JOIN seen s ON s.handle=? AND s.thread=t.thread"
+            " WHERE m.sender NOT IN (?, ?) AND m.id > COALESCE(s.last, ?)", (h, h, h, SYSTEM, floor)).fetchone()[0]
+
+    def digest_lines(h: str) -> list:
+        lines = []
+        for call in vault.waiting(h)[:5]:
+            host = urllib.parse.urlsplit(call["url"]).hostname or call["url"]
+            verb = {"GET": "read", "POST": "post", "PUT": "change", "PATCH": "change", "DELETE": "delete"}.get(call["method"], call["method"])
+            lines.append(f"{call['agent']} wants to {verb} with your {call['key']} key, on {host}")
+        with store.ro() as c:
+            if first_owner(c) == h:
+                for r in c.execute("SELECT name FROM invite_requests WHERE status='waiting' ORDER BY created DESC LIMIT 5"):
+                    lines.append(f"{r['name']} would like an invite")
+            n = unread_for(c, h)
+        if n:
+            lines.append(f"{n} conversation{'s have' if n != 1 else ' has'} something new")
+        return lines
+
+    def send_digests() -> int:
+        """Everyone with an email on file, no notifications turned on and the email not switched off, who has
+        something waiting and hasn't had one in a day, gets one short email. Returns how many went."""
+        if not resend:
+            return 0
+        sent = 0
+        with store.ro() as c:
+            people_ = [(r["handle"], r["email"]) for r in c.execute(
+                "SELECT e.handle, e.email FROM people_emails e JOIN agents a ON a.handle=e.handle AND a.role='human'"
+                " WHERE NOT EXISTS (SELECT 1 FROM push_subs p WHERE p.handle=e.handle)")]
+        home = public_url or seen_https["origin"] or ""
+        for h, email in people_:
+            with store.ro() as c:
+                if pref(c, h, "digest") == "off" or _now() - float(pref(c, h, "digest_sent") or 0) < DIGEST_GAP:
+                    continue
+            lines = digest_lines(h)
+            if not lines:
+                continue
+            try:
+                status, _ = resend.send_digest(email, lines, f"{home}/app#activity" if home else "")
+            except Exception as e:
+                log.warning("digest to @%s failed: %s", h, e)
+                continue
+            if 200 <= status < 300:
+                with store.tx() as c:
+                    set_pref(c, h, "digest_sent", str(_now()))
+                sent += 1
+        return sent
+    app.state.send_digests = send_digests
+
+    def digest_loop():
+        time.sleep(600)
+        while True:
+            try:
+                n = send_digests()
+                if n:
+                    log.info("daily emails sent: %d", n)
+            except Exception as e:
+                log.warning("daily emails failed: %s", e)
+            time.sleep(1800)
+    if os.environ.get("RELAY_DIGEST", "1") != "0" and os.environ.get("RELAY_BACKUPS", "1") != "0":
+        threading.Thread(target=digest_loop, name="relay-digest", daemon=True).start()
+
+    @app.get("/me/prefs")
+    def my_prefs(me: dict = Depends(auth)):
+        with store.ro() as c:
+            return {"digest": pref(c, me["handle"], "digest") != "off", "email": bool(resend)}
+
+    @app.put("/me/prefs")
+    def set_my_prefs(body: PrefsIn, me: dict = Depends(auth)):
+        if me["role"] != "human":
+            raise HTTPException(403, "Settings are for people.")
+        with store.tx() as c:
+            if body.digest is not None:
+                set_pref(c, me["handle"], "digest", "on" if body.digest else "off")
+            return {"digest": pref(c, me["handle"], "digest") != "off", "email": bool(resend)}
 
     # ---------------------------------------------------------------- connect apps with "Allow" (OAuth)
     def new_session(handle: str) -> dict:

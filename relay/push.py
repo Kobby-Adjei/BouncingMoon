@@ -86,6 +86,7 @@ class Pusher:
                  background: bool = True):
         self.store = store
         self.contact = contact                   # who runs this hub, for the push services: a URL or mailto:
+        self.badge_for: Optional[Callable[[str], int]] = None   # how many things wait for a person (the icon's number)
         self.open = opener or (lambda req: urllib.request.urlopen(req, timeout=TIMEOUT))
         path = os.path.join(data_dir, "push_key.pem")
         if os.path.exists(path):
@@ -160,7 +161,13 @@ class Pusher:
         with self.store.ro() as c:
             subs = [dict(r) for r in c.execute("SELECT * FROM push_subs WHERE handle=?", (handle,))
                     if kind in json.loads(r["kinds"])]
-        payload = json.dumps({"title": title[:120], "body": body[:240], "url": url, "tag": tag or kind}).encode()
+        note = {"title": title[:120], "body": body[:240], "url": url, "tag": tag or kind}
+        if self.badge_for:                       # the number for the app icon
+            try:
+                note["badge"] = int(self.badge_for(handle))
+            except Exception:
+                pass
+        payload = json.dumps(note).encode()
         for s in subs:
             item = (s, payload, tag, urgent)
             self._send(*item) if not self.background else self.q.put(item)

@@ -314,6 +314,7 @@ function ensureShell() {
   const count = async () => {
     const n = await waitingCount();
     waiting.textContent = n > 9 ? "9+" : String(n); waiting.hidden = !n;
+    iconBadge(n);
     waiting.closest(".railitem").setAttribute("aria-label", n ? `Activity, ${n} waiting for you` : "Activity");
   };
   count(); every(shell, count, 15000);
@@ -588,8 +589,12 @@ async function overview(tk) {
 
 function signOut(message) {
   KEY = null; ME = null; store.clear(); trail.length = 0; clearInterval(timer); timer = null;
-  clearInterval(waitTimer); waitTimer = null; segBadge.hidden = true;
+  clearInterval(waitTimer); waitTimer = null; segBadge.hidden = true; iconBadge(0);
   signin(message);
+}
+// the number on Relay's Home Screen icon (iPhone 16.4+, Android, desktop apps): what waits for you, or nothing
+function iconBadge(n) {
+  try { if (n && navigator.setAppBadge) navigator.setAppBadge(n); else if (navigator.clearAppBadge) navigator.clearAppBadge(); } catch {}
 }
 // how many things wait for you: an OK to give, someone asking to join
 async function waitingCount() {
@@ -610,6 +615,7 @@ function watchWaiting() {
     try {
       const n = await waitingCount();
       segBadge.textContent = n > 9 ? "9+" : String(n); segBadge.hidden = !n;
+      iconBadge(n);
       seg.setAttribute("aria-label", n ? `Activity, ${n} waiting for you` : "Activity");
     } catch {}
   };
@@ -1424,7 +1430,8 @@ async function meScreen() {
       ME.owner ? h("button", { class: "door press", type: "button", onclick: (e) => saveBackup(e.currentTarget) },
         backupOrb(40), h("span", { class: "grow" }, h("b", { text: "Download a backup" }), backupLine())) : null),
       rows, h("button", { class: "btn ghost press signout", type: "button", onclick: userSignOut }, "Sign out"),
-      ME.owner || ME.role !== "human" ? null : ways(way("Delete my account", () => nav("me/delete")))));
+      ME.role !== "human" ? null : ways(way("Download my data", (e) => saveMyData(e.currentTarget)),
+        ME.owner ? null : way("Delete my account", () => nav("me/delete")))));
 }
 // How it's going: counted on this hub, shown only to its owner, sent nowhere
 function goingCard() {
@@ -1490,6 +1497,21 @@ function backupLine() {
     else line.textContent = st.local ? `Nightly copy on this server · ${since(st.local.time)}` : "Nightly copies start tonight";
   }).catch(() => line.remove());
   return line;
+}
+// a person's own copy of everything they have here: conversations, agents, shortcuts, keys (names only), devices
+async function saveMyData(btn) {
+  const was = btn.textContent;
+  btn.disabled = true; btn.textContent = "Preparing…";
+  try {
+    const r = await fetch("/me/export", { headers: { Authorization: "Bearer " + KEY }, cache: "no-store" });
+    if (!r.ok) throw new Error("Couldn't make it");
+    const url = URL.createObjectURL(await r.blob());
+    const a = h("a", { href: url, download: `relay-${ME.handle}-${new Date().toISOString().slice(0, 10)}.zip` });
+    document.body.append(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 10000);
+    btn.textContent = "Saved";
+  } catch (e) { btn.textContent = e.message; }
+  setTimeout(() => { btn.textContent = was; btn.disabled = false; }, 2500);
 }
 async function saveBackup(btn) {
   const label = btn.querySelector("b"), was = label.textContent;
@@ -1711,7 +1733,20 @@ async function notifyScreen() {
       h("section", { class: "facts" }, h("h2", { class: "label", text: "Tell me when" }), h("div", { class: "group info" }, ...rows)),
       test, err, h("div", { class: "ways" }, off));
   }
-  screen("notify", tk, head0, body);
+  // the daily email, for when notifications are off: once a day at most, only when something waits
+  const mail = h("section", { class: "facts" });
+  api("GET", "/me/prefs").then((pr) => {
+    if (!pr.email) return;
+    const box = h("input", { type: "checkbox", role: "switch", checked: pr.digest, "aria-label": "Daily email when something waits" });
+    box.addEventListener("change", async () => {
+      try { await api("PUT", "/me/prefs", { digest: box.checked }); } catch (x) { box.checked = !box.checked; alert(x.message); }
+    });
+    mail.replaceChildren(h("h2", { class: "label", text: "Email" }), h("div", { class: "group info" },
+      h("label", { class: "cell switchrow" }, h("div", { class: "grow" }, h("div", { class: "t", text: "Daily email when something waits" }),
+        h("div", { class: "s", text: "Only while notifications are off on all your devices, at most once a day, to your sign-in email" })),
+        box, h("span", { class: "switch", "aria-hidden": "true" }))));
+  }).catch(() => {});
+  screen("notify", tk, head0, body, mail);
 }
 
 // ------------------------------------------------------------------ keys: your agents use them, never see them
