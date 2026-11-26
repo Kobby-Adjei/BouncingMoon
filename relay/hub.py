@@ -77,6 +77,9 @@ CREATE TABLE IF NOT EXISTS shortcuts(id TEXT PRIMARY KEY, handle TEXT NOT NULL, 
 -- a person's small settings (the daily email on or off, when it last went)
 CREATE TABLE IF NOT EXISTS prefs(handle TEXT NOT NULL, key TEXT NOT NULL, value TEXT, PRIMARY KEY(handle, key));
 CREATE TABLE IF NOT EXISTS seen(handle TEXT NOT NULL, thread INTEGER NOT NULL, last INTEGER NOT NULL, PRIMARY KEY(handle, thread));
+-- Approve / Decline on a notification: a one-time pass per device, for one request, for a few hours
+CREATE TABLE IF NOT EXISTS push_actions(token_hash TEXT PRIMARY KEY, cid TEXT NOT NULL, handle TEXT NOT NULL,
+  endpoint TEXT NOT NULL, expires REAL NOT NULL, used REAL);
 -- a person's pinned conversations (kept on top) and muted ones (no notifications, not counted as new)
 CREATE TABLE IF NOT EXISTS marks(handle TEXT NOT NULL, thread INTEGER NOT NULL, pinned REAL, muted INTEGER NOT NULL DEFAULT 0,
   archived REAL, PRIMARY KEY(handle, thread));
@@ -476,6 +479,11 @@ class ShortcutIn(BaseModel):
     title: str = Field(default="", max_length=80)
     text: str = Field(min_length=1, max_length=4000)
     mentions: List[str] = Field(default_factory=list, max_length=20)
+
+
+class ActIn(BaseModel):
+    t: str = Field(min_length=20, max_length=100)
+    ok: bool
 
 
 class MarkIn(BaseModel):
@@ -2304,7 +2312,7 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
                                ("session_cursors", "handle"), ("delivered", "handle"), ("passkeys", "handle"),
                                ("oauth_tokens", "handle"), ("oauth_codes", "handle"), ("webauthn_challenges", "handle"),
                                ("push_subs", "handle"), ("reads", "handle"), ("seen", "handle"), ("shortcuts", "handle"),
-                               ("prefs", "handle"), ("marks", "handle"),
+                               ("prefs", "handle"), ("marks", "handle"), ("push_actions", "handle"),
                                ("agents", "handle")):
                 c.execute(f"DELETE FROM {table} WHERE {col} IN ({q})", hs)
             for table in ("oauth_tokens", "oauth_codes"):
@@ -2731,11 +2739,58 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
     app.state.vault = vault
     VERBS = {"GET": "read", "POST": "post", "PUT": "change", "PATCH": "change", "DELETE": "delete"}
 
+    ACT_SECONDS = 6 * 3600                       # how long Approve / Decline on a notification works
+
+    def said_of(call: dict) -> Optional[str]:
+        """The words a request carries (a caption, a message), for a person to read before saying yes."""
+        try:
+            body = json.loads(call["body"]) if call.get("body") else {}
+        except ValueError:
+            return None
+        if not isinstance(body, dict):
+            return None
+        return next((body[k].strip()[:140] for k in ("caption", "text", "message", "title", "description")
+                     if isinstance(body.get(k), str) and body[k].strip()), None)
+
     def ok_needed(owner, cid, agent, method, url, key_name):
         store.news(owner)                        # on their Activity now, not only as a notification
-        host = urllib.parse.urlsplit(url).hostname or url
-        pusher.notify(owner, "approvals", f"{agent} wants to {VERBS.get(method, method)}",
-                      f"With your {key_name} key, on {host}. Tap to review.", f"/app#approve/{cid}", tag=cid, urgent=True)
+        verb = VERBS.get(method, method)
+        try:
+            said = said_of(vault.call(cid))
+        except Exception:
+            said = None
+
+        def act(sub: dict) -> dict:
+            """A pass for this device only: it can approve or decline this one request, once, for a few hours.
+            It travels encrypted to the device, so the push service in between can't read it."""
+            tok = "rly_act_" + secrets.token_urlsafe(32)
+            now = _now()
+            with store.tx() as c:
+                c.execute("DELETE FROM push_actions WHERE expires<?", (now,))
+                c.execute("INSERT INTO push_actions(token_hash,cid,handle,endpoint,expires) VALUES (?,?,?,?,?)",
+                          (_hash(tok), cid, owner, sub["endpoint"], now + ACT_SECONDS))
+            return {"act": tok}
+        pusher.notify(owner, "approvals", f"{agent} wants to {verb} on {site_of(url)}",
+                      (f"“{said}” · " if said else "") + f"With your {key_name} key.", f"/app#approve/{cid}", tag=cid,
+                      urgent=True, per_device=act)
+
+    @app.post("/push/act")
+    def push_act(body: ActIn):
+        """Approve or Decline pressed on a notification. The pass is the only credential: one request, one
+        device that still gets notifications, once, for a few hours."""
+        now = _now()
+        with store.tx() as c:
+            r = c.execute("SELECT * FROM push_actions WHERE token_hash=?", (_hash(body.t),)).fetchone()
+            if not r or r["used"] or r["expires"] < now or not c.execute(
+                    "SELECT 1 FROM push_subs WHERE endpoint=? AND handle=?", (r["endpoint"], r["handle"])).fetchone():
+                raise HTTPException(410, "This button has expired. Open Relay to answer.")
+            c.execute("UPDATE push_actions SET used=? WHERE cid=?", (now, r["cid"]))     # every device's pass for it
+        try:
+            got = vault.decide(r["handle"], r["cid"], body.ok)
+        except HTTPException:
+            raise HTTPException(409, "Already answered, or it expired.") from None
+        return {"status": got["status"], "agent": got["agent"], "result_status": got.get("result_status"),
+                "site": site_of(got["url"])}
     vault.on_waiting = ok_needed
     vault.on_refused = alert_health                 # a website turned a key away: say so now, not tomorrow
 

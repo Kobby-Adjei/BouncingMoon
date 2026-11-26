@@ -151,7 +151,7 @@ class Pusher:
 
     # ------------------------------------------------------------ sending
     def notify(self, handle: str, kind: str, title: str, body: str, url: str, tag: Optional[str] = None,
-               urgent: bool = False) -> int:
+               urgent: bool = False, per_device: Optional[Callable[[dict], dict]] = None) -> int:
         """Queue a notification to every device of `handle` that wants this kind. Returns how many."""
         if kind == "answers" and tag:
             key, now = (handle, tag), time.monotonic()
@@ -167,8 +167,14 @@ class Pusher:
                 note["badge"] = int(self.badge_for(handle))
             except Exception:
                 pass
-        payload = json.dumps(note).encode()
         for s in subs:
+            extra = {}
+            if per_device:                       # something for this one device only (encrypted to it, like the rest)
+                try:
+                    extra = per_device(s) or {}
+                except Exception:
+                    extra = {}
+            payload = json.dumps({**note, **extra}).encode()
             item = (s, payload, tag, urgent)
             self._send(*item) if not self.background else self.q.put(item)
         return len(subs)

@@ -169,7 +169,8 @@ def test_an_agent_waiting_for_an_ok_tells_its_owner(hub):
                                           "json": {"caption": "New drop"}, "why": "Post it"}}}).json()["result"]["structuredContent"]
     got = [phone.read(s["body"]) for s in sent(app, svc)]
     ask = next(g for g in got if g["url"].startswith("/app#approve/"))
-    assert ask["title"] == "claude wants to post" and "instagram" in ask["body"] and ask["url"] == f"/app#approve/{r['request']}"
+    assert ask["title"] == "claude wants to post on Instagram" and "instagram" in ask["body"] and "“New drop”" in ask["body"]
+    assert ask["url"] == f"/app#approve/{r['request']}"
     assert "IGQV" not in json.dumps(got)                          # the key itself never goes anywhere
 
 
@@ -238,3 +239,43 @@ def test_a_muted_conversation_doesnt_buzz_but_approvals_still_do(hub):
     assert sent(app, svc) == []
     c.post("/invite-requests", json={"name": "Kofi", "contact": "kofi@example.com"})
     assert [phone.read(s["body"])["title"] for s in sent(app, svc)] == ["Kofi would like an invite"]
+
+
+
+def ask_for_ok(c, t):
+    c.post("/keys", headers=H(t["kobby"]), json={"name": "instagram", "hosts": ["graph.facebook.com"], "secret": "IGQV-not-real"})
+    return c.post("/mcp", headers=H(t["claude"], "chat-1"), json={"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {
+        "name": "call_api", "arguments": {"key": "instagram", "method": "POST", "url": "https://graph.facebook.com/v21.0/me/media",
+                                          "json": {"caption": "New drop"}, "why": "Post it"}}}).json()["result"]["structuredContent"]["request"]
+
+
+def test_approve_from_the_notification_with_a_one_time_pass_for_that_device(hub):
+    c, app, svc, t = hub
+    phone, laptop = Phone(), Phone("https://updates.push.services.mozilla.com/wpush/v2/laptop")
+    on(c, t["kobby"], phone)
+    on(c, t["kobby"], laptop)
+    cid = ask_for_ok(c, t)
+    got = {s["url"]: phone.read(s["body"]) if s["url"] == EP else laptop.read(s["body"]) for s in sent(app, svc)
+           if "approve" in (phone.read(s["body"]) if s["url"] == EP else laptop.read(s["body"]))["url"]}
+    p_act, l_act = got[EP]["act"], got[laptop.endpoint]["act"]
+    assert p_act != l_act and p_act.startswith("rly_act_")                         # one pass per device
+    assert c.post("/push/act", json={"t": "rly_act_" + "x" * 40, "ok": True}).status_code == 410   # a made-up pass
+    r = c.post("/push/act", json={"t": p_act, "ok": True})
+    assert r.status_code == 200 and r.json()["status"] == "done" and r.json()["site"] == "Instagram"
+    assert c.post("/push/act", json={"t": p_act, "ok": True}).status_code == 410      # once
+    assert c.post("/push/act", json={"t": l_act, "ok": False}).status_code == 410     # the other device's pass is spent too
+
+
+def test_a_pass_stops_working_when_its_device_is_turned_off_or_the_request_is_answered(hub):
+    c, app, svc, t = hub
+    phone = Phone()
+    on(c, t["kobby"], phone)
+    cid = ask_for_ok(c, t)
+    act = next(phone.read(s["body"]) for s in sent(app, svc) if "approve" in phone.read(s["body"])["url"])["act"]
+    c.post("/push/devices/remove", headers=H(t["kobby"]), json={"endpoint": EP})
+    assert c.post("/push/act", json={"t": act, "ok": True}).status_code == 410
+    on(c, t["kobby"], phone)
+    cid2 = ask_for_ok(c, t)
+    act2 = [phone.read(s["body"]) for s in sent(app, svc)][-1]["act"]
+    assert c.post(f"/approvals/{cid2}/decline", headers=H(t["kobby"])).status_code == 200   # answered in the app
+    assert c.post("/push/act", json={"t": act2, "ok": True}).status_code == 409
