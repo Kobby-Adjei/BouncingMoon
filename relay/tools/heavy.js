@@ -109,7 +109,7 @@ const MANY = "@claude @codex @muse @chatgptguy @grokguy @claude-code-laptop @gem
       await page.goto(HUB + "/app#activity"); await page.reload(); await page.waitForTimeout(2200);
       // one view at a time: it opens on what needs you, and each chip shows only its own
       const chipsSeen = await page.evaluate(() => [...document.querySelectorAll(".fchip")].map((b) => [b.textContent, b.getAttribute("aria-pressed")]));
-      if (chipsSeen.length !== 4 || chipsSeen[0][1] !== "true") problems.push(`${name}/activity: filters ${JSON.stringify(chipsSeen)}`);
+      if (chipsSeen.length !== 4 || !/^Needs you/.test(chipsSeen[1][0]) || chipsSeen[1][1] !== "true") problems.push(`${name}/activity: filters ${JSON.stringify(chipsSeen)}`);
       // all four on one line, even with a phone's wider letters
       const lines = await page.evaluate(() => { const st = document.createElement("style"); st.textContent = ".fchip { letter-spacing: .06em !important; }";
         document.head.append(st); const tops = new Set([...document.querySelectorAll(".fchip")].map((b) => Math.round(b.getBoundingClientRect().top))); st.remove(); return tops.size; });
@@ -117,7 +117,7 @@ const MANY = "@claude @codex @muse @chatgptguy @grokguy @claude-code-laptop @gem
       const needRows = await page.evaluate(() => document.querySelectorAll(".conv .jobcell").length);
       if (needRows !== 5) problems.push(`${name}/activity: Needs you shows ${needRows} of 5`);
       await page.screenshot({ path: path.join(OUT, `heavy-${name}-activity-needs.png`), fullPage: name === "phone" });
-      await page.click(".fchip:has-text('Agents')"); await page.waitForTimeout(1200);
+      await page.click(".fchip:has-text('Agent chats')"); await page.waitForTimeout(1200);
       const ag = await page.evaluate(() => ({ jobs: document.querySelectorAll(".conv .jobcell").length, rows: document.querySelectorAll(".conv .cell").length,
         older: [...document.querySelectorAll(".morerow")].some((b) => /Show older/.test(b.textContent)) }));
       if (ag.jobs || !ag.rows || !ag.older) problems.push(`${name}/activity: Agents view ${JSON.stringify(ag)}`);
@@ -128,7 +128,8 @@ const MANY = "@claude @codex @muse @chatgptguy @grokguy @claude-code-laptop @gem
       if (heads.some((x) => !/today/i.test(x))) problems.push(`${name}/when: Today shows ${heads.join(", ")}`);
       await page.screenshot({ path: path.join(OUT, `heavy-${name}-activity-today.png`), fullPage: name === "phone" });
       await page.selectOption(".whenpick", "older"); await page.waitForTimeout(1200);
-      if (!(await page.evaluate(() => /Nothing older/.test(document.querySelector(".conv").textContent)))) problems.push(`${name}/when: Older isn't empty`);
+      const olderSays = await page.evaluate(() => document.querySelector(".conv").textContent.slice(0, 120));
+      if (!/Nothing from before 3 months ago/.test(olderSays)) problems.push(`${name}/when: Older isn't empty: ${olderSays}`);
       await page.selectOption(".whenpick", "any"); await page.waitForTimeout(800);
       // search: words from what was said, marked in the results
       await page.fill(".searchbox input", "captions"); await page.waitForTimeout(1500);

@@ -56,13 +56,16 @@ const ICONS = {
   pin: "M9 3.5h6M10 3.5v5.5l-3.5 4h11l-3.5-4V3.5M12 13v7.5",
   muted: "M12 3a6 6 0 0 0-6 6v3.5L4.5 15h15L18 12.5V9a6 6 0 0 0-6-6zM9.5 18a2.5 2.5 0 0 0 5 0M3.5 3.5l17 17",
   more: "M5.5 12h.01M12 12h.01M18.5 12h.01",
+  archive: "M4 5.5h16v4H4zM5.5 9.5v8.5a1.5 1.5 0 0 0 1.5 1.5h10a1.5 1.5 0 0 0 1.5-1.5V9.5M10 13h4",
 };
 const icon = (name, sw) => svg("0 0 24 24", [{ d: ICONS[name], ...stroke, ...(sw ? { "stroke-width": sw } : {}) }]);
 const chev = () => svg("0 0 8 14", [{ d: "M1.5 1.5L6.5 7l-5 5.5", fill: "none", stroke: "currentColor", "stroke-width": "2", "stroke-linecap": "round", "stroke-linejoin": "round" }], "chev");
 
 const store = {
   get() { try { return localStorage.getItem("relay_key") || sessionStorage.getItem("relay_key"); } catch { return null; } },
+  kept(k) { try { return localStorage.getItem("relay_key") === k; } catch { return false; } },
   set(k, remember) {
+    if (this.get() !== k) forgetKept();         // someone new signing in: nothing of the last person's stays
     try { (remember ? localStorage : sessionStorage).setItem("relay_key", k);
           (remember ? sessionStorage : localStorage).removeItem("relay_key"); } catch {}
   },
@@ -78,6 +81,8 @@ async function api(method, path, body, key = KEY) {
   const headers = {};
   if (key) headers.Authorization = "Bearer " + key;
   if (body !== undefined) headers["Content-Type"] = "application/json";
+  // keep a copy for offline only when you chose to stay signed in on this device (the sign-in is in localStorage)
+  if (key && method === "GET" && store.kept(key)) headers["X-Relay-Keep"] = "1";
   let r;
   try { r = await fetch(path, { method, headers, body: body === undefined ? undefined : JSON.stringify(body), cache: "no-store" }); }
   catch {                                   // no network, and nothing kept on this device for this
@@ -112,8 +117,8 @@ if ("serviceWorker" in navigator) navigator.serviceWorker.register("/sw.js", { s
 function sayTimeZone() {
   if (ME && ME.role === "human") api("PUT", "/me/prefs", { tz: -new Date().getTimezoneOffset() }).catch(() => {});
 }
-function forgetKept() {                       // signing out: what was kept for this person goes too
-  try { caches.delete("relay-data"); } catch {}
+function forgetKept() {                       // signing out: what was kept on this device goes too
+  try { caches.keys().then((ks) => ks.filter((k) => k.startsWith("relay-data")).forEach((k) => caches.delete(k))); } catch {}
   try { navigator.serviceWorker.controller && navigator.serviceWorker.controller.postMessage({ relay: "forget" }); } catch {}
 }
 
@@ -324,6 +329,43 @@ function every(view, fn, ms) {
   const id = setInterval(() => { if (!view.isConnected) { clearInterval(id); return; } fn(); }, ms);
   return id;
 }
+// Live: one request at a time waits at the hub and comes back the moment something you'd see changes (a
+// message, an OK to give, someone asking to join). Screens refresh then, instead of asking every few seconds.
+// A slow timer stays underneath, in case the connection drops without anyone noticing.
+const liveSubs = new Set();
+let liveState = "", liveRunning = false;
+const nap = (ms) => new Promise((r) => setTimeout(r, ms));
+function liveOn(view, fn, fallback = 30000) {
+  const sub = () => { if (!view.isConnected) { liveSubs.delete(sub); return; } fn(); };
+  liveSubs.add(sub);
+  every(view, fn, fallback);
+  startLive();
+}
+async function startLive() {
+  if (liveRunning || !KEY) return;
+  liveRunning = true;
+  let last = 0;
+  while (KEY) {
+    const key = KEY;
+    try {
+      const r = await api("GET", `/changes?since=${enc(liveState)}&wait=25`);
+      if (key !== KEY) break;
+      if (liveState && r.state !== liveState) {
+        const gap = Date.now() - last;
+        if (gap < 800) await nap(800 - gap);          // a burst (an agent writing fast) refreshes once, not ten times
+        last = Date.now();
+        for (const f of [...liveSubs]) f();
+      }
+      liveState = r.state;
+    } catch (x) {
+      if (x.status === 401 || !KEY) break;
+      await nap(x.offline ? 8000 : 4000);
+    }
+  }
+  liveRunning = false; liveState = "";
+}
+// back to the app (phone unlocked, tab shown): look now, not at the next change
+document.addEventListener("visibilitychange", () => { if (!document.hidden) for (const f of [...liveSubs]) f(); });
 
 function screen(name, opts, ...kids) {
   const { tab = null, push = false, pop = false } = opts || {};
@@ -379,7 +421,7 @@ function ensureShell() {
     iconBadge(n);
     waiting.closest(".railitem").setAttribute("aria-label", n ? `Activity, ${n} waiting for you` : "Activity");
   };
-  count(); every(shell, count, 15000);
+  count(); liveOn(shell, count, 60000);
 }
 // which sidebar item is lit: Keys and You when they're open, else the list beside it
 function markRail() {
@@ -429,7 +471,7 @@ function known(r) {
   const [top, x, y, z] = r.split("/");
   if (z !== undefined) return false;
   if (top === "agents") return !y || !!x && (y === "wake" || ONE_TIME.has(y));
-  if (top === "activity") return !x || (x === "new" && !y) || (x === "to" && !!y) || (/^\d+$/.test(x) && !y);
+  if (top === "activity") return !x || ((x === "new" || x === "archived") && !y) || (x === "to" && !!y) || (/^\d+$/.test(x) && !y);
   if (top === "add") return isOwner() ? (!y || (y === "withkey" && !!x))
     : !!ME && ME.role === "human" && !y && (!x || APPS.some((a) => a.id === x && a.style === "allow"));
   if (top === "me") return (!x || ((x === "apps" || x === "passkeys" || x === "delete" || x === "friend" || x === "notify" || x === "health" || x === "account" || (x === "people" && isOwner())) && !y) || (x === "keys" && (!y || y === "new" || /^k_[0-9a-f]{12}$/.test(y))))
@@ -460,6 +502,7 @@ function screenFor(r) {
   if (p[0] === "activity") {
     if (!p[1]) return WIDE ? [pickHint, "activity"] : [activity];
     if (p[1] === "new") return [newMessage];
+    if (p[1] === "archived") return [archivedScreen];
     if (p[1] === "to") return [thread, null, [p[2]]];
     return [thread, Number(p[1]), payloads.get(r)];
   }
@@ -652,7 +695,7 @@ async function overview(tk) {
 }
 
 function signOut(message) {
-  KEY = null; ME = null; store.clear(); forgetKept(); trail.length = 0; clearInterval(timer); timer = null;
+  KEY = null; ME = null; store.clear(); forgetKept(); liveSubs.clear(); trail.length = 0; clearInterval(timer); timer = null;
   clearInterval(waitTimer); waitTimer = null; segBadge.hidden = true; iconBadge(0);
   signin(message);
 }
@@ -683,7 +726,7 @@ function watchWaiting() {
       seg.setAttribute("aria-label", n ? `Activity, ${n} waiting for you` : "Activity");
     } catch {}
   };
-  tick(); waitTimer = setInterval(tick, 15000);
+  tick(); waitTimer = setInterval(tick, 60000); liveSubs.add(tick); startLive();
 }
 function userSignOut() {
   const k = KEY;
@@ -1189,7 +1232,9 @@ function addPick() {
     appAvatar(a, 52), h("span", { text: a.label }), h("span", { class: "sub", text: a.sub }));
   const groups = ADD_GROUPS.map(([title, lede, ids]) => {
     const apps = ids.map((id) => APPS.find((a) => a.id === id)).filter((a) => isOwner() || a.style === "allow");
-    return h("section", { class: "addgroup" }, h("h2", { class: "label", text: title }), h("p", { class: "hint", text: lede }),
+    // Codex needs a setup key only the owner makes: someone else's list says what's actually in it
+    const said = !isOwner() && ids.includes("codex") ? "Claude Code can answer on its own." : lede;
+    return h("section", { class: "addgroup" }, h("h2", { class: "label", text: title }), h("p", { class: "hint", text: said }),
       h("div", { class: "pick stagger" }, ...apps.map(opt)));
   });
   const person = isOwner() ? h("button", { class: "door press", type: "button", onclick: () => nav("add/person") },
@@ -1466,6 +1511,18 @@ function convRow(t, by) {
       h("div", { class: "spread", style: "gap:8px" }, h("div", { class: "t one", text: about || names(others) || "Relay" }),
         h("span", { class: "when tnum" }, t.unread ? h("span", { class: "newdot", "aria-hidden": "true" }) : null, whenShort(last.time))),
       h("div", { class: "s preview", text: line })));
+}
+
+// Archived: off Activity, kept here. Something new said in one brings it back by itself.
+async function archivedScreen() {
+  const tk = ticket();
+  let convs = [], ags = [];
+  try { [convs, ags] = await Promise.all([api("GET", "/threads?archived=true&limit=200"), api("GET", "/agents")]); } catch {}
+  if (!fresh(tk)) return;
+  const by = Object.fromEntries(ags.map((a) => [a.handle, a]));
+  screen("archived", tk, head("Archived", "Something new said in one brings it back to Activity."),
+    convs.length ? h("div", { class: "group conv" }, ...convs.map((t) => convRow(t, by)))
+      : blank("Nothing archived", "Archive a conversation from its ⋯ menu to take it off Activity."));
 }
 
 // you: your email sign-in and sign out
@@ -2696,14 +2753,15 @@ async function activity() {
     markSelected();
   }
   // It grows without end, so it comes a page at a time: the newest conversations, then "Show older".
-  let pages = 1, more = false, filter = null;
+  let pages = 1, more = false, filter = null, roomy = false;
   const PAGE = 40;
   async function refresh() {
     if (q.length >= 2) return;              // searching: the list is the results until the box is cleared
     const mine = asked;
     try {
-      const [convs, ags, asks, wants] = await Promise.all([api("GET", `/threads?limit=${Math.min(PAGE * pages, 200)}${whenQuery(when)}`), api("GET", "/agents"),
-        ME.role === "human" ? api("GET", "/approvals").catch(() => []) : [], isOwner() ? api("GET", "/invite-requests").catch(() => []) : []]);
+      const [convs, ags, asks, wants, shelved] = await Promise.all([api("GET", `/threads?limit=${Math.min(PAGE * pages, 200)}${whenQuery(when)}`), api("GET", "/agents"),
+        ME.role === "human" ? api("GET", "/approvals").catch(() => []) : [], isOwner() ? api("GET", "/invite-requests").catch(() => []) : [],
+        filter === "all" || !filter ? api("GET", "/threads?archived=true&limit=1").catch(() => []) : []]);
       if (mine !== asked || q.length >= 2) return;      // a search started while this was on its way
       more = convs.filter((c) => !c.pinned).length >= Math.min(PAGE * pages, 200);
       const by = Object.fromEntries(ags.map((a) => [a.handle, a]));
@@ -2730,12 +2788,16 @@ async function activity() {
       const sets = { all: sorted, needs, new: sorted.filter((t) => t.unread), agents: sorted.filter((t) => !isMine(t)) };
       // picked once per visit (what needs you if anything does, else everything), then it stays put while you read
       if (!filter) filter = needs.length ? "needs" : "all";
+      // a few conversations need no filters: one list, what needs you on top. The tools come as it fills up.
+      // counted on the whole of Activity (not a date-filtered view of it), and once shown they stay for this visit
+      if (when === "any" && sorted.length + needs.length >= 6) roomy = true;
+      if (!roomy) filter = "all";
       const FILTERS = [["all", "All", 0], ["needs", "Needs you", needs.length], ["new", "New", sets.new.length], ["agents", "Agent chats", 0]];
       chips.replaceChildren(...FILTERS.map(([id, label, n]) => h("button", { class: "fchip press", type: "button", "aria-pressed": String(filter === id),
           onclick: () => { filter = id; first = true; refresh(); } },
         h("span", { text: label }), n ? h("span", { class: "fcount" + (id === "needs" ? " sun" : ""), text: n > 99 ? "99+" : String(n) }) : null)));
       const rows = [];
-      find.classList.toggle("nowhen", filter === "needs");          // what waits for you has no "when"
+      find.classList.toggle("nowhen", filter === "needs" || (sorted.length < 10 && when === "any"));   // "when" once there's history
       if (filter === "needs") rows.push(...needs);
       else {
         if (filter === "all" && needs.length) rows.push(secthead("Needs you"), ...needs);
@@ -2763,7 +2825,7 @@ async function activity() {
         }
       }
       const anything = needs.length || sorted.length;
-      chips.hidden = !anything;
+      chips.hidden = !roomy;
       if (when !== "any" && filter !== "needs" && !rows.length) rows.push(h("div", { class: "fempty" }, h("span", { text: `Nothing ${NOTHING_WHEN[when]}.` }),
         h("button", { class: "inline press", type: "button", onclick: () => setWhen("any") }, "Show any time")));
       else if (anything && !rows.length) rows.push(h("div", { class: "fempty", text: {
@@ -2771,7 +2833,9 @@ async function activity() {
         all: "No conversations yet. New starts one.", agents: "Your agents haven't talked among themselves yet." }[filter] }));
       if (filter !== "needs" && more && pages * PAGE < 200) rows.push(h("button", { class: "morerow press", type: "button", onclick: (e) => {
         e.currentTarget.disabled = true; pages++; refresh(); } }, "Show older conversations", chev()));
-      find.hidden = !anything;                        // nothing to search yet: no box
+      if (filter === "all" && shelved.length) rows.push(h("button", { class: "morerow press", type: "button", onclick: () => nav("activity/archived") },
+        icon("archive"), "Archived conversations", chev()));
+      find.hidden = !roomy && !q;                     // a handful you can see at a glance: no box yet
       if (rows.length) {
         if (!list.isConnected) view.querySelector(".blank").replaceWith(list);
         list.replaceChildren(...rows);
@@ -2787,7 +2851,7 @@ async function activity() {
   await refresh();
   if (!view.isConnected) return;
   if (WIDE) listRefresh = refresh;
-  every(view, refresh, 4000);
+  liveOn(view, refresh);
 }
 
 async function newMessage() {
@@ -3042,6 +3106,10 @@ async function thread(id, people) {
     popMenu(moreBtn, [
       { icon: "pin", label: st.pinned ? "Unpin" : "Pin to top", run: () => set({ pinned: !st.pinned }, st.pinned ? "Unpinned" : "Pinned to the top of Activity") },
       { icon: "muted", label: st.muted ? "Unmute" : "Mute", run: () => set({ muted: !st.muted }, st.muted ? "Unmuted" : "Muted. No notifications from it; requests for your OK still reach you.") },
+      { icon: "archive", label: st.archived ? "Move back to Activity" : "Archive", run: async () => {
+        await set({ archived: !st.archived }, st.archived ? "Back in Activity" : "Archived. Something new said there brings it back.");
+        if (!st.archived && !WIDE) nav("activity", { replace: true });      // it's off the list: back to the list
+      } },
     ]);
   });
   const top = head(title, canPost ? null : "Sign in as yourself to reply.", h("div", { class: "headright" }, faces, moreBtn));
@@ -3104,7 +3172,9 @@ async function thread(id, people) {
     // a long message folds: the conversation stays readable, the whole thing is one tap away
     const long = text.length > 700 || text.split("\n").length > 14;
     const more = long ? h("button", { class: "more press", type: "button", "aria-expanded": "false" }) : null;
-    const keep = !(m.id === threadId && mine && ME.role === "human") ? null : kept.has(m.id)
+    // worth keeping: a real request, not "hi" or a two-word hello
+    const worth = !/^(hi|hello|hey|yo|hiya|good (morning|afternoon|evening))\b/i.test(text.trim()) && text.trim().split(/\s+/).length >= 4;
+    const keep = !(m.id === threadId && mine && ME.role === "human" && worth) ? null : kept.has(m.id)
       ? h("span", { class: "more saved", text: "Saved · it's in New message" }) : h("button", { class: "more press savesc", type: "button" }, "Save as shortcut");
     if (keep && keep.tagName === "BUTTON") keep.addEventListener("click", async () => {
       const title = prompt("Name this shortcut", topic(text));
@@ -3188,7 +3258,7 @@ async function thread(id, people) {
   }
   await refresh();
   if (!view.isConnected) return;
-  every(view, refresh, 3000);
+  liveOn(view, refresh);
   if (composer && WIDE) input.focus();
 }
 
@@ -3251,6 +3321,7 @@ brandmini.append(mark(), h("span", { class: "word", text: "Relay" }));
       store.clear(); forgetKept();
     }
   }
+  forgetKept();                              // nobody signed in: nothing kept for offline stays on this device
   if (wantInvite && AUTH.claimed) return askInvite();
   signin();
 })();

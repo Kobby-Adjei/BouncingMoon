@@ -226,7 +226,7 @@ def test_a_pinned_conversation_stays_on_top_and_a_muted_one_stops_nagging(hub):
     for i in range(5):
         say(c, t["kobby"], f"@claude job {i}", to=["claude"])
     r = c.put(f"/threads/{old['thread']}/mark", headers=H(t["kobby"]), json={"pinned": True})
-    assert r.json() == {"thread": old["thread"], "pinned": True, "muted": False}
+    assert r.json() == {"thread": old["thread"], "pinned": True, "muted": False, "archived": False}
     first = talk(c.get("/threads?limit=3", headers=H(t["kobby"])).json())
     assert first[0]["thread"] == old["thread"] and first[0]["pinned"] and len(first) == 4      # pinned, then a page
     nxt = c.get(f"/threads?limit=3&before={first[-1]['last']['id']}", headers=H(t["kobby"])).json()
@@ -256,3 +256,42 @@ def test_only_people_mark_only_conversations_they_can_see_and_pins_are_capped(hu
         assert c.put(f"/threads/{th}/mark", headers=H(t["kobby"]), json={"pinned": True}).status_code == 200
     r = c.put(f"/threads/{mine['thread']}/mark", headers=H(t["kobby"]), json={"pinned": True})
     assert r.status_code == 429 and "Unpin one" in r.json()["detail"]
+
+
+def test_the_app_hears_about_a_change_at_once_and_only_its_own(hub):
+    import threading, time as _t
+    c, _, _, t = hub
+    first = c.get("/changes", headers=H(t["kobby"])).json()["state"]          # no `since`: at once
+    assert c.get(f"/changes?since={first}&wait=0", headers=H(t["kobby"])).json()["state"] == first
+    got = {}
+
+    def wait(who):
+        t0 = _t.monotonic()
+        r = c.get(f"/changes?since={states[who]}&wait=6", headers=H(t[who])).json()
+        got[who] = (r["state"], _t.monotonic() - t0)
+    states = {"kobby": first, "ama": c.get("/changes", headers=H(t["ama"])).json()["state"]}
+    ths = [threading.Thread(target=wait, args=(w,)) for w in ("kobby", "ama")]
+    for th in ths:
+        th.start()
+    _t.sleep(0.5)
+    say(c, t["kobby"], "@claude private to kobby", to=["claude"])            # ama can't see this one
+    ths[0].join(5)
+    assert got["kobby"][0] != first and got["kobby"][1] < 3                  # kobby: at once
+    ths[1].join(8)
+    assert got["ama"] == (states["ama"], got["ama"][1]) and got["ama"][1] >= 5.5   # ama: nothing to see, waited it out
+
+
+def test_archive_takes_a_conversation_off_the_list_until_something_new_is_said(hub):
+    c, _, _, t = hub
+    done = say(c, t["kobby"], "@claude finished job", to=["claude"])
+    live = say(c, t["kobby"], "@claude ongoing job", to=["claude"])
+    c.put(f"/threads/{done['thread']}/mark", headers=H(t["kobby"]), json={"pinned": True})
+    r = c.put(f"/threads/{done['thread']}/mark", headers=H(t["kobby"]), json={"archived": True}).json()
+    assert r["archived"] and not r["pinned"]                                          # archiving unpins
+    ids = lambda q="": [x["thread"] for x in talk(c.get(f"/threads{q}", headers=H(t["kobby"])).json())]
+    assert ids() == [live["thread"]] and ids("?archived=true") == [done["thread"]]
+    assert done["thread"] in [x["thread"] for x in c.get("/search?q=finished", headers=H(t["kobby"])).json()]   # still found
+    __import__("time").sleep(0.01)
+    say(c, t["claude"], "one more thing", reply_to=done["id"])                       # something new: it's back
+    assert set(ids()) == {live["thread"], done["thread"]} and ids("?archived=true") == []
+    assert not c.put(f"/threads/{done['thread']}/mark", headers=H(t["kobby"]), json={}).json()["archived"]
