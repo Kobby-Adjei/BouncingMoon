@@ -415,17 +415,22 @@ def test_a_chat_app_gets_a_follow_up_in_whichever_chat_its_person_opens_next(wok
 
 
 
-def test_a_new_chat_is_told_about_answers_held_for_an_earlier_chat_that_went_quiet(quick):
+def test_a_new_chat_is_told_about_answers_held_for_another_chat(quick):
     c, rec, t = quick
     asked = ask(c, t, "chat-A", "a caption for the launch?")              # chat-A asks, then goes away
     call(c, t["muse"], "check_replies", session="muse-1")
     call(c, t["muse"], "reply", {"message_id": asked["asked"], "text": "New drop."}, "muse-1")
-    fresh = call(c, t["claude"], "check_replies", session="chat-B")       # chat-A still counts as there
-    assert fresh["messages"] == [] and fresh["waiting_conversations"] == []
+    # chat-A still counts as open, but an app that opens a new connection every turn looks just like this:
+    # point to it, with what was asked, so this chat can tell whether it's its own work
+    fresh = call(c, t["claude"], "check_replies", session="chat-B")
+    assert fresh["messages"] == []                                        # never handed over by itself
+    assert fresh["waiting_conversations"] == [{"thread": asked["asked"], "new": 1, "from": ["muse"],
+                                               "asked": "a caption for the launch?", "other_chat_open": True}]
     time.sleep(0.7)                                                       # chat-A has gone quiet
     later = call(c, t["claude"], "check_replies", session="chat-B")
-    assert later["messages"] == []                                        # not handed over by itself
-    assert later["waiting_conversations"] == [{"thread": asked["asked"], "new": 1, "from": ["muse"]}]
+    assert later["messages"] == []
+    assert later["waiting_conversations"] == [{"thread": asked["asked"], "new": 1, "from": ["muse"],
+                                               "asked": "a caption for the launch?", "other_chat_open": False}]
     got = call(c, t["claude"], "check_replies", {"thread": asked["asked"]}, session="chat-B")["messages"]
     assert [m["text"] for m in got] == ["New drop."]                       # opening it brings it here
     assert call(c, t["claude"], "check_replies", session="chat-B")["waiting_conversations"] == []
@@ -458,3 +463,21 @@ def test_chatgpt_answers_go_to_the_chat_that_asked(hub):
     call(c, t["muse"], "reply", {"message_id": d["asked"], "text": "for mine"}, "m")
     assert mcp("check_replies", {}, "v1/chat-one")["messages"] == []
     assert [m["text"] for m in mcp("check_replies", {}, headers=own)["messages"]] == ["for mine"]
+
+
+def test_an_app_that_reconnects_every_turn_finds_its_answer(hub):
+    """Seen in production: an app opens a new connection (a new session) for every turn. Its next
+    turn's plain check_replies points to the answer, and opening the thread brings it."""
+    c, rec, t = hub
+    a = ask(c, t, "turn-1", "three hook ideas?\nfor the spring launch")
+    call(c, t["muse"], "check_replies", session="m")
+    call(c, t["muse"], "reply", {"message_id": a["asked"], "text": "1, 2, 3"}, "m")
+    r = c.post("/mcp", headers={"Authorization": f"Bearer {t['claude']}", "X-Relay-Session": "turn-2"},
+               json={"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "check_replies", "arguments": {}}})
+    res = r.json()["result"]
+    assert res["structuredContent"]["messages"] == []
+    assert [w["thread"] for w in res["structuredContent"]["waiting_conversations"]] == [a["asked"]]
+    assert f'thread {a["asked"]}: 1 new from muse, on "three hook ideas?"' in res["content"][0]["text"]
+    got = call(c, t["claude"], "check_replies", {"thread": a["asked"]}, session="turn-2")["messages"]
+    assert [m["text"] for m in got] == ["1, 2, 3"]
+    assert call(c, t["claude"], "check_replies", session="turn-3")["waiting_conversations"] == []

@@ -508,18 +508,26 @@ def mount(app, hub) -> None:
                     " AND NOT EXISTS (SELECT 1 FROM delivered d WHERE d.msg=m.id AND d.handle=r.handle AND d.session=r.session)"
                     " GROUP BY r.session ORDER BY MIN(m.id)", (me, hub.CONVERSATION + "%", me))]
 
+    def short(text, n=80) -> str:
+        """The first line of a message, cut to fit one line of a list."""
+        line = " ".join((text or "").split("\n", 1)[0].split())
+        return line if len(line) <= n else line[:n - 1].rstrip() + "…"
+
     def held_elsewhere(c, me, session) -> list:
-        """Answers held for another chat of mine that has gone quiet or closed: a chat that reconnected
-        with a new id, or a new chat picking the work up. Listed, not handed over: opening one by its
-        thread is what moves it here."""
+        """Answers held for another chat of mine: a chat that went quiet, or an app that opens a new
+        connection every turn (so its last turn still looks open, and is never coming back). Listed with
+        what was asked, so this chat can tell whether it is its own work; not handed over: opening one by
+        its thread is what moves it here."""
         rows = c.execute(
-            "SELECT m.thread, r.session, COUNT(*) AS n, GROUP_CONCAT(m.sender) AS who FROM routes r"
+            "SELECT m.thread, r.session, COUNT(*) AS n, GROUP_CONCAT(m.sender) AS who, root.text AS asked FROM routes r"
             " JOIN messages m ON m.id=r.msg JOIN session_cursors s ON s.handle=r.handle AND s.session=r.session"
+            " JOIN messages root ON root.id=m.thread"
             " WHERE r.handle=? AND r.session!=? AND r.session!='' AND r.session NOT LIKE ? AND m.sender!=? AND m.id>s.last"
             " AND NOT EXISTS (SELECT 1 FROM delivered d WHERE d.msg=m.id AND d.handle=r.handle AND d.session=r.session)"
-            " GROUP BY m.thread, r.session ORDER BY MIN(m.id)", (me, session, hub.CONVERSATION + "%", me)).fetchall()
-        return [{"thread": r["thread"], "new": r["n"], "from": sorted(set(r["who"].split(",")))}
-                for r in rows if hub.session_state(c, me, r["session"]) != "alive"]
+            " GROUP BY m.thread, r.session ORDER BY MIN(m.id) DESC LIMIT 10", (me, session, hub.CONVERSATION + "%", me)).fetchall()
+        return [{"thread": r["thread"], "new": r["n"], "from": sorted(set(r["who"].split(","))),
+                 "asked": short(r["asked"]), "other_chat_open": hub.session_state(c, me, r["session"]) == "alive"}
+                for r in reversed(rows)]
 
     def tool_check_replies(me, args, session=None):
         limit = max(1, min(int(args.get("limit", 20) or 20), 50))
@@ -544,11 +552,13 @@ def mount(app, hub) -> None:
         msgs = box["messages"]
         note = []
         if waiting:
-            note = ["Answers are waiting in conversations started from an earlier chat. Open one only if you "
-                    "are carrying on that work: call check_replies with that thread." if session else
+            note = ["Answers are waiting in conversations started from another chat or an earlier turn. Open one "
+                    "only if it is the work this chat is doing (what was asked is shown): call check_replies with "
+                    "that thread." if session else
                     "Answers are waiting in conversations started from a chat. Open one only if you "
                     "started it (in this chat): call check_replies with that thread."]
-            note += [f"- thread {w['thread']}: {w['new']} new from {', '.join(w['from'])}" for w in waiting]
+            note += [f"- thread {w['thread']}: {w['new']} new from {', '.join(w['from'])}"
+                     + (f", on \"{w['asked']}\"" if w.get("asked") else "") for w in waiting]
         if not msgs:
             head = "Nothing new in that conversation." if thread is not None else "Nothing new."
             return "\n".join([head] + note), {"messages": [], "waiting_conversations": waiting}
@@ -864,8 +874,12 @@ def mount(app, hub) -> None:
         msgs = body if isinstance(body, list) else [body]
         # A client of a newer MCP version (2026-07-28 on) tries a modern request first, and falls back to the
         # initialize handshake only on a 400 with no recognised modern error body (spec: Backward Compatibility).
-        # Until Relay speaks that version, answer exactly that: the client starts a session, so answers keep
-        # coming back to the chat that asked. A JSON-RPC error here would keep the client modern instead.
+        # Answer exactly that: the client starts a session, so answers keep coming back to the chat that asked.
+        # A JSON-RPC error here would keep the client modern instead. This is on purpose, not a gap: 2026-07-28
+        # removes sessions altogether (no Mcp-Session-Id, nothing that tells one chat from another), so
+        # speaking it would leave every chat of an identity sharing one inbox. For apps that reconnect every
+        # turn, the thread number `ask` returns is the handle (as that spec advises), and check_replies
+        # points a new turn to answers held for an earlier one. Revisit if a client stops falling back.
         if not any(isinstance(m, dict) and m.get("method") == "initialize" for m in msgs):
             asked = request.headers.get("mcp-protocol-version") or next((
                 (m.get("params") or {}).get("_meta", {}).get("io.modelcontextprotocol/protocolVersion")
