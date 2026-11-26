@@ -1722,7 +1722,10 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
             a = list(more)
             marks = {r["thread"]: r for r in c.execute("SELECT * FROM marks WHERE handle=?", (me["handle"],))}
             # archived: off your list until something new is said there (a newer message brings it back by itself)
-            shelf = " EXISTS (SELECT 1 FROM marks k WHERE k.handle=? AND k.thread=t.thread AND k.archived >= m.time)"
+            # ...or, muted as well, until someone mentions you there (a chatty agents' conversation stays put)
+            shelf = (" EXISTS (SELECT 1 FROM marks k WHERE k.handle=? AND k.thread=t.thread AND k.archived IS NOT NULL AND"
+                     " (k.archived >= m.time OR (k.muted=1 AND NOT EXISTS (SELECT 1 FROM messages x WHERE x.thread=t.thread"
+                     " AND x.time > k.archived AND x.mentions LIKE '%\"' || k.handle || '\"%'))))")
             q += (" AND" if archived else " AND NOT") + shelf; a.append(me["handle"])
             pins = [] if archived else sorted((t for t, r in marks.items() if r["pinned"]), key=lambda t: marks[t]["pinned"])
             if pins:                           # pinned ones come first, on the first page only, and never twice
@@ -1762,7 +1765,7 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
                  "first": first.get(r["thread"]), "unread": unread(r),
                  "pinned": bool(r["thread"] in marks and marks[r["thread"]]["pinned"]),
                  "muted": bool(r["thread"] in marks and marks[r["thread"]]["muted"]),
-                 "archived": bool(r["thread"] in marks and (marks[r["thread"]]["archived"] or 0) >= r["time"])} for r in rows]
+                 "archived": archived} for r in rows]
 
     # ---------------------------------------------------------------- live: the app hears about changes at once
     # One request at a time per open app, answered the moment something that person would see changes, instead
@@ -1848,14 +1851,16 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
         if me["role"] != "human":
             raise HTTPException(403, "Pinning and muting are for people.")
         h = me["handle"]
-        with store.tx() as c:
+        asking = body.pinned is None and body.muted is None and body.archived is None     # only asking how it stands
+        with (store.ro() if asking else store.tx()) as c:
             if not c.execute("SELECT 1 FROM convs WHERE thread=?", (thread,)).fetchone() or not can_see(c, h, thread):
                 raise HTTPException(404, "no such conversation")
             r = c.execute("SELECT * FROM marks WHERE handle=? AND thread=?", (h, thread)).fetchone()
             pinned, muted, shelved = (r["pinned"], r["muted"], r["archived"]) if r else (None, 0, None)
             last_time = c.execute("SELECT m.time FROM convs t JOIN messages m ON m.id=t.last WHERE t.thread=?", (thread,)).fetchone()["time"]
-            if shelved is not None and shelved < last_time:
-                shelved = None                   # something new was said since: it's back on the list
+            if shelved is not None and shelved < last_time and not (muted and not c.execute(
+                    "SELECT 1 FROM messages WHERE thread=? AND time>? AND mentions LIKE ?", (thread, shelved, f'%"{h}"%')).fetchone()):
+                shelved = None                   # something new was said since (muted: someone mentioned you): it's back
             if body.pinned is not None:
                 if body.pinned and not pinned:
                     if c.execute("SELECT COUNT(*) FROM marks WHERE handle=? AND pinned IS NOT NULL", (h,)).fetchone()[0] >= PINS_EACH:
@@ -1869,6 +1874,8 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
                 shelved = max(_now(), last_time) if body.archived else None
                 if body.archived:
                     pinned = None                # off the list: not pinned to the top of it
+            if asking:
+                return {"thread": thread, "pinned": pinned is not None, "muted": bool(muted), "archived": shelved is not None}
             store.news(h)                        # their other devices show it too
             if pinned is None and not muted and shelved is None:
                 c.execute("DELETE FROM marks WHERE handle=? AND thread=?", (h, thread))
@@ -2373,10 +2380,10 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
             age = time.time() - os.path.getmtime(os.path.join(folder, local[-1])) if local else None
             if age is not None and age > 36 * 3600:
                 out.append({"id": "backup", "ok": False, "title": f"No backup for {int(age // 86400) or 1} day{'s' if age >= 2 * 86400 else ''}",
-                            "detail": "The nightly copy didn't happen. The hub may be short of space; see Storage.", "url": None})
+                            "detail": "The nightly copy didn't happen. The hub may be short of space: check the storage line below.", "url": None})
             elif age is None and time.time() - STARTED > 3 * 3600:
                 out.append({"id": "backup", "ok": False, "title": "No backup yet",
-                            "detail": "The nightly copy hasn't run. The hub may be short of space; see Storage.", "url": None})
+                            "detail": "The nightly copy hasn't run. The hub may be short of space: check the storage line below.", "url": None})
             else:
                 out.append({"id": "backup", "ok": True, "title": "Backed up every night",
                             "detail": "The first copy is on its way" if age is None else "Last copy today" if age < 86400 else "Last copy yesterday",
@@ -2393,9 +2400,10 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
             free, total = media_mod.disk(store.dir)
             used = round(100 * (1 - free / total)) if total else 0
             stop = round(100 * (1 - media_mod.KEEP_FREE))
-            if total and used >= stop - 5:
-                out.append({"id": "storage", "ok": False, "title": f"Storage is {used}% full",
-                            "detail": f"New files stop at {stop}%. Remove old videos, or give the volume more room in Railway.", "url": None})
+            if total and used >= stop - 15:          # warned well before new files stop, not at the edge
+                out.append({"id": "storage", "ok": False, "title": "Storage is getting full" if used < stop else "Storage is full",
+                            "detail": f"{used}% used; new files stop at {stop}%. Remove old videos to make room, or ask "
+                                      "whoever hosts your hub for more space.", "url": None})
             else:
                 out.append({"id": "storage", "ok": True, "title": "Room to spare", "detail": f"Storage {used}% used", "url": None})
         return sorted(out, key=lambda x: x["ok"])

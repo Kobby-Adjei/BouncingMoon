@@ -108,9 +108,13 @@ let offNote = null;
 function offline(on) {
   if (!on && !offNote) return;
   if (!offNote) { offNote = h("div", { class: "offnote", role: "status", "aria-live": "polite" }); document.body.append(offNote); }
+  const was = offNote.classList.contains("show");
   offNote.textContent = on ? "Offline · showing what you last saw" : "";
   offNote.classList.toggle("show", on);
+  document.body.classList.toggle("isoffline", on);
+  if (was && !on) for (const f of [...liveSubs]) f();     // back: every open screen catches up now, not in 30 s
 }
+addEventListener("online", () => { for (const f of [...liveSubs]) f(); });
 // Relay on this device: the app opens at once from a saved copy (sw.js), and notifications work
 if ("serviceWorker" in navigator) navigator.serviceWorker.register("/sw.js", { scope: "/" }).catch(() => {});
 // the daily email comes in this person's morning: the hub needs their time zone (minutes east of UTC)
@@ -271,11 +275,19 @@ function linkup(p, name) {
 }
 
 // A short note at the bottom that something happened ("Pinned"), read out by screen readers, gone in a moment.
-function toast(text) {
+// It stays long enough to read (longer words, longer stay), and can carry one action: Undo.
+function toast(text, undo) {
   let t = document.querySelector(".toast");
-  if (!t) { t = h("div", { class: "toast", role: "status", "aria-live": "polite" }); document.body.append(t); }
-  t.textContent = text; t.classList.remove("show"); void t.offsetWidth; t.classList.add("show");
-  clearTimeout(t._t); t._t = setTimeout(() => t.classList.remove("show"), 2600);
+  if (!t) { t = h("div", { class: "toast", role: "status", "aria-live": "polite" }); }
+  // on a desktop it belongs to the pane the action happened in, not the middle of the window
+  const home = WIDE && detailPane && detailPane.isConnected ? detailPane : document.body;
+  if (t.parentNode !== home) home.append(t);
+  t.classList.toggle("inpane", home !== document.body);
+  t.replaceChildren(h("span", { text }), undo ? h("button", { class: "toastact press", type: "button", onclick: () => {
+    t.classList.remove("show"); undo(); } }, "Undo") : null);
+  t.classList.remove("show"); void t.offsetWidth; t.classList.add("show");
+  t.classList.toggle("withact", !!undo);
+  clearTimeout(t._t); t._t = setTimeout(() => t.classList.remove("show"), Math.min(7000, Math.max(2600, 1000 + text.length * 55) + (undo ? 2500 : 0)));
 }
 // A small menu under a button: picks are buttons; a tap outside, Escape or a pick closes it.
 function popMenu(btn, items) {
@@ -705,7 +717,8 @@ function iconBadge(n) {
 }
 // how many things wait for you: an OK to give, someone asking to join
 async function waitingCount() {
-  const [asks, wants] = await Promise.all([ME && ME.role === "human" ? api("GET", "/approvals").catch(() => []) : [],
+  const kept = () => { try { return Number(localStorage.getItem("relay_asks") || 0); } catch { return 0; } };
+  const [asks, wants] = await Promise.all([ME && ME.role === "human" ? api("GET", "/approvals").catch((x) => (x.offline ? Array(kept()).fill(0) : [])) : [],
     isOwner() ? api("GET", "/invite-requests").catch(() => []) : []]);
   return asks.length + wants.length;
 }
@@ -1520,7 +1533,7 @@ async function archivedScreen() {
   try { [convs, ags] = await Promise.all([api("GET", "/threads?archived=true&limit=200"), api("GET", "/agents")]); } catch {}
   if (!fresh(tk)) return;
   const by = Object.fromEntries(ags.map((a) => [a.handle, a]));
-  screen("archived", tk, head("Archived", "Something new said in one brings it back to Activity."),
+  screen("archived", tk, head("Archived", "Something new said in one brings it back to Activity. Muted ones come back only when someone mentions you."),
     convs.length ? h("div", { class: "group conv" }, ...convs.map((t) => convRow(t, by)))
       : blank("Nothing archived", "Archive a conversation from its ⋯ menu to take it off Activity."));
 }
@@ -1543,7 +1556,7 @@ async function meScreen() {
       ME.owner ? door(h("span", { class: "morb", style: "--s:40px", "aria-hidden": "true" }, h("span", { class: "mh l" }, youGlyph()),
         h("span", { class: "mh r" }, youGlyph())), "People", "me/people") : null,
       !ME.owner && person ? friendDoor() : null,
-      person ? door(passOrb(40), "Account", "me/account", h("span", { class: "doorhint", text: "Sign-in, your data" })) : null),
+      person ? door(passOrb(40), "Account", "me/account", h("span", { class: "doorhint", text: ME.owner ? "Passkeys, your data" : "Passkeys, data, delete" })) : null),
       h("button", { class: "btn ghost press signout", type: "button", onclick: userSignOut }, "Sign out")));
 }
 // Account: how you sign in, your data, and leaving. Kept off the main Me screen: used rarely, and carefully.
@@ -1561,19 +1574,21 @@ async function accountScreen() {
     h("section", { class: "facts acct" }, h("h2", { class: "label", text: "Your data" }),
       h("div", { class: "group info" },
         row("Download my data", "Every conversation, your agents and settings, as a zip", (e) => saveMyData(e.currentTarget)),
-        ME.owner ? null : row("Delete my account", "You, your agents, keys and files", () => nav("me/delete"), "dangerrow"))));
+        ME.owner ? null : row("Delete my account", "You, your agents, keys and files", () => nav("me/delete"), "dangerrow"))),
+    ME.owner ? h("p", { class: "hint", text: "You run this hub, so your account stays with it. The hub's full backup is under Health." }) : null);
 }
 // Under your name: everything working, or how many things need fixing. Tapping it opens Health.
 function healthLine() {
-  const b = h("button", { class: "hline press", type: "button", hidden: "", onclick: () => nav("me/health") });
+  // the owner always has something to check: hold its place so the screen doesn't jump when it arrives
+  const b = h("button", { class: "hline press" + (ME.owner ? " waiting" : ""), type: "button", hidden: ME.owner ? null : "", onclick: () => nav("me/health") });
   api("GET", "/me/health").then(({ checks }) => {
-    if (!checks.length) return;
-    const bad = checks.filter((x) => !x.ok).length;
-    b.classList.toggle("bad", !!bad);
+    if (!checks.length) { b.hidden = true; return; }
+    const bad = checks.filter((x) => !x.ok);
+    b.classList.toggle("bad", !!bad.length);
     b.replaceChildren(h("span", { class: "hdot", "aria-hidden": "true" }),
-      h("span", { text: bad ? (bad === 1 ? "1 thing to fix" : `${bad} things to fix`) : "Everything is working" }), chev());
-    b.hidden = false;
-  }).catch(() => {});
+      h("span", { class: "one", text: bad.length === 1 ? bad[0].title : bad.length ? `${bad.length} things to fix` : "Everything is working" }), chev());
+    b.classList.remove("waiting"); b.hidden = false;
+  }).catch(() => { b.hidden = true; });
   return b;
 }
 // How it's going: counted on this hub, shown only to its owner, sent nowhere
@@ -1643,8 +1658,10 @@ function backupLine() {
 }
 // a person's own copy of everything they have here: conversations, agents, shortcuts, keys (names only), devices
 async function saveMyData(btn) {
-  const was = btn.textContent;
-  btn.disabled = true; btn.textContent = "Preparing…";
+  // only the line under the label changes: the row keeps its shape (writing the whole row's text wiped it)
+  const line = btn.querySelector(".s, .doorsub") || btn;
+  const was = line.textContent;
+  btn.disabled = true; line.textContent = "Preparing your zip…";
   try {
     const r = await fetch("/me/export", { headers: { Authorization: "Bearer " + KEY }, cache: "no-store" });
     if (!r.ok) throw new Error("Couldn't make it");
@@ -1652,12 +1669,12 @@ async function saveMyData(btn) {
     const a = h("a", { href: url, download: `relay-${ME.handle}-${new Date().toISOString().slice(0, 10)}.zip` });
     document.body.append(a); a.click(); a.remove();
     setTimeout(() => URL.revokeObjectURL(url), 10000);
-    btn.textContent = "Saved";
-  } catch (e) { btn.textContent = e.message; }
-  setTimeout(() => { btn.textContent = was; btn.disabled = false; }, 2500);
+    line.textContent = `Saved to your downloads · ${a.download}`;
+  } catch (e) { line.textContent = e.offline || !navigator.onLine ? "You're offline. Try again when you're back." : e.message; }
+  setTimeout(() => { line.textContent = was; btn.disabled = false; }, 6000);
 }
-async function saveBackup(btn) {
-  const label = btn.querySelector("b"), was = label.textContent;
+async function saveBackup(btn, line = "b") {          // only that line changes while it downloads
+  const label = btn.querySelector(line), was = label.textContent;
   btn.disabled = true; label.textContent = "Preparing…";
   try {
     const r = await fetch("/backup", { headers: { Authorization: "Bearer " + KEY }, cache: "no-store" });
@@ -1972,6 +1989,13 @@ async function healthScreen() {
   try { ({ checks } = await api("GET", "/me/health")); } catch (x) { if (!fresh(tk)) return; return screen("health", tk, head("Health"), blank("Couldn't check", x.message)); }
   if (!fresh(tk)) return;
   const bad = checks.filter((x) => !x.ok);
+  // the promise to tell you only holds with notifications on: say so, and offer it, when they're off
+  const note = h("p", { class: "hint", text: "If something breaks, Relay tells you once a day until it's fixed." });
+  pushSub().then((sub) => {
+    if (sub && Notification.permission === "granted") return;
+    note.replaceChildren("Notifications are off, so Relay can't tell you when something breaks. ",
+      h("button", { class: "inline press", type: "button", onclick: () => nav("me/notify") }, "Turn them on"));
+  }).catch(() => {});
   const row = (x) => h("div", { class: "cell hcheck" + (x.ok ? "" : " bad") },
     h("span", { class: "hdot", "aria-hidden": "true" }),
     h("div", { class: "grow" }, h("div", { class: "t", text: x.title }), x.detail ? h("div", { class: "s", text: x.detail }) : null),
@@ -1979,11 +2003,15 @@ async function healthScreen() {
   screen("health", tk, heroHead(healthOrb(72, bad.length > 0), "Health",
       !checks.length ? "Nothing to check yet." : bad.length ? (bad.length === 1 ? "One thing needs fixing." : `${bad.length} things need fixing.`)
         : "Everything is working."),
-    checks.length ? h("div", { class: "group info" }, ...checks.map(row)) : null,
-    ME.owner ? h("div", { class: "doors healthdoors" }, h("button", { class: "door press", type: "button", onclick: (e) => saveBackup(e.currentTarget) },
-      backupOrb(40), h("span", { class: "grow" }, h("b", { text: "Download the hub's backup" }), backupLine()))) : null,
-    h("p", { class: "hint", text: "If something breaks, Relay tells you once a day until it's fixed, with your other notifications." }));
+    checks.length ? h("div", { class: "group info" }, ...checks.map(row),
+      // the owner's copy of everything: in the same list, worded the same way, never repeating a failure above
+      ME.owner ? h("button", { class: "cell hcheck hdl press", type: "button", onclick: (e) => saveBackup(e.currentTarget, ".s") },
+        h("span", { class: "hicon", "aria-hidden": "true" }, svg("0 0 24 24", [{ d: "M12 4v11m-5-5l5 5 5-5M5 19.5h14", ...stroke, "stroke-width": "2" }])),
+        h("div", { class: "grow" }, h("div", { class: "t", text: "Download the hub's backup" }),
+          h("div", { class: "s", text: "A copy of everything on Relay, to keep somewhere safe or restore elsewhere" }))) : null) : null,
+    note);
 }
+
 
 // ------------------------------------------------------------------ leaving: your half pulls away
 async function deleteScreen() {
@@ -2753,14 +2781,14 @@ async function activity() {
     markSelected();
   }
   // It grows without end, so it comes a page at a time: the newest conversations, then "Show older".
-  let pages = 1, more = false, filter = null, roomy = false;
+  let pages = 1, more = false, filter = null, roomy = (() => { try { return localStorage.getItem("relay_roomy") === "1"; } catch { return false; } })();
   const PAGE = 40;
   async function refresh() {
     if (q.length >= 2) return;              // searching: the list is the results until the box is cleared
     const mine = asked;
     try {
       const [convs, ags, asks, wants, shelved] = await Promise.all([api("GET", `/threads?limit=${Math.min(PAGE * pages, 200)}${whenQuery(when)}`), api("GET", "/agents"),
-        ME.role === "human" ? api("GET", "/approvals").catch(() => []) : [], isOwner() ? api("GET", "/invite-requests").catch(() => []) : [],
+        ME.role === "human" ? api("GET", "/approvals").catch((x) => (x.offline ? null : [])) : [], isOwner() ? api("GET", "/invite-requests").catch(() => []) : [],
         filter === "all" || !filter ? api("GET", "/threads?archived=true&limit=1").catch(() => []) : []]);
       if (mine !== asked || q.length >= 2) return;      // a search started while this was on its way
       more = convs.filter((c) => !c.pinned).length >= Math.min(PAGE * pages, 200);
@@ -2768,7 +2796,11 @@ async function activity() {
       const threads = new Map(convs.map((c) => [c.thread, { id: c.thread, msgs: [c.last], count: c.count, people: new Set(c.people),
         first: c.first, unread: c.unread && !c.muted, pinned: c.pinned, muted: c.muted }]));
       // "codex wants to post on Instagram" / "“New drop. Link in bio.” · expires in 23 h": what and where, not a hostname
-      const oks = asks.map((r) => h("button", { class: "cell jobcell press", type: "button", "data-key": `approve/${r.id}`, onclick: () => nav(`approve/${r.id}`) },
+      // offline, the requests themselves aren't kept on this device: say how many there were, not "nothing"
+      let missed = 0;
+      if (asks === null) { try { missed = Number(localStorage.getItem("relay_asks") || 0); } catch {} }
+      else { try { localStorage.setItem("relay_asks", String(asks.length)); } catch {} }
+      const oks = (asks || []).map((r) => h("button", { class: "cell jobcell press", type: "button", "data-key": `approve/${r.id}`, onclick: () => nav(`approve/${r.id}`) },
         h("span", { class: "stackav" }, avatar(by[r.agent] || { handle: r.agent }, 44)),
         h("div", { class: "grow" }, h("div", { class: "t", text: `${r.agent} wants to ${VERB[r.method] || r.method} on ${siteOf(r)}` }),
           h("div", { class: "s clamp2", text: [(plainAsk(r).text && `“${plainAsk(r).text}”`) || r.why, expiresIn(r.created)].filter(Boolean).join(" · ") })),
@@ -2779,6 +2811,9 @@ async function activity() {
           h("div", { class: "s one", text: (w.by ? `via ${w.by} · ` : "") + w.contact })),
         h("span", { class: "btn small", text: "Review" }))));
       needs.forEach((row, i) => { if (i) row.querySelector(".btn").classList.add("quiet"); });     // one solid button: the first
+      if (missed) needs.unshift(h("div", { class: "cell jobcell offask" }, h("div", { class: "grow" },
+        h("div", { class: "t", text: missed === 1 ? "1 request was waiting for your OK" : `${missed} requests were waiting for your OK` }),
+        h("div", { class: "s", text: "You can open them once you're back online. Nothing is posted without you." }))));
       const sorted = [...threads.values()].sort((x, y) => (y.pinned - x.pinned) || y.msgs[y.msgs.length - 1].time - x.msgs[x.msgs.length - 1].time)
         // an agent's "asking you to OK" note on its own is the Review row, said twice: show it once
         .filter((t) => !(t.count === 1 && /^🔑 Asking /u.test(t.msgs[0].text || "")));
@@ -2788,16 +2823,16 @@ async function activity() {
       const sets = { all: sorted, needs, new: sorted.filter((t) => t.unread), agents: sorted.filter((t) => !isMine(t)) };
       // picked once per visit (what needs you if anything does, else everything), then it stays put while you read
       if (!filter) filter = needs.length ? "needs" : "all";
-      // a few conversations need no filters: one list, what needs you on top. The tools come as it fills up.
-      // counted on the whole of Activity (not a date-filtered view of it), and once shown they stay for this visit
-      if (when === "any" && sorted.length + needs.length >= 6) roomy = true;
+      // A few conversations need no filters: one list, what needs you on top. The chips and When come together
+      // once there are 8 conversations, decided when the screen opens (never mid-read), and stay on this device.
+      if (first && when === "any" && sorted.length >= 8) { roomy = true; try { localStorage.setItem("relay_roomy", "1"); } catch {} }
       if (!roomy) filter = "all";
       const FILTERS = [["all", "All", 0], ["needs", "Needs you", needs.length], ["new", "New", sets.new.length], ["agents", "Agent chats", 0]];
       chips.replaceChildren(...FILTERS.map(([id, label, n]) => h("button", { class: "fchip press", type: "button", "aria-pressed": String(filter === id),
           onclick: () => { filter = id; first = true; refresh(); } },
         h("span", { text: label }), n ? h("span", { class: "fcount" + (id === "needs" ? " sun" : ""), text: n > 99 ? "99+" : String(n) }) : null)));
       const rows = [];
-      find.classList.toggle("nowhen", filter === "needs" || (sorted.length < 10 && when === "any"));   // "when" once there's history
+      find.classList.toggle("nowhen", filter === "needs" || (!roomy && when === "any"));   // "when" comes with the chips
       if (filter === "needs") rows.push(...needs);
       else {
         if (filter === "all" && needs.length) rows.push(secthead("Needs you"), ...needs);
@@ -2833,9 +2868,9 @@ async function activity() {
         all: "No conversations yet. New starts one.", agents: "Your agents haven't talked among themselves yet." }[filter] }));
       if (filter !== "needs" && more && pages * PAGE < 200) rows.push(h("button", { class: "morerow press", type: "button", onclick: (e) => {
         e.currentTarget.disabled = true; pages++; refresh(); } }, "Show older conversations", chev()));
-      if (filter === "all" && shelved.length) rows.push(h("button", { class: "morerow press", type: "button", onclick: () => nav("activity/archived") },
+      if (filter === "all" && shelved.length) rows.push(h("button", { class: "morerow archrow press", type: "button", onclick: () => nav("activity/archived") },
         icon("archive"), "Archived conversations", chev()));
-      find.hidden = !roomy && !q;                     // a handful you can see at a glance: no box yet
+      find.hidden = !anything;                        // search is always there once there's anything to find
       if (rows.length) {
         if (!list.isConnected) view.querySelector(".blank").replaceWith(list);
         list.replaceChildren(...rows);
@@ -2851,7 +2886,11 @@ async function activity() {
   await refresh();
   if (!view.isConnected) return;
   if (WIDE) listRefresh = refresh;
-  liveOn(view, refresh);
+  // a change arriving while a finger is on the list waits a moment: rows don't jump under a tap
+  let touched = 0;
+  list.addEventListener("pointerdown", () => { touched = Date.now(); });
+  const live = () => { const wait = touched + 1500 - Date.now(); if (wait > 0) setTimeout(live, wait); else refresh(); };
+  liveOn(view, live);
 }
 
 async function newMessage() {
@@ -3097,18 +3136,28 @@ async function thread(id, people) {
   // ⋯ : pin it to the top of Activity, or mute it. Only for people, once the conversation exists.
   const moreBtn = h("button", { class: "iconbtn press", type: "button", "aria-label": "Conversation options", "aria-haspopup": "menu",
     "aria-expanded": "false", hidden: "" }, icon("more", "3"));
+  // how this conversation stands (pinned, muted, archived), known before the menu opens so it opens at once
+  let markSt = null;
+  const loadMark = () => threadId && ME.role === "human" ? api("PUT", `/threads/${threadId}/mark`, {}).then((x) => { markSt = x; return x; }).catch(() => null) : null;
   moreBtn.addEventListener("click", async () => {
-    let st;
-    try { st = await api("PUT", `/threads/${threadId}/mark`, {}); } catch (x) { return alert(x.message); }
+    const st = markSt || await loadMark();
+    if (!st) return toast(navigator.onLine ? "Couldn't load this conversation's options." : "You're offline. Try again when you're back.");
     const set = async (body, said) => {
-      try { await api("PUT", `/threads/${threadId}/mark`, body); toast(said); if (listRefresh) listRefresh(); } catch (x) { alert(x.message); }
+      try { markSt = await api("PUT", `/threads/${threadId}/mark`, body); toast(said); if (listRefresh) listRefresh(); } catch (x) { toast(x.message); }
     };
     popMenu(moreBtn, [
       { icon: "pin", label: st.pinned ? "Unpin" : "Pin to top", run: () => set({ pinned: !st.pinned }, st.pinned ? "Unpinned" : "Pinned to the top of Activity") },
-      { icon: "muted", label: st.muted ? "Unmute" : "Mute", run: () => set({ muted: !st.muted }, st.muted ? "Unmuted" : "Muted. No notifications from it; requests for your OK still reach you.") },
+      { icon: "muted", label: st.muted ? "Unmute" : "Mute", run: () => set({ muted: !st.muted }, st.muted ? "Unmuted" : "Muted. Requests for your OK still come through.") },
       { icon: "archive", label: st.archived ? "Move back to Activity" : "Archive", run: async () => {
-        await set({ archived: !st.archived }, st.archived ? "Back in Activity" : "Archived. Something new said there brings it back.");
-        if (!st.archived && !WIDE) nav("activity", { replace: true });      // it's off the list: back to the list
+        if (st.archived) return set({ archived: false }, "Back in Activity");
+        const was = { ...st };
+        try { markSt = await api("PUT", `/threads/${threadId}/mark`, { archived: true }); } catch (x) { return toast(x.message); }
+        if (listRefresh) listRefresh();
+        const back = async () => {          // undo: as it was, pin and all
+          try { markSt = await api("PUT", `/threads/${threadId}/mark`, { archived: false, pinned: was.pinned }); if (listRefresh) listRefresh(); } catch {}
+        };
+        toast(was.pinned ? "Archived and unpinned" : was.muted ? "Archived. It stays here until someone mentions you." : "Archived", back);
+        if (!WIDE) nav("activity", { replace: true });      // it's off the list: back to the list
       } },
     ]);
   });
@@ -3117,6 +3166,7 @@ async function thread(id, people) {
   if (h1) { h1.classList.add("clamp2"); if (title.length > 22) h1.classList.add("longtitle"); h1.title = people.join(", "); }
   const view = screen("thread", tk, top, list);
   moreBtn.hidden = !(threadId && ME.role === "human");
+  loadMark();
   if (WIDE && view.isConnected) { top.classList.add("panehead"); detailPane.prepend(top); }   // a toolbar above the scrolling messages
   if (composer && view.isConnected) (WIDE ? detailPane : app).append(composer);    // phone: outside the sliding page, so "fixed" means the window
   try { for (const a of await api("GET", "/agents")) by[a.handle] = a; } catch {}

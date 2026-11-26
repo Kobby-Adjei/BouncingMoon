@@ -295,3 +295,15 @@ def test_archive_takes_a_conversation_off_the_list_until_something_new_is_said(h
     say(c, t["claude"], "one more thing", reply_to=done["id"])                       # something new: it's back
     assert set(ids()) == {live["thread"], done["thread"]} and ids("?archived=true") == []
     assert not c.put(f"/threads/{done['thread']}/mark", headers=H(t["kobby"]), json={}).json()["archived"]
+
+
+def test_a_muted_archived_conversation_stays_put_until_someone_mentions_you(hub):
+    c, _, _, t = hub
+    chat = say(c, t["kobby"], "@claude talk it over with @codex", to=["claude", "codex"])
+    c.put(f"/threads/{chat['thread']}/mark", headers=H(t["kobby"]), json={"muted": True, "archived": True})
+    __import__("time").sleep(0.01)
+    say(c, t["claude"], "@codex what do you think", to=["codex"], reply_to=chat["id"])          # agents chatting
+    shelf = lambda: [x["thread"] for x in c.get("/threads?archived=true", headers=H(t["kobby"])).json()]
+    assert shelf() == [chat["thread"]]
+    say(c, t["codex"], "@kobby we need you", to=["kobby"], reply_to=chat["id"])                   # mentioned: back
+    assert shelf() == [] and chat["thread"] in [x["thread"] for x in c.get("/threads", headers=H(t["kobby"])).json()]

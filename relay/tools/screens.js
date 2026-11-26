@@ -109,7 +109,10 @@ async function seed() {
       if (mark === "demo") { await page.evaluate(() => document.getElementById("chat").scrollIntoView({ block: "start" })); await page.waitForTimeout(6500); }
       else if (mark === "end") { await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight)); await page.waitForTimeout(1200); }
       else await page.waitForTimeout(route === "/" ? 3500 : 1800);
-      if (name === "activity-all") { await page.locator(".listpane .fchip, .fchip").filter({ hasText: /^All$/ }).last().click(); await page.waitForTimeout(800); }
+      if (name === "activity-all") {          // with few conversations there are no chips: All is what's shown
+        const chip = page.locator(".fchip:visible").filter({ hasText: /^All$/ });
+        if (await chip.count()) { await chip.last().click(); await page.waitForTimeout(800); }
+      }
       if (name === "thread-menu") { await page.locator('[aria-label="Conversation options"]:visible').first().click(); await page.waitForTimeout(700); }
       // the page must never scroll sideways on a phone
       const wide = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
