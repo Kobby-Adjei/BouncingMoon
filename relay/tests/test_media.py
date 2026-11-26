@@ -205,7 +205,7 @@ def test_a_web_page_is_never_shown_inline(hub, files):
     c, t, media = hub
     m = media.from_artifact("muse", upload(c, t["muse"], files / "page.html"))
     process(media)
-    assert media.get(m["id"])["kind"] == "file"
+    assert media.get(m["id"])["kind"] == "document"            # read as text, for agents
     r = c.get(path_of(media.link(m["id"])) + "/file")
     assert r.headers["content-type"] == "application/octet-stream" and r.headers["content-disposition"].startswith("attachment")
 
@@ -312,3 +312,155 @@ def test_metadata_is_cut_from_photos_without_touching_a_pixel(files):
     body = chunk(b"IDAT", zlib.compress(b"\x00\x7f")) + chunk(b"IEND", b"")
     png = b"\x89PNG\r\n\x1a\n" + head + chunk(b"tEXt", b"Comment\x00GPS 42.2411") + chunk(b"eXIf", b"MM\x00*") + body
     assert M.strip_png(png) == b"\x89PNG\r\n\x1a\n" + head + body
+
+
+# ------------------------------------------------------------------ documents are read, like videos are watched
+def tiny_pdf(lines) -> bytes:
+    """A real two-page PDF with text on each page (hand-built: no PDF library needed)."""
+    objs = ["<< /Type /Catalog /Pages 2 0 R >>", None, "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>"]
+    kids = []
+    for text in lines:
+        body = f"BT /F1 18 Tf 72 720 Td ({text}) Tj ET".encode()
+        objs.append(f"<< /Length {len(body)} >>\nstream\n{body.decode()}\nendstream")
+        objs.append(f"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R >> >>"
+                    f" /Contents {len(objs)} 0 R >>")
+        kids.append(f"{len(objs)} 0 R")
+    objs[1] = f"<< /Type /Pages /Kids [{' '.join(kids)}] /Count {len(kids)} >>"
+    out, offs = bytearray(b"%PDF-1.4\n"), []
+    for i, o in enumerate(objs, 1):
+        offs.append(len(out))
+        out += f"{i} 0 obj\n{o}\nendobj\n".encode()
+    x = len(out)
+    out += f"xref\n0 {len(objs) + 1}\n0000000000 65535 f \n".encode()
+    out += "".join(f"{o:010d} 00000 n \n" for o in offs).encode()
+    out += f"trailer\n<< /Size {len(objs) + 1} /Root 1 0 R >>\nstartxref\n{x}\n%%EOF\n".encode()
+    return bytes(out)
+
+
+def office(path, parts):
+    import zipfile
+    with zipfile.ZipFile(path, "w") as z:
+        for n, body in parts.items():
+            z.writestr(n, body)
+
+
+W = 'xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"'
+
+
+@pytest.mark.skipif(not shutil.which("pdftotext"), reason="needs poppler")
+def test_a_pdf_is_read_and_the_other_agent_can_read_all_of_it(hub, tmp_path):
+    c, t, media = hub
+    pdf = tmp_path / "Q3 plan.pdf"
+    pdf.write_bytes(tiny_pdf(["Quarterly plan: ship the connector", "Page two: hire a designer"]))
+    art = upload(c, t["muse"], pdf)
+    ok(call(c, t["muse"], "ask", {"to": "claude", "message": "read this?", "wait_seconds": 0, "attach": [art]}, "muse-1"))
+    process(media)
+    got = ok(call(c, t["claude"], "check_replies", session="chat-A"))
+    text = got["content"][0]["text"]
+    assert "Q3 plan.pdf" in text and 'Starts: "Quarterly plan: ship the connector' in text
+    assert "Read it all (2 pages," in text
+    mid = got["structuredContent"]["messages"][0]["media"][0]["id"]
+    res = ok(call(c, t["claude"], "view_media", {"id": mid}, "chat-A"))
+    body = res["content"][0]["text"]
+    assert "A PDF (2 pages" in body and "Page two: hire a designer" in body and "More:" not in body
+    pics = [x for x in res["content"] if x["type"] == "image"]
+    assert len(pics) == 1 and base64.b64decode(pics[0]["data"])[:3] == b"\xff\xd8\xff"     # its first page
+    brief = media.brief(mid)
+    assert brief["kind"] == "document" and brief["pages"] == 2 and brief["read"] and brief["poster"]
+    page = c.get(path_of(media.link(mid)))
+    assert "Page two: hire a designer" in page.text and "First page of" in page.text
+    poster = c.get(path_of(media.link(mid)) + "/poster")
+    assert poster.headers["content-type"] == "image/jpeg"                      # shown, not downloaded
+    f = c.get(path_of(media.link(mid)) + "/file")
+    assert f.headers["content-disposition"].startswith("attachment")           # the PDF itself downloads
+
+
+def test_word_slides_and_text_files_are_read(hub, tmp_path):
+    c, t, media = hub
+    office(tmp_path / "brief.docx", {"word/document.xml":
+        f'<w:document {W}><w:body><w:p><w:r><w:t>Launch brief</w:t></w:r></w:p>'
+        f'<w:p><w:r><w:t xml:space="preserve">Budget: </w:t></w:r><w:r><w:t>$4,000 &amp; two weeks</w:t></w:r></w:p>'
+        f'</w:body></w:document>'})
+    office(tmp_path / "deck.pptx", {"ppt/slides/slide2.xml": "<p:sld><a:p><a:r><a:t>Second idea</a:t></a:r></a:p></p:sld>",
+                                    "ppt/slides/slide1.xml": "<p:sld><a:p><a:r><a:t>Title slide</a:t></a:r></a:p></p:sld>"})
+    (tmp_path / "numbers.csv").write_text("month,views\nJan,1200\nFeb,1800\n")
+    (tmp_path / "notes.md").write_text("# Hooks\n\n- Wait for it\n- You won't believe\n")
+    (tmp_path / "blob.bin").write_bytes(bytes(range(256)) * 4)
+    got = {}
+    for name in ("brief.docx", "deck.pptx", "numbers.csv", "notes.md", "blob.bin"):
+        got[name] = media.from_artifact("muse", upload(c, t["muse"], tmp_path / name))["id"]
+    process(media)
+    assert media.doc_text(got["brief.docx"]) == "Launch brief\nBudget: $4,000 & two weeks"
+    assert media.doc_text(got["deck.pptx"]) == "Slide 1\nTitle slide\n\nSlide 2\nSecond idea"
+    assert media.get(got["deck.pptx"])["digest"]["pages"] == 2
+    assert media.doc_text(got["numbers.csv"]).startswith("month,views\nJan,1200")
+    assert media.get(got["notes.md"])["kind"] == "document"
+    assert media.get(got["blob.bin"])["kind"] == "file"                        # not text: kept as a download
+    assert "Read it all" not in media.card(media.get(got["blob.bin"]))
+
+
+def test_a_long_document_is_read_in_parts(hub, tmp_path):
+    c, t, media = hub
+    lines = "".join(f"Line {i}: " + "words " * 12 + "\n" for i in range(800))     # ~70,000 characters
+    (tmp_path / "long.txt").write_text(lines)
+    art = upload(c, t["muse"], tmp_path / "long.txt")
+    ok(call(c, t["muse"], "ask", {"to": "claude", "message": "long one", "wait_seconds": 0, "attach": [art]}, "muse-1"))
+    process(media)
+    mid = ok(call(c, t["claude"], "check_replies", session="A"))["structuredContent"]["messages"][0]["media"][0]["id"]
+    seen, at = "", None
+    for _ in range(10):
+        res = ok(call(c, t["claude"], "view_media", {"id": mid, **({"at": at} if at else {})}, "A"))["content"][0]["text"]
+        part = res.split(":\n\n", 1)[1].split("\n\nMore:")[0].split("\nOpen/download")[0]
+        seen += part if part.endswith("\n") else part + "\n"
+        m = __import__("re").search(r'with at "(\d+)"', res)
+        if not m:
+            break
+        at = m.group(1)
+    assert seen == lines                                                      # every line once, none cut in half
+
+
+def test_an_agent_sends_a_document_it_wrote_as_a_real_file(hub):
+    c, t, media = hub
+    plan = "# Launch plan\n\n1. Film the hook\n2. Post Tuesday\n"
+    sent = ok(call(c, t["claude"], "ask", {"to": "muse", "message": "Here's the plan", "wait_seconds": 0,
+                                           "files": [{"name": "plan.md", "content": plan},
+                                                     {"name": "budget", "content": "item,cost\nads,400\n"}]}, "A"))
+    process(media)
+    got = ok(call(c, t["muse"], "check_replies", session="m"))
+    msg = got["structuredContent"]["messages"][0]
+    assert msg["text"] == "Here's the plan"                                       # the text stays short
+    names = [x["name"] for x in msg["media"]]
+    assert names == ["plan.md", "budget.txt"]
+    assert 'Starts: "# Launch plan 1. Film the hook' in got["content"][0]["text"]
+    mid = msg["media"][0]["id"]
+    assert plan in ok(call(c, t["muse"], "view_media", {"id": mid}, "m"))["content"][0]["text"]
+    original = c.get(path_of(media.link(mid)) + "/original")                   # a person downloads the exact file
+    assert original.content.decode() == plan and "plan.md" in original.headers["content-disposition"]
+    too_big = call(c, t["claude"], "reply", {"message_id": sent["structuredContent"]["asked"], "text": "x",
+                                             "files": [{"name": "big.txt", "content": "a" * (2 * 2**20 + 1)}]}, "A")
+    assert too_big["isError"] and "too long" in too_big["content"][0]["text"]
+    bad = call(c, t["claude"], "reply", {"message_id": sent["structuredContent"]["asked"], "text": "x",
+                                         "files": [{"name": "", "content": "y"}]}, "A")
+    assert bad["isError"]
+
+
+def test_a_person_attaches_a_file_from_the_app(tmp_path):
+    """The app's paperclip: upload the bytes, make it media, send it with or without words."""
+    app = create_app(data_dir=str(tmp_path / "hub"), admin_token=ADMIN, caption_threads=False, media_threads=False)
+    c, media = TestClient(app), app.state.media
+    H = lambda tok: {"Authorization": f"Bearer {tok}"}
+    kobby = c.post("/owner", headers=H(ADMIN), json={"handle": "kobby"}).json()["token"]
+    claude = c.post("/agents", headers=H(kobby), json={"handle": "claude"}).json()["token"]
+    art = c.post("/artifacts", params={"name": "notes.md", "mime": "text/markdown"}, content=b"# Notes\nShip Friday\n",
+                 headers=H(kobby)).json()["id"]
+    mid = c.post("/media", headers=H(kobby), json={"artifact": art}).json()["id"]
+    sent = c.post("/messages", headers=H(kobby), json={"channel": "direct", "text": "", "mentions": ["claude"], "media": [mid]})
+    assert sent.status_code == 200, sent.text
+    process(media)
+    convs = [x for x in c.get("/threads", headers=H(kobby)).json() if x["last"]["from"] == "kobby"]
+    assert convs[0]["last"]["files"] == 1                                   # the list says "Sent a file", not nothing
+    got = ok(call(c, claude, "check_replies", session="A"))
+    assert 'notes.md' in got["content"][0]["text"] and 'Starts: "# Notes Ship Friday"' in got["content"][0]["text"]
+    shown = c.get(f"/messages?thread={sent.json()['thread']}", headers=H(kobby)).json()
+    card = shown[-1]["media"][0]
+    assert card["kind"] == "document" and card["read"] and card["words"] == 4

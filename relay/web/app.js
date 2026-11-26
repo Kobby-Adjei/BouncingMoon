@@ -57,6 +57,8 @@ const ICONS = {
   muted: "M12 3a6 6 0 0 0-6 6v3.5L4.5 15h15L18 12.5V9a6 6 0 0 0-6-6zM9.5 18a2.5 2.5 0 0 0 5 0M3.5 3.5l17 17",
   more: "M5.5 12h.01M12 12h.01M18.5 12h.01",
   archive: "M4 5.5h16v4H4zM5.5 9.5v8.5a1.5 1.5 0 0 0 1.5 1.5h10a1.5 1.5 0 0 0 1.5-1.5V9.5M10 13h4",
+  clip: "M19.5 11.2l-7.4 7.4a4.8 4.8 0 0 1-6.8-6.8l7.7-7.7a3.2 3.2 0 0 1 4.5 4.5l-7.6 7.6a1.6 1.6 0 0 1-2.3-2.3l6.9-6.9",
+  x: "M7 7l10 10M17 7L7 17",
 };
 const icon = (name, sw) => svg("0 0 24 24", [{ d: ICONS[name], ...stroke, ...(sw ? { "stroke-width": sw } : {}) }]);
 const chev = () => svg("0 0 8 14", [{ d: "M1.5 1.5L6.5 7l-5 5.5", fill: "none", stroke: "currentColor", "stroke-width": "2", "stroke-linecap": "round", "stroke-linejoin": "round" }], "chev");
@@ -1700,7 +1702,7 @@ function convRow(t, by) {
   const last = t.last;
   const about = t.first && t.first.from !== "relay" ? topic(t.first.text) : "";
   const who = last.from === ME.handle ? "You: " : last.from === "relay" || (others.length === 1 && others[0] === last.from) ? "" : `${last.from}: `;
-  const line = about ? `${names(others)}${t.count > 1 ? " · " + who + gist(last.text) : ""}` : who + gist(last.text);
+  const line = about ? `${names(others)}${t.count > 1 ? " · " + who + said(last) : ""}` : who + said(last);
   return h("button", { class: "cell press" + (t.unread ? " unread" : ""), type: "button", "data-key": `activity/${t.thread}`,
       onclick: () => nav(`activity/${t.thread}`, { data: others }) },
     h("span", { class: "stackav" }, ...(others.length ? others : ["relay"]).slice(0, 2).map((x) => avatar(by[x] || { handle: x }, others.length > 1 ? 38 : 46))),
@@ -3083,7 +3085,7 @@ async function activity() {
           // named after what it's about (the request that started it), with who's in it under that
           const about = t.first && t.first.from !== "relay" ? topic(t.first.text) : "";
           const title = about || names(others) || "Relay";
-          const line = about ? `${names(others)}${t.count > 1 ? " · " + who + gist(last.text) : ""}` : who + gist(last.text);
+          const line = about ? `${names(others)}${t.count > 1 ? " · " + who + said(last) : ""}` : who + said(last);
           const row = (h("button", { class: "cell press" + (t.unread ? " unread" : ""), type: "button", "data-key": `activity/${t.id}`,
               "aria-label": [title, t.pinned ? "pinned" : "", t.muted ? "muted" : "", t.unread ? "new" : ""].filter(Boolean).join(", "), onclick: () => nav(`activity/${t.id}`, { data: others }) },
             h("span", { class: "stackav" }, ...faces),
@@ -3201,6 +3203,8 @@ function topic(text) {
   const t = gist(String(text || "").replace(/^(?:\s*@[a-z0-9._-]+[,:]?)+\s*/i, ""));
   return t.length > 80 ? t.slice(0, 78).trimEnd() + "…" : t;
 }
+// the preview of a conversation's newest message: its words, or what it carries when it's only files
+const said = (m) => (m.text || "").trim() || !m.files ? gist(m.text) : m.files === 1 ? "Sent a file" : `Sent ${m.files} files`;
 function gist(text) {
   const t = plain(text).trim();
   if (t.startsWith("```")) return "Code";
@@ -3243,17 +3247,25 @@ function withAts(text) {
 }
 const mmss = (s) => { s = Math.round(s || 0); return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`; };
 // a file in a conversation: its picture, what it is, and that the hub already watched it. Opens its page.
+const docPath = [{ d: "M7 3h7l5 5v13H7zM14 3v5h5", fill: "none", stroke: "currentColor", "stroke-width": "1.8", "stroke-linejoin": "round" }];
+const sizeText = (n) => n < 1024 ? `${n} B` : n < 1048576 ? `${Math.round(n / 1024)} KB` : `${(n / 1048576).toFixed(n < 10485760 ? 1 : 0)} MB`;
 function fileCard(f) {
   const tall = f.height && f.width && f.height > f.width;
   const pic = f.poster ? h("img", { src: f.poster, alt: "", loading: "lazy" })
     : svg("0 0 24 24", f.kind === "video" ? [{ d: "M8 5.5v13l11-6.5z", fill: "currentColor" }]
       : f.kind === "audio" ? [{ d: "M9 18V6l10-2v12M9 18a3 3 0 1 1-3-3 3 3 0 0 1 3 3zm10-2a3 3 0 1 1-3-3 3 3 0 0 1 3 3z", fill: "none", stroke: "currentColor", "stroke-width": "1.8" }]
-      : [{ d: "M7 3h7l5 5v13H7zM14 3v5h5", fill: "none", stroke: "currentColor", "stroke-width": "1.8", "stroke-linejoin": "round" }]);
-  const facts = [f.duration ? mmss(f.duration) : null, f.width ? `${f.width}×${f.height}` : null].filter(Boolean).join(" · ");
+      : docPath);
+  const doc = f.kind === "document" || f.kind === "file";
+  const facts = [f.duration ? mmss(f.duration) : null, f.width ? `${f.width}×${f.height}` : null,
+    f.pages ? `${f.pages} ${f.doc === "slides" ? (f.pages === 1 ? "slide" : "slides") : (f.pages === 1 ? "page" : "pages")}` : null,
+    doc && f.size ? sizeText(f.size) : null].filter(Boolean).join(" · ");
   const seen = f.status === "ready"
-    ? ["Already watched", f.shots ? `${f.shots} ${f.shots === 1 ? "shot" : "shots"}` : null, f.transcribed ? "captioned" : null].filter(Boolean).join(" · ")
-    : f.status === "failed" ? "Couldn't be watched" : f.status === "removed" ? "Removed" : "Watching…";
-  const body = [h("span", { class: "poster" + (tall ? " tall" : "") + (f.poster ? "" : " plain") }, pic),
+    ? (f.kind === "document" ? (f.read ? `Read · ${(f.words || 0).toLocaleString()} words` : "No text inside")
+      : f.kind === "file" ? "Tap to download"
+      : ["Already watched", f.shots ? `${f.shots} ${f.shots === 1 ? "shot" : "shots"}` : null, f.transcribed ? "captioned" : null].filter(Boolean).join(" · "))
+    : f.status === "failed" ? (doc ? "Couldn't be read" : "Couldn't be watched") : f.status === "removed" ? "Removed"
+    : doc ? "Reading…" : "Watching…";
+  const body = [h("span", { class: "poster" + (doc ? " docpage" : tall ? " tall" : "") + (f.poster ? "" : " plain") }, pic),
     h("span", { class: "meta" }, h("b", { text: f.name || f.kind }), facts ? h("span", { text: facts }) : null,
       h("span", { class: "seen" + (f.status === "ready" ? " ok" : ""), text: seen }))];
   return f.page ? h("a", { class: "filecard press", href: f.page, target: "_blank", rel: "noopener" }, ...body)
@@ -3310,6 +3322,49 @@ async function thread(id, people) {
   const canPost = ME.role !== "admin";
   const input = h("textarea", { rows: "1", placeholder: "Message, or @ someone", "aria-label": "Message" });
   const send = h("button", { class: "btn send press", type: "submit", "aria-label": "Send" }, icon("send", "2.4"));
+  // files go with the message: picked (phone: photos or files), dropped or pasted, uploaded at once, sent with the words
+  const atts = [];
+  const tray = h("div", { class: "tray", role: "list", "aria-label": "Files to send" });
+  const picker = h("input", { type: "file", multiple: "", hidden: "", tabindex: "-1", "aria-hidden": "true" });
+  const clip = h("button", { class: "iconbtn clip press", type: "button", "aria-label": "Attach files", title: "Attach files" }, icon("clip", "2"));
+  clip.addEventListener("click", () => picker.click());
+  picker.addEventListener("change", () => { addFiles(picker.files); picker.value = ""; });
+  function addFiles(list) {
+    for (const file of list || []) {
+      if (atts.length >= 10) { toast("Up to 10 files in one message."); break; }
+      if (file.size > 500 * 1048576) { toast(`${file.name} is over 500 MB.`); continue; }
+      const a = { file, mid: null, err: null };
+      const name = h("b", { text: file.name || "file" }), sub = h("span", { class: "sub", text: "Uploading…" });
+      const pic = /^image\//.test(file.type) ? h("img", { src: URL.createObjectURL(file), alt: "" }) : svg("0 0 24 24", docPath);
+      const rm = h("button", { class: "attx press", type: "button", "aria-label": `Remove ${file.name}` }, icon("x", "2.4"));
+      a.chip = h("div", { class: "att up", role: "listitem" }, h("span", { class: "attpic" }, pic), h("span", { class: "attmeta" }, name, sub), rm);
+      rm.addEventListener("click", () => { atts.splice(atts.indexOf(a), 1); a.chip.remove(); if (a.xhr) a.xhr.abort(); paintSend(); });
+      a.done = upload(a, (p) => { sub.textContent = `Uploading ${Math.round(p * 100)}%`; a.chip.style.setProperty("--p", p); })
+        .then(async (artifact) => { a.mid = (await api("POST", "/media", { artifact })).id; sub.textContent = sizeText(file.size); a.chip.classList.remove("up"); })
+        .catch((x) => { a.err = x.message || "Couldn't upload"; sub.textContent = a.err; a.chip.classList.remove("up"); a.chip.classList.add("bad"); })
+        .finally(paintSend);
+      atts.push(a); tray.append(a.chip);
+    }
+    paintSend();
+  }
+  function upload(a, onProgress) {
+    return new Promise((ok, no) => {
+      const x = a.xhr = new XMLHttpRequest();
+      x.open("POST", `/artifacts?name=${encodeURIComponent(a.file.name || "file")}&mime=${encodeURIComponent(a.file.type || "application/octet-stream")}`);
+      x.setRequestHeader("Authorization", "Bearer " + KEY);
+      x.upload.onprogress = (e) => { if (e.lengthComputable) onProgress(e.loaded / e.total); };
+      x.onload = () => {
+        let d = null; try { d = JSON.parse(x.responseText); } catch {}
+        if (x.status < 300 && d && d.id) ok(d.id);
+        else no(new Error(x.status === 413 ? "Too big to send" : x.status === 507 ? "The hub is full" : (d && typeof d.detail === "string" ? d.detail : "Couldn't upload")));
+      };
+      x.onerror = () => no(new Error(navigator.onLine === false ? "You're offline" : "Couldn't upload"));
+      x.onabort = () => no(new Error("Removed"));
+      x.send(a.file);
+    });
+  }
+  const paintSend = () => { tray.classList.toggle("open", atts.length > 0); };
+  input.addEventListener("paste", (e) => { const f = e.clipboardData && e.clipboardData.files; if (f && f.length) { e.preventDefault(); addFiles(f); } });
   let threadId = id, lastId = 0;
   // @mentions: type @ to pick anyone on the hub; whoever is named joins the conversation. Above the box,
   // who this goes to and who will actually answer: chat apps only read Relay when you ask them there.
@@ -3348,13 +3403,17 @@ async function thread(id, people) {
   input.addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.shiftKey && !e.isComposing && matchMedia("(pointer: fine)").matches) { e.preventDefault(); input.form.requestSubmit(); } });
   const composer = canPost ? h("div", { class: "composer" }, h("form", { onsubmit: async (e) => {
     e.preventDefault();
-    const text = input.value.trim(); if (!text) return;
+    const text = input.value.trim(); if (!text && !atts.length) return;
     send.disabled = true;
+    if (atts.some((a) => !a.mid && !a.err)) { toast("Sending once the files are up…"); await Promise.all(atts.map((a) => a.done)); }
+    if (atts.some((a) => a.err)) { toast("A file didn't upload. Remove it, or attach it again."); send.disabled = false; return; }
+    const media = atts.map((a) => a.mid);
     const joined = named().filter((x) => !people.includes(x));
     const to = [...people, ...joined];
     try {
-      const m = threadId ? await api("POST", "/messages", { reply_to: lastId || threadId, text, mentions: to })
-                         : await api("POST", "/messages", { channel: "direct", text, mentions: to });
+      const m = threadId ? await api("POST", "/messages", { reply_to: lastId || threadId, text, mentions: to, media })
+                         : await api("POST", "/messages", { channel: "direct", text, mentions: to, media });
+      atts.length = 0; tray.replaceChildren(); paintSend();
       if (joined.length) {                 // they're in the conversation now: the header and the next messages include them
         people = to; top.querySelector(".title").textContent = people.join(", ");
         faces.replaceChildren(...people.slice(0, 2).map((x) => avatar(by[x] || { handle: x }, WIDE ? 36 : 44, true)));
@@ -3365,7 +3424,7 @@ async function thread(id, people) {
       if (listRefresh && listPane.dataset.tab === "activity") listRefresh();
     } catch (x) { alert(x.message); }
     send.disabled = false; input.focus(); paintPick(); paintGoes();
-  } }, input, send), suggest, goes) : null;
+  } }, clip, picker, input, send), tray, suggest, goes) : null;
   const by = {};
   const faces = h("span", { class: "stackav" });
   const title = names(people) || "Conversation";
@@ -3405,6 +3464,15 @@ async function thread(id, people) {
   loadMark();
   if (WIDE && view.isConnected) { top.classList.add("panehead"); detailPane.prepend(top); }   // a toolbar above the scrolling messages
   if (composer && view.isConnected) (WIDE ? detailPane : app).append(composer);    // phone: outside the sliding page, so "fixed" means the window
+  if (composer) {                          // a computer: drop files anywhere on the conversation
+    let depth = 0;                          // both belong to this conversation: nothing is left behind when it closes
+    const has = (e) => e.dataTransfer && [...e.dataTransfer.types].includes("Files");
+    const on = (ev, fn) => { view.addEventListener(ev, fn); composer.addEventListener(ev, fn); };
+    on("dragenter", (e) => { if (!has(e) || !view.isConnected) return; e.preventDefault(); depth++; composer.classList.add("dropping"); });
+    on("dragover", (e) => { if (has(e) && view.isConnected) e.preventDefault(); });
+    on("dragleave", () => { if (--depth <= 0) { depth = 0; composer.classList.remove("dropping"); } });
+    on("drop", (e) => { if (!has(e) || !view.isConnected) return; e.preventDefault(); depth = 0; composer.classList.remove("dropping"); addFiles(e.dataTransfer.files); input.focus(); });
+  }
   try { for (const a of await api("GET", "/agents")) by[a.handle] = a; } catch {}
   if (composer) paintGoes();
   const blankNote = list.querySelector(".sysmsg");

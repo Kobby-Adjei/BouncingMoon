@@ -33,6 +33,7 @@ import re
 import secrets
 import shutil
 import subprocess
+import tempfile
 import threading
 import time
 import uuid
@@ -270,6 +271,101 @@ def sniff(path: str) -> dict:
     return {"kind": "file", "mime": "application/octet-stream"}
 
 
+# --------------------------------------------------------------------------- reading documents
+# A document is read the way a video is watched: its text is pulled out once, so an agent on the other side
+# reads it (view_media) instead of getting a file name and a link it can't open.
+DOC_TEXT_MAX = 400_000           # characters of a document's text kept
+DOC_PAGES_MAX = 300              # pages of a PDF read
+TEXT_TYPES = {".txt": "text/plain", ".md": "text/markdown", ".markdown": "text/markdown", ".csv": "text/csv",
+              ".tsv": "text/tab-separated-values", ".json": "application/json", ".yaml": "application/yaml",
+              ".yml": "application/yaml", ".log": "text/plain", ".xml": "application/xml", ".html": "text/html",
+              ".htm": "text/html", ".rtf": "application/rtf", ".tex": "text/plain", ".py": "text/plain",
+              ".js": "text/plain", ".ts": "text/plain", ".sql": "text/plain", ".ini": "text/plain", ".toml": "text/plain"}
+OFFICE = {".docx": ("word", "application/vnd.openxmlformats-officedocument.wordprocessingml.document"),
+          ".pptx": ("slides", "application/vnd.openxmlformats-officedocument.presentationml.presentation")}
+_XML_PART_MAX = 60 * 2**20      # an unpacked part bigger than this is a zip bomb, not a document
+
+
+def _xml_text(xml: str, para: str, run: str) -> str:
+    """The words in an Office XML part: one line per paragraph. Regex, not an XML parser: nothing
+    in the file can make it expand entities or reach out anywhere."""
+    xml = re.sub(r"<w:tab/>|<a:tab/>", "\t", xml)
+    xml = re.sub(r"<w:br/>|<a:br/>", "\n", xml)
+    out = []
+    for p in re.split(rf"</{para}>", xml):
+        words = "".join(re.findall(rf"<{run}(?:\s[^>]*)?>([^<]*)</{run}>", p))
+        if words.strip():
+            out.append(html.unescape(words))
+    return "\n".join(out)
+
+
+def read_document(src: str, name: str, work: str) -> Optional[dict]:
+    """{doc, mime, text, pages?, poster?} for a PDF, a Word or PowerPoint file, or plain text; None otherwise."""
+    import zipfile
+    ext = os.path.splitext(name or "")[1].lower()
+    with open(src, "rb") as f:
+        head = f.read(8)
+    if head.startswith(b"%PDF"):
+        out = os.path.join(work, "doc.txt")
+        try:
+            _run(["pdftotext", "-q", "-enc", "UTF-8", "-l", str(DOC_PAGES_MAX), src, out], 120)
+            text = open(out, encoding="utf-8", errors="replace").read()
+        except (RuntimeError, OSError, subprocess.TimeoutExpired):
+            text = ""
+        pages = None
+        try:
+            m = re.search(r"^Pages:\s+(\d+)", _run(["pdfinfo", src], 30).stdout, re.M)
+            pages = int(m.group(1)) if m else None
+        except (RuntimeError, OSError, subprocess.TimeoutExpired):
+            pass
+        poster = os.path.join(work, "page1")
+        try:
+            _run(["pdftoppm", "-q", "-jpeg", "-f", "1", "-l", "1", "-scale-to", "800", "-singlefile", src, poster], 60)
+            poster += ".jpg"
+        except (RuntimeError, OSError, subprocess.TimeoutExpired):
+            poster = None
+        return {"doc": "pdf", "mime": "application/pdf", "text": text.replace("\f", "\n\n"), "pages": pages,
+                "poster": poster if poster and os.path.exists(poster) else None}
+    if head.startswith(b"PK\x03\x04") and ext in OFFICE:
+        doc, mime = OFFICE[ext]
+        try:
+            with zipfile.ZipFile(src) as z:
+                def part(n):
+                    i = z.getinfo(n)
+                    if i.file_size > _XML_PART_MAX:
+                        raise ValueError("too big")
+                    return z.read(n).decode("utf-8", "replace")
+                if doc == "word":
+                    text, pages = _xml_text(part("word/document.xml"), "w:p", "w:t"), None
+                else:
+                    slides = sorted((n for n in z.namelist() if re.fullmatch(r"ppt/slides/slide\d+\.xml", n)),
+                                    key=lambda n: int(re.search(r"(\d+)", n.rsplit("/", 1)[1]).group(1)))
+                    text = "\n\n".join(f"Slide {i}\n" + _xml_text(part(n), "a:p", "a:t") for i, n in enumerate(slides, 1))
+                    pages = len(slides)
+        except (zipfile.BadZipFile, KeyError, ValueError, OSError):
+            return None
+        return {"doc": doc, "mime": mime, "text": text, "pages": pages}
+    with open(src, "rb") as f:
+        raw = f.read(DOC_TEXT_MAX * 4 + 1)
+    if b"\x00" in raw[:65536]:
+        return None
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError as e:               # cut mid-character at the end is still text
+        if e.start < len(raw) - 4:
+            return None
+        text = raw[:e.start].decode("utf-8")
+    if ext not in TEXT_TYPES and not text.strip():
+        return None
+    return {"doc": "text", "mime": TEXT_TYPES.get(ext, "text/plain"), "text": text}
+
+
+def excerpt(text: str, n: int = 300) -> str:
+    """The start of a document on one line, for a card."""
+    one = " ".join(text.split())
+    return one if len(one) <= n else one[:n - 1].rstrip() + "…"
+
+
 def shot_changes(path: str, duration: float, limit: int = 60) -> list:
     """Where the picture cuts to something new (seconds). Key frames only, so it's quick on long videos."""
     try:
@@ -460,6 +556,20 @@ class Media:
         self._ensure_thread()
         return self.get(mid)
 
+    def from_text(self, by: str, name: str, text: str) -> dict:
+        """A document an agent wrote (a name and its text) becomes a real file: people download it, agents read it."""
+        name = safe_name(name, "note.txt")
+        if not os.path.splitext(name)[1]:
+            name += ".txt"
+        fd, tmp = tempfile.mkstemp(dir=self.tmp)
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(text)
+        aid, size = self._store(tmp, name, by, None, "upload", "application/octet-stream")
+        with self.store.tx() as c:
+            mid = self._new(c, by, name, artifact=aid, size=size, origin_artifact=aid)
+        self._ensure_thread()
+        return self.get(mid)
+
     def of_message(self, msg_id: int) -> list:
         """Every file a message carries, as media ids. Files attached the old way (hub file ids in the
         message) become media items here, once, so they are watched and get links like any other."""
@@ -538,7 +648,8 @@ class Media:
         out = {"id": mid, "kind": m["kind"] or "file", "name": m["name"], "status": m["status"], "size": m["size"],
                "duration": d.get("duration"), "width": d.get("width"), "height": d.get("height"),
                "shots": len(d["shots"]) + 1 if d.get("shots") is not None else None,
-               "transcribed": bool(d.get("transcript"))}
+               "transcribed": bool(d.get("transcript")),
+               "doc": d.get("doc"), "pages": d.get("pages"), "words": d.get("words"), "read": bool(d.get("text"))}
         if m["revoked"]:
             return {**out, "status": "removed"}
         token = self.link(mid)[len(self.public_url or ""):]
@@ -571,7 +682,7 @@ class Media:
     def card(self, m: dict, link: Optional[str] = None, transcript_chars: int = 400) -> str:
         """The few lines an agent reads in a conversation: what it is and what is in it."""
         d, kind = m["digest"], m["kind"] or "media"
-        icon = {"video": "📹", "audio": "🎧", "image": "🖼", "file": "📄"}.get(kind, "📎")
+        icon = {"video": "📹", "audio": "🎧", "image": "🖼", "file": "📄", "document": "📄"}.get(kind, "📎")
         head = [f"{icon} {m['id']} · {m['name'] or kind}"]
         if d.get("duration"):
             head.append(hms(d["duration"]))
@@ -594,6 +705,14 @@ class Media:
                 lines.append(f"   {len(d['shots']) + 1} shot(s); contact sheet: view_media {m['id']}")
             if kind == "image":
                 lines.append(f"   See it: view_media {m['id']}" + (" (location data removed)" if d.get("stripped") else ""))
+            if kind == "document":
+                size = [f"{d['pages']} {'slides' if d.get('doc') == 'slides' else 'pages'}" if d.get("pages") else None,
+                        f"{d.get('words', 0):,} words"]
+                if d.get("text"):
+                    lines.append(f"   Starts: \"{d.get('excerpt', '')}\"")
+                    lines.append(f"   Read it all ({', '.join(x for x in size if x)}): view_media {m['id']}")
+                else:
+                    lines.append("   No text in it (a scan or pictures only): open the link to see it.")
             if d.get("sound_share") is not None:
                 lines.append(f"   Sound for {int(d['sound_share'] * 100)}% of it; loudest {d.get('peak_db')} dB")
         if link:
@@ -645,7 +764,7 @@ class Media:
         if r["status"] != "ready":
             return []
         if at is None:
-            p = self.blob(r["sheet"] or r["preview"])
+            p = self.blob(r["sheet"] or r["preview"] or (r["poster"] if r["kind"] == "document" else None))
             return [open(p, "rb").read()] if p else []
         if r["kind"] != "video":
             return []
@@ -1058,7 +1177,28 @@ class Media:
             pass
 
     def _other(self, mid, by, src, info, work, artifact) -> None:
-        self._set(mid, status="ready", stage=None, digest=json.dumps({"note": "kept as a download"}))
+        self._set(mid, stage="reading")
+        doc = read_document(src, self.row(mid)["name"] or "", work)
+        if not doc:
+            self._set(mid, status="ready", stage=None, digest=json.dumps({"note": "kept as a download"}))
+            return
+        text = doc["text"][:DOC_TEXT_MAX]
+        d = {"doc": doc["doc"], "pages": doc.get("pages"), "words": len(text.split()), "chars": len(text),
+             "excerpt": excerpt(text), "text_cut": len(doc["text"]) > DOC_TEXT_MAX}
+        if text.strip():
+            path = os.path.join(work, "text.txt")
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(text)
+            d["text"] = self._keep(path, "text.txt", by, artifact, "text", "text/plain; charset=utf-8")
+        # no _typed() here: a document is only ever served as a download (an HTML file must never render)
+        poster = doc.get("poster")
+        self._set(mid, status="ready", stage=None, kind="document", mime=doc["mime"], digest=json.dumps(d),
+                  poster=self._keep(poster, "page1.jpg", by, artifact, "poster", "image/jpeg") if poster else None)
+
+    def doc_text(self, mid: str) -> str:
+        """A document's text as read, or ''."""
+        p = self.blob((self.get(mid)["digest"] or {}).get("text"))
+        return open(p, encoding="utf-8", errors="replace").read() if p else ""
 
 
 # --------------------------------------------------------------------------- pages and routes
@@ -1139,6 +1279,7 @@ audio{display:block;width:100%}
  font:600 13px/1 var(--font);font-variant-numeric:tabular-nums;padding:6px 10px;min-width:4.4em;text-align:center;transition:transform .3s var(--spring)}
 .t button:active{transform:scale(.94)}
 .sheet{display:block;width:100%;border-radius:14px}
+.doctext{white-space:pre-wrap;overflow-wrap:anywhere;font:15px/1.55 var(--font);background:var(--card);border-radius:14px;padding:16px 18px;margin:0;max-height:70vh;overflow:auto;box-shadow:0 0 0 1px var(--edge)}
 @media (max-width:520px){.actions .btn{display:flex;width:100%}.wide .title{font-size:24px}}
 @media (prefers-reduced-motion:reduce){*,*:before,*:after{animation-duration:.01ms!important;animation-delay:0s!important;transition-duration:.01ms!important}}
 :focus-visible{outline:2px solid var(--accent);outline-offset:3px}
@@ -1280,12 +1421,20 @@ def mount(app, hub, media: Media) -> dict:
             out.append(f"<div class=stage><audio controls preload=metadata src='{base}/file'></audio></div>")
         elif kind == "image":
             out.append(f"<div class=stage><img class=full src='{base}/file' alt='{name}'></div>")
+        elif kind == "document" and m["has"]["poster"]:
+            out.append(f"<div class=stage><img class=full src='{base}/poster' alt='First page of {name}'></div>")
         if m["status"] == "ready":
             out.append(f"<p class=actions><a class=btn href='{base}/original'>{DOWN}Download</a></p>")
         if d.get("transcript"):
             rows = "".join(f"<div class=t><button data-t='{x['t']}'>{clock(x['t'])}</button><span>{html.escape(x['text'])}</span></div>"
                            for x in d["transcript"])
             out.append(f"<section class=sect><h2>Transcript</h2>{rows}</section>")
+        if kind == "document" and d.get("text"):
+            text = media.doc_text(r["id"])
+            more = len(text) > 6000
+            out.append("<section class=sect><h2>Text</h2><pre class=doctext>" + html.escape(text[:6000])
+                       + ("\n…" if more else "") + "</pre>"
+                       + ("<p class=meta>The start of it. Download for the whole document.</p>" if more else "") + "</section>")
         if m["has"]["sheet"]:
             out.append(f"<section class=sect><h2>Shots</h2><img class=sheet src='{base}/sheet' alt='contact sheet'></section>")
         out.append("</div>")
@@ -1302,8 +1451,8 @@ def mount(app, hub, media: Media) -> dict:
         with media.store.ro() as c:
             a = c.execute("SELECT name, mime FROM artifacts WHERE id=?", (aid,)).fetchone()
         mime = (a["mime"] if a else None) or "application/octet-stream"
-        inline = r["kind"] in ("video", "audio", "image") and mime.split("/")[0] in ("video", "audio", "image") \
-            and mime != "image/svg+xml" and not download
+        inline = (r["kind"] in ("video", "audio", "image") or which in ("poster", "sheet")) \
+            and mime.split("/")[0] in ("video", "audio", "image") and mime != "image/svg+xml" and not download
         name = r["name"] or (a["name"] if a else "file")
         if which == "file" and r["playable"] and r["playable"] != r["artifact"]:
             name = os.path.splitext(name)[0] + os.path.splitext((a["name"] if a else "") or ".mp4")[1]

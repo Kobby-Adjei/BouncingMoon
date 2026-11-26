@@ -142,7 +142,7 @@ const MANY = "@claude @codex @muse @chatgptguy @grokguy @claude-code-laptop @gem
     }
     // the @ picker with every agent in it
     await page.goto(HUB + "/app#activity/" + pick[0]); await page.reload(); await page.waitForTimeout(1500);
-    const box = await page.$(".composer textarea, .composer input");
+    const box = await page.$(".composer textarea");
     if (box) { await box.click(); await box.type("@"); await page.waitForTimeout(500);
       const wide = await page.evaluate(() => { const p = document.querySelector(".atpick"); return p ? p.scrollWidth - p.clientWidth : 0; });
       if (wide > 1) problems.push(`${name}/at-picker: scrolls sideways by ${wide}px`);

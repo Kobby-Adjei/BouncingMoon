@@ -23,6 +23,24 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const db = (sql) => execFileSync("python3", ["-c", `import sqlite3,sys; c=sqlite3.connect(sys.argv[1]); c.execute(sys.argv[2]); c.commit()`,
   path.join(DATA, "relay.db"), sql]);
 
+// a real two-page PDF (hand-built), so the hub reads it and draws its first page
+function tinyPdf(lines) {
+  const objs = ["<< /Type /Catalog /Pages 2 0 R >>", null, "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>"], kids = [];
+  for (const text of lines) {
+    const body = `BT /F1 22 Tf 72 700 Td (${text}) Tj ET`;
+    objs.push(`<< /Length ${body.length} >>\nstream\n${body}\nendstream`);
+    objs.push(`<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R >> >> /Contents ${objs.length} 0 R >>`);
+    kids.push(`${objs.length} 0 R`);
+  }
+  objs[1] = `<< /Type /Pages /Kids [${kids.join(" ")}] /Count ${kids.length} >>`;
+  let out = "%PDF-1.4\n"; const offs = [];
+  objs.forEach((o, i) => { offs.push(Buffer.byteLength(out)); out += `${i + 1} 0 obj\n${o}\nendobj\n`; });
+  const x = Buffer.byteLength(out);
+  out += `xref\n0 ${objs.length + 1}\n0000000000 65535 f \n` + offs.map((o) => String(o).padStart(10, "0") + " 00000 n \n").join("");
+  out += `trailer\n<< /Size ${objs.length + 1} /Root 1 0 R >>\nstartxref\n${x}\n%%EOF\n`;
+  return Buffer.from(out);
+}
+
 async function seed() {
   const K = (await api("POST", "/owner", { handle: "kobby" }, ADMIN)).token;
   const tok = {};
@@ -40,6 +58,19 @@ async function seed() {
   await api("POST", "/messages", { reply_to: first.id, text: "Sent to @codex.", media: [media.id] }, tok.claude);
   await api("POST", "/messages", { reply_to: first.id, text: "Watched it. I'll post it with “New drop. Link in bio.”" }, tok.codex);
   await api("POST", "/messages", { reply_to: first.id, text: "When should it go out?", options: ["Post now", "Tonight at 8", "Not yet"] }, tok.codex);
+  // documents: a PDF Claude made (read, with its first page), and notes Kobby attached with no words
+  const doc = await api("POST", "/messages", { channel: "direct", text: "@claude turn last month's numbers into a one-page report", mentions: ["claude"] }, K);
+  const pdf = await fetch(HUB + "/artifacts?name=October%20report.pdf&mime=application/pdf", { method: "POST", headers: { Authorization: "Bearer " + tok.claude },
+    body: tinyPdf(["October: 41,200 views, up 18%", "Best post: the 30-second cut"]) }).then((r) => r.json());
+  const pdfMedia = await api("POST", "/media", { artifact: pdf.id }, tok.claude);
+  const notes = await mcp(tok.claude, "reply", { message_id: doc.id, text: "Here it is, with the table as a file too.",
+    attach: [pdfMedia.id], files: [{ name: "october.csv", content: "week,views\n1,8900\n2,10400\n3,9800\n4,12100\n" }] });
+  for (let i = 0; i < 60; i++) { const m = await api("GET", `/media/${pdfMedia.id}`, undefined, tok.claude); if (m.status === "ready" || m.status === "failed") break; await sleep(250); }
+  const brief = await fetch(HUB + "/artifacts?name=brief.md&mime=text/markdown", { method: "POST", headers: { Authorization: "Bearer " + K },
+    body: "# November\n\nMore behind-the-scenes. Two posts a week." }).then((r) => r.json());
+  const briefMedia = await api("POST", "/media", { artifact: brief.id }, K);
+  await api("POST", "/messages", { reply_to: doc.id, text: "", mentions: ["claude"], media: [briefMedia.id] }, K);
+  await sleep(1500);
   // one conversation muted, one pinned: they show a mark in the list
   const noisy = await api("POST", "/messages", { channel: "direct", text: "@muse three caption ideas for the cut", mentions: ["muse"] }, K);
   await api("POST", "/messages", { reply_to: noisy.id, text: "1. New drop. 2. Out now. 3. Link in bio." }, tok.muse);
@@ -65,7 +96,7 @@ async function seed() {
   await api("POST", "/shortcuts", { title: "Post tonight's cut", text: "@claude send the 30-second cut to @codex and get it posted tonight", mentions: ["claude", "codex"] }, K);
   const msgs = await api("GET", `/messages?thread=${first.thread}`, undefined, K);
   const card = msgs.flatMap((m) => m.media || [])[0];
-  return { K, AMA, thread: first.thread, key: key.id, approval: approval && approval.id, ask: asks[0] && asks[0].id,
+  return { K, AMA, thread: first.thread, docThread: doc.thread, key: key.id, approval: approval && approval.id, ask: asks[0] && asks[0].id,
     client: client.client_id, upload: up && up.result && up.result.structuredContent && up.result.structuredContent.upload_url,
     mediaPage: card && card.page };
 }
@@ -83,7 +114,8 @@ async function seed() {
     ["add", "/app#add", "K", true], ["add-claude", "/app#add/claude_app", "K", false], ["add-chatgpt", "/app#add/chatgpt", "K", false],
     ["add-codex", "/app#add/codex", "K", false], ["add-person", "/app#add/person", "K", false],
     ["activity", "/app#activity", "K", true], ["activity-all", "/app#activity", "K", true], ["thread", `/app#activity/${s.thread}`, "K", true],
-    ["thread-menu", `/app#activity/${s.thread}`, "K", true], ["archived", "/app#activity/archived", "K", true], ["new-message", "/app#activity/new", "K", false],
+    ["thread-menu", `/app#activity/${s.thread}`, "K", true],
+    ["thread-doc", `/app#activity/${s.docThread}`, "K", true], ["thread-attach", `/app#activity/${s.docThread}`, "K", true], ["archived", "/app#activity/archived", "K", true], ["new-message", "/app#activity/new", "K", false],
     ["approve", s.approval ? `/app#approve/${s.approval}` : null, "K", true], ["invite-ask", s.ask ? `/app#ask/${s.ask}` : null, "K", false],
     ["me", "/app#me", "K", true], ["apps", "/app#me/apps", "K", false], ["passkeys", "/app#me/passkeys", "K", false], ["notify", "/app#me/notify", "K", true], ["health", "/app#me/health", "K", true], ["account", "/app#me/account", "K", true], ["account-person", "/app#me/account", "AMA", false], ["people", "/app#me/people", "K", true], ["agents-friend", "/app#agents", "AMA", false],
     ["keys", "/app#me/keys", "K", true], ["key-new", "/app#me/keys/new", "K", false], ["key", `/app#me/keys/${s.key}`, "K", false],
@@ -114,6 +146,13 @@ async function seed() {
       if (name === "activity-all") {          // with few conversations there are no chips: All is what's shown
         const chip = page.locator(".fchip:visible").filter({ hasText: /^All$/ });
         if (await chip.count()) { await chip.last().click(); await page.waitForTimeout(800); }
+      }
+      if (name === "thread-attach") {           // two files picked: one uploading chip each, above the box
+        await page.locator('input[type="file"]').first().setInputFiles([
+          { name: "storyboard-final-v3.pdf", mimeType: "application/pdf", buffer: tinyPdf(["Storyboard"]) },
+          { name: "notes.txt", mimeType: "text/plain", buffer: Buffer.from("Shoot on Saturday") }]);
+        await page.locator(".composer textarea").fill("Here's the storyboard and my notes");
+        await page.waitForTimeout(1200);
       }
       if (name === "thread-menu") { await page.locator('[aria-label="Conversation options"]:visible').first().click(); await page.waitForTimeout(700); }
       // the page must never scroll sideways on a phone

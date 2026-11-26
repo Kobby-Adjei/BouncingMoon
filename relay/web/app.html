@@ -200,6 +200,9 @@ button.hcheck { appearance: none; border: 0; background: none; width: 100%; text
 .filecard .poster { width: 72px; height: 48px; border-radius: 11px; flex: none; overflow: hidden; display: grid; place-items: center;
   background: linear-gradient(160deg, #ff9a6b, #7a5cff 55%, #20233a); color: #fff; }
 .filecard .poster.tall { width: 44px; height: 70px; }
+/* a document's first page: a small portrait page, its top showing */
+.filecard .poster.docpage { width: 50px; height: 64px; border-radius: 6px; background: #fff; box-shadow: 0 0 0 .5px var(--line); }
+.filecard .poster.docpage img { object-position: top; }
 .filecard .poster.plain { background: var(--fill2); color: var(--ink2); }
 .filecard .poster img { width: 100%; height: 100%; object-fit: cover; display: block; }
 .filecard .poster svg { width: 18px; height: 18px; }
@@ -224,7 +227,7 @@ button.hcheck { appearance: none; border: 0; background: none; width: 100%; text
 @keyframes waitring { 0% { transform: scale(.85); opacity: .7; } 100% { transform: scale(1.35); opacity: 0; } }
 .saychip { appearance: none; border: 0; flex: none; display: inline-flex; align-items: center; gap: 8px; padding: 7px 7px 7px 12px; border-radius: 999px;
   background: var(--fill); color: var(--ink); font: 600 13.5px var(--font); cursor: pointer; }
-.saychip .c { padding: 4px 10px; border-radius: 999px; background: var(--accent); color: #fff; font-size: 12px; }
+.saychip .c { padding: 4px 10px; border-radius: 999px; background: var(--accent); color: var(--on-accent); font-size: 12px; }
 .firstbtn { margin-top: 6px; }
 /* Activity: one view at a time. Chips, not tabs: they wrap on a narrow screen instead of scrolling sideways */
 .fchips { display: flex; flex-wrap: wrap; gap: 5px; margin: 0 0 12px; }
@@ -363,6 +366,27 @@ button.hcheck { appearance: none; border: 0; background: none; width: 100%; text
 .composer textarea::placeholder { color: var(--ink2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .composer .send { width: 44px; height: 44px; padding: 0; flex: none; border-radius: 50%; }
 .composer .send svg { width: 20px; height: 20px; }
+/* files going with the message: the clip, then one chip per file above the box */
+.composer .clip { flex: none; width: 40px; height: 44px; margin-right: -4px; color: var(--ink2); }
+.composer .clip svg { width: 22px; height: 22px; }
+.composer .clip:hover { color: var(--ink); background: var(--fill); }
+.tray { display: none; max-width: 680px; width: 100%; margin: 0 auto 8px; padding: 0 16px; gap: 8px; flex-wrap: wrap; }
+.tray.open { display: flex; }
+.att { position: relative; display: flex; align-items: center; gap: 10px; min-width: 0; max-width: 100%; flex: 0 1 260px; padding: 6px 4px 6px 6px;
+  border-radius: 14px; background: var(--card); box-shadow: 0 0 0 .5px var(--line), 0 6px 16px -12px rgba(24, 23, 29, .35); overflow: hidden;
+  animation: rise .3s var(--ease) both; }
+.att.up::after { content: ""; position: absolute; left: 0; bottom: 0; height: 3px; width: calc(var(--p, 0) * 100%); background: var(--accent);
+  transition: width .2s linear; }
+.attpic { flex: none; width: 36px; height: 36px; border-radius: 9px; background: var(--fill); display: grid; place-items: center; overflow: hidden; color: var(--ink2); }
+.attpic img { width: 100%; height: 100%; object-fit: cover; } .attpic svg { width: 18px; height: 18px; }
+.attmeta { display: grid; min-width: 0; flex: 1; line-height: 1.25; }
+.attmeta b { font-size: 14px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.attmeta .sub { font-size: 12.5px; color: var(--ink2); font-variant-numeric: tabular-nums; }
+.att.bad .sub { color: var(--red); }
+.attx { flex: none; width: 36px; height: 36px; border: 0; border-radius: 999px; background: transparent; color: var(--ink2); display: grid; place-items: center; cursor: pointer; }
+.attx:hover { background: var(--fill); color: var(--ink); } .attx svg { width: 16px; height: 16px; }
+.composer.dropping { box-shadow: inset 0 3px 0 var(--accent); }
+.composer.dropping textarea { box-shadow: inset 0 0 0 1.5px var(--accent), 0 0 0 4px var(--ring); }
 /* @mentions: who to bring in, and who this goes to */
 .composer { display: flex; flex-direction: column-reverse; }
 .atpick { display: none; max-width: 680px; width: 100%; margin: 0 auto 8px; padding: 0 16px; gap: 6px; flex-wrap: wrap; }   /* wraps: no sideways swiping to find someone */

@@ -10,7 +10,7 @@ for your one tap.
 |---|---|
 | **Connect** | Add Relay to any app the way you add Gmail: paste one address, press **Allow**. Passkeys, no keys to copy. |
 | **Talk** | `ask` any agent or person, `reply` to whoever asked. Answers come back to the exact chat that asked. Asking a person to choose? Pass `options` and they tap one. |
-| **Share** | Videos, photos, audio and files travel in messages, already watched by the hub: contact sheet, transcript, shots. Exact files for posting. |
+| **Share** | Videos, photos, audio, documents and files travel in messages, already watched or read by the hub: contact sheet, transcript, shots, a document's text. Agents send documents they wrote as real files. Exact files for posting. |
 | **Act** | Keys you save once; agents call websites with them through the hub and never see them. Changes wait for your **Approve**. |
 | **Invite** | Invite-only: people join from a link with a passkey, or ask for an invite from the sign-in page. |
 
@@ -38,7 +38,7 @@ One process, SQLite and a folder (`relay/hub.py`), on Railway or anywhere Python
 | `contacts` | who can I reach? |
 | `ask` / `check_replies` / `reply` | start a conversation, read what's waiting, answer it |
 | `save_contact` | remember a nickname for an address |
-| `view_media` | look at a file: the picture, the contact sheet, or frames at a moment (`at`) |
+| `view_media` | look at a file: the picture, the contact sheet, frames at a moment (`at`), or a document's text, in parts |
 | `get_files` | the exact files on a message: download link, real type, sha256 |
 | `request_upload` | a link your user opens on their phone to send files |
 | `saved_keys` / `call_api` | the keys your user saved, and a call to a website with one |
@@ -94,13 +94,18 @@ company has to approve it:
 - Housekeeping runs hourly: half-finished uploads and leftovers from restarts are cleared. Shared files
   are kept; how long free originals are kept is the owner's call (not set yet).
 
-## Media: videos, photos, audio and files, already watched
+## Media: videos, photos, audio, documents and files, already watched or read
 
 Agents and people share media inside conversations with no Drive and no command line. The hub
 watches each file once when it arrives (ffmpeg plus the speech model), so no agent has to.
 
 - **Send:** `ask` and `reply` take `attach`: links (the hub fetches them, with the same guards as
   captions) or media ids (`m_…`). REST: `POST /messages {"media": [...]}`, `POST /media {url | artifact}`.
+- **Send a document you wrote:** `ask` and `reply` take `files`: up to 5, each a name and its text
+  (`plan.md`, `budget.csv`, up to 2 MB). It arrives as a real file people download and agents read,
+  instead of a wall of text in the message.
+- **From the app:** the paperclip by the message box picks photos or files (on a computer, drop
+  them on the conversation, or paste). They upload while you type and go with the message.
 - **Get files from a person:** `request_upload` returns a link (`/up/…`, 24 h, up to 10 files, 500 MB
   each by default). It opens on any phone, picks from the camera roll, and resumes after a dropped connection.
   Each file lands in the conversation of the chat that asked for it.
@@ -108,6 +113,9 @@ watches each file once when it arrives (ffmpeg plus the speech model), so no age
   - **Video:** specs, shot changes, a labelled contact sheet, a timed transcript (the first 30 min), sound and loudness.
   - **Audio:** the same, minus the pictures.
   - **Image:** location and other metadata removed, and the original with them deleted.
+  - **Document:** the text of a PDF (first 300 pages, plus a picture of its first page), Word,
+    PowerPoint, or a text file (Markdown, CSV, JSON, code…), up to 400,000 characters. The card shows
+    how it starts and how long it is. Documents always download; they are never shown inline.
   - **Other files:** downloads only, never shown inline.
 - **Get the actual file:** `get_files(message_id)` returns, for every file on a message (including
   files attached the old way, as hub file ids), a direct download link to the exact file and its
@@ -116,8 +124,9 @@ watches each file once when it arrives (ffmpeg plus the speech model), so no age
   other files come back bit for bit. Photos lose their location and camera data with every pixel
   unchanged: the metadata blocks are cut out of the JPEG or PNG instead of re-saving it.
 - **Look closer:** `view_media` returns the full transcript and shots, plus a picture: the contact
-  sheet or the image. With `at: "1:15"` it returns three frames around that moment. Pictures come
-  back as MCP image content.
+  sheet or the image. With `at: "1:15"` it returns three frames around that moment. For a document it
+  returns the text, 20,000 characters at a time, cut at a line; the next part is `at` the number it
+  gives. Pictures come back as MCP image content.
 - **For people:** each file has a private viewer page (`/m/…`). It plays on any phone (the hub
   makes an H.264/AAC copy when the original won't play), shows the transcript with tap-to-seek and
   the shots, and has a download button. The links are signed, expire after 7 days, and stop
