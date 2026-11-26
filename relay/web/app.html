@@ -143,6 +143,10 @@ body:has(.composer) .offnote { bottom: calc(112px + env(safe-area-inset-bottom))
 .hline .chev { width: 6px; height: 11px; opacity: .7; }
 .cell.dangerrow .t { color: var(--red); }
 .healthdoors { margin-top: 18px; }
+.qrcard { background: #fff; border-radius: var(--r); padding: 16px; box-shadow: 0 0 0 1px var(--line); display: grid; justify-items: center; gap: 8px; }
+.qrcard[hidden] { display: none; }
+.qrcard svg.qr { width: min(240px, 70vw); height: auto; display: block; }
+.qrcard .hint { color: #64626b; margin: 0; }
 /* rows with a long-press menu: no text selection or link preview fighting it on a phone */
 [aria-haspopup=menu].cell { -webkit-touch-callout: none; -webkit-user-select: none; user-select: none; }
 /* quick answers under an agent's question: tap one, it's your reply */
