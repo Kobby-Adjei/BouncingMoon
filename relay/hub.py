@@ -79,7 +79,7 @@ CREATE TABLE IF NOT EXISTS prefs(handle TEXT NOT NULL, key TEXT NOT NULL, value 
 CREATE TABLE IF NOT EXISTS seen(handle TEXT NOT NULL, thread INTEGER NOT NULL, last INTEGER NOT NULL, PRIMARY KEY(handle, thread));
 -- a person's pinned conversations (kept on top) and muted ones (no notifications, not counted as new)
 CREATE TABLE IF NOT EXISTS marks(handle TEXT NOT NULL, thread INTEGER NOT NULL, pinned REAL, muted INTEGER NOT NULL DEFAULT 0,
-  PRIMARY KEY(handle, thread));
+  archived REAL, PRIMARY KEY(handle, thread));
 CREATE INDEX IF NOT EXISTS messages_channel ON messages(channel);
 CREATE TABLE IF NOT EXISTS subs(agent TEXT, channel TEXT, PRIMARY KEY(agent, channel));
 CREATE TABLE IF NOT EXISTS follows(agent TEXT, thread INTEGER, PRIMARY KEY(agent, thread));
@@ -218,6 +218,8 @@ class Store:
                 if col.split()[0] not in sc_cols:
                     c.execute(f"ALTER TABLE session_cursors ADD COLUMN {col}")
             c.execute("INSERT OR IGNORE INTO meta(key,value) SELECT 'session_floor', COALESCE(MAX(id), 0) FROM messages")
+            if "archived" not in {r["name"] for r in c.execute("PRAGMA table_info(marks)")}:   # archive: off your list
+                c.execute("ALTER TABLE marks ADD COLUMN archived REAL")
             msg_cols = {r["name"] for r in c.execute("PRAGMA table_info(messages)")}
             if "origin_session" not in msg_cols:     # the exact chat that sent it (routing only)
                 c.execute("ALTER TABLE messages ADD COLUMN origin_session TEXT")
@@ -442,6 +444,7 @@ class ShortcutIn(BaseModel):
 class MarkIn(BaseModel):
     pinned: Optional[bool] = None
     muted: Optional[bool] = None
+    archived: Optional[bool] = None
 
 
 class PrefsIn(BaseModel):
@@ -1633,7 +1636,7 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
 
     @app.get("/threads")
     def threads(limit: int = Query(40, ge=1, le=200), before: int = 0, with_: Optional[str] = Query(None, alias="with", max_length=64),
-                since: float = 0, until: float = 0, me: dict = Depends(auth)):
+                since: float = 0, until: float = 0, archived: bool = False, me: dict = Depends(auth)):
         """The conversations I may see, the most recently active first: each one's newest message, how many
         messages it has and who has been in it. `before` (a newest-message id) gives the next page."""
         with store.ro() as c:
@@ -1641,7 +1644,10 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
             q = f"SELECT t.thread, t.n, m.* FROM convs t JOIN messages m ON m.id=t.last WHERE {only}"
             a = list(more)
             marks = {r["thread"]: r for r in c.execute("SELECT * FROM marks WHERE handle=?", (me["handle"],))}
-            pins = sorted((t for t, r in marks.items() if r["pinned"]), key=lambda t: marks[t]["pinned"])
+            # archived: off your list until something new is said there (a newer message brings it back by itself)
+            shelf = " EXISTS (SELECT 1 FROM marks k WHERE k.handle=? AND k.thread=t.thread AND k.archived >= m.time)"
+            q += (" AND" if archived else " AND NOT") + shelf; a.append(me["handle"])
+            pins = [] if archived else sorted((t for t, r in marks.items() if r["pinned"]), key=lambda t: marks[t]["pinned"])
             if pins:                           # pinned ones come first, on the first page only, and never twice
                 q += f" AND t.thread NOT IN ({','.join('?' * len(pins))})"; a += pins
             if before:
@@ -1678,7 +1684,8 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
         return [{"thread": r["thread"], "count": r["n"], "people": people.get(r["thread"], []), "last": msg_out(r),
                  "first": first.get(r["thread"]), "unread": unread(r),
                  "pinned": bool(r["thread"] in marks and marks[r["thread"]]["pinned"]),
-                 "muted": bool(r["thread"] in marks and marks[r["thread"]]["muted"])} for r in rows]
+                 "muted": bool(r["thread"] in marks and marks[r["thread"]]["muted"]),
+                 "archived": bool(r["thread"] in marks and (marks[r["thread"]]["archived"] or 0) >= r["time"])} for r in rows]
 
     # ---------------------------------------------------------------- live: the app hears about changes at once
     # One request at a time per open app, answered the moment something that person would see changes, instead
@@ -1702,7 +1709,7 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
             sql, a = visible(c, h)
             last = c.execute(f"SELECT MAX(t.last) FROM convs t JOIN messages m ON m.id=t.last WHERE {sql}", a).fetchone()[0] or 0
             reads = c.execute("SELECT MAX(rowid) FROM reads").fetchone()[0] or 0
-            marks = c.execute("SELECT COUNT(*), COALESCE(SUM(pinned), 0), COALESCE(SUM(muted), 0) FROM marks WHERE handle=?",
+            marks = c.execute("SELECT COUNT(*), COALESCE(SUM(pinned), 0), COALESCE(SUM(muted), 0), COALESCE(SUM(archived), 0) FROM marks WHERE handle=?",
                               (h,)).fetchone()
             owner = first_owner(c) == h
             asks = c.execute("SELECT COUNT(*), COALESCE(MAX(created), 0) FROM vault_calls WHERE owner=? AND status='waiting'",
@@ -1738,8 +1745,8 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
 
     @app.put("/threads/{thread}/mark")
     def mark_thread(thread: int, body: MarkIn, me: dict = Depends(auth)):
-        """Pin a conversation to the top of your list, or mute it: no notifications, not counted as new.
-        Only for you; nobody else sees it."""
+        """Pin a conversation to the top of your list, mute it (no notifications, not counted as new), or
+        archive it (off your list until something new is said there; search still finds it). Only for you."""
         if me["role"] != "human":
             raise HTTPException(403, "Pinning and muting are for people.")
         h = me["handle"]
@@ -1747,7 +1754,10 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
             if not c.execute("SELECT 1 FROM convs WHERE thread=?", (thread,)).fetchone() or not can_see(c, h, thread):
                 raise HTTPException(404, "no such conversation")
             r = c.execute("SELECT * FROM marks WHERE handle=? AND thread=?", (h, thread)).fetchone()
-            pinned, muted = (r["pinned"], r["muted"]) if r else (None, 0)
+            pinned, muted, shelved = (r["pinned"], r["muted"], r["archived"]) if r else (None, 0, None)
+            last_time = c.execute("SELECT m.time FROM convs t JOIN messages m ON m.id=t.last WHERE t.thread=?", (thread,)).fetchone()["time"]
+            if shelved is not None and shelved < last_time:
+                shelved = None                   # something new was said since: it's back on the list
             if body.pinned is not None:
                 if body.pinned and not pinned:
                     if c.execute("SELECT COUNT(*) FROM marks WHERE handle=? AND pinned IS NOT NULL", (h,)).fetchone()[0] >= PINS_EACH:
@@ -1757,12 +1767,17 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
                     pinned = None
             if body.muted is not None:
                 muted = 1 if body.muted else 0
-            if pinned is None and not muted:
+            if body.archived is not None:
+                shelved = max(_now(), last_time) if body.archived else None
+                if body.archived:
+                    pinned = None                # off the list: not pinned to the top of it
+            if pinned is None and not muted and shelved is None:
                 c.execute("DELETE FROM marks WHERE handle=? AND thread=?", (h, thread))
             else:
-                c.execute("INSERT INTO marks(handle,thread,pinned,muted) VALUES (?,?,?,?) ON CONFLICT(handle,thread)"
-                          " DO UPDATE SET pinned=excluded.pinned, muted=excluded.muted", (h, thread, pinned, muted))
-        return {"thread": thread, "pinned": pinned is not None, "muted": bool(muted)}
+                c.execute("INSERT INTO marks(handle,thread,pinned,muted,archived) VALUES (?,?,?,?,?) ON CONFLICT(handle,thread)"
+                          " DO UPDATE SET pinned=excluded.pinned, muted=excluded.muted, archived=excluded.archived",
+                          (h, thread, pinned, muted, shelved))
+        return {"thread": thread, "pinned": pinned is not None, "muted": bool(muted), "archived": shelved is not None}
 
     # ---------------------------------------------------------------- shortcuts: a hand-off again, in one tap
     SHORTCUTS_EACH = 30

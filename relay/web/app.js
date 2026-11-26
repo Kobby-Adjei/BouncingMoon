@@ -56,6 +56,7 @@ const ICONS = {
   pin: "M9 3.5h6M10 3.5v5.5l-3.5 4h11l-3.5-4V3.5M12 13v7.5",
   muted: "M12 3a6 6 0 0 0-6 6v3.5L4.5 15h15L18 12.5V9a6 6 0 0 0-6-6zM9.5 18a2.5 2.5 0 0 0 5 0M3.5 3.5l17 17",
   more: "M5.5 12h.01M12 12h.01M18.5 12h.01",
+  archive: "M4 5.5h16v4H4zM5.5 9.5v8.5a1.5 1.5 0 0 0 1.5 1.5h10a1.5 1.5 0 0 0 1.5-1.5V9.5M10 13h4",
 };
 const icon = (name, sw) => svg("0 0 24 24", [{ d: ICONS[name], ...stroke, ...(sw ? { "stroke-width": sw } : {}) }]);
 const chev = () => svg("0 0 8 14", [{ d: "M1.5 1.5L6.5 7l-5 5.5", fill: "none", stroke: "currentColor", "stroke-width": "2", "stroke-linecap": "round", "stroke-linejoin": "round" }], "chev");
@@ -470,7 +471,7 @@ function known(r) {
   const [top, x, y, z] = r.split("/");
   if (z !== undefined) return false;
   if (top === "agents") return !y || !!x && (y === "wake" || ONE_TIME.has(y));
-  if (top === "activity") return !x || (x === "new" && !y) || (x === "to" && !!y) || (/^\d+$/.test(x) && !y);
+  if (top === "activity") return !x || ((x === "new" || x === "archived") && !y) || (x === "to" && !!y) || (/^\d+$/.test(x) && !y);
   if (top === "add") return isOwner() ? (!y || (y === "withkey" && !!x))
     : !!ME && ME.role === "human" && !y && (!x || APPS.some((a) => a.id === x && a.style === "allow"));
   if (top === "me") return (!x || ((x === "apps" || x === "passkeys" || x === "delete" || x === "friend" || x === "notify" || x === "health" || x === "account" || (x === "people" && isOwner())) && !y) || (x === "keys" && (!y || y === "new" || /^k_[0-9a-f]{12}$/.test(y))))
@@ -501,6 +502,7 @@ function screenFor(r) {
   if (p[0] === "activity") {
     if (!p[1]) return WIDE ? [pickHint, "activity"] : [activity];
     if (p[1] === "new") return [newMessage];
+    if (p[1] === "archived") return [archivedScreen];
     if (p[1] === "to") return [thread, null, [p[2]]];
     return [thread, Number(p[1]), payloads.get(r)];
   }
@@ -1507,6 +1509,18 @@ function convRow(t, by) {
       h("div", { class: "spread", style: "gap:8px" }, h("div", { class: "t one", text: about || names(others) || "Relay" }),
         h("span", { class: "when tnum" }, t.unread ? h("span", { class: "newdot", "aria-hidden": "true" }) : null, whenShort(last.time))),
       h("div", { class: "s preview", text: line })));
+}
+
+// Archived: off Activity, kept here. Something new said in one brings it back by itself.
+async function archivedScreen() {
+  const tk = ticket();
+  let convs = [], ags = [];
+  try { [convs, ags] = await Promise.all([api("GET", "/threads?archived=true&limit=200"), api("GET", "/agents")]); } catch {}
+  if (!fresh(tk)) return;
+  const by = Object.fromEntries(ags.map((a) => [a.handle, a]));
+  screen("archived", tk, head("Archived", "Something new said in one brings it back to Activity."),
+    convs.length ? h("div", { class: "group conv" }, ...convs.map((t) => convRow(t, by)))
+      : blank("Nothing archived", "Archive a conversation from its ⋯ menu to take it off Activity."));
 }
 
 // you: your email sign-in and sign out
@@ -2743,8 +2757,9 @@ async function activity() {
     if (q.length >= 2) return;              // searching: the list is the results until the box is cleared
     const mine = asked;
     try {
-      const [convs, ags, asks, wants] = await Promise.all([api("GET", `/threads?limit=${Math.min(PAGE * pages, 200)}${whenQuery(when)}`), api("GET", "/agents"),
-        ME.role === "human" ? api("GET", "/approvals").catch(() => []) : [], isOwner() ? api("GET", "/invite-requests").catch(() => []) : []]);
+      const [convs, ags, asks, wants, shelved] = await Promise.all([api("GET", `/threads?limit=${Math.min(PAGE * pages, 200)}${whenQuery(when)}`), api("GET", "/agents"),
+        ME.role === "human" ? api("GET", "/approvals").catch(() => []) : [], isOwner() ? api("GET", "/invite-requests").catch(() => []) : [],
+        filter === "all" || !filter ? api("GET", "/threads?archived=true&limit=1").catch(() => []) : []]);
       if (mine !== asked || q.length >= 2) return;      // a search started while this was on its way
       more = convs.filter((c) => !c.pinned).length >= Math.min(PAGE * pages, 200);
       const by = Object.fromEntries(ags.map((a) => [a.handle, a]));
@@ -2812,6 +2827,8 @@ async function activity() {
         all: "No conversations yet. New starts one.", agents: "Your agents haven't talked among themselves yet." }[filter] }));
       if (filter !== "needs" && more && pages * PAGE < 200) rows.push(h("button", { class: "morerow press", type: "button", onclick: (e) => {
         e.currentTarget.disabled = true; pages++; refresh(); } }, "Show older conversations", chev()));
+      if (filter === "all" && shelved.length) rows.push(h("button", { class: "morerow press", type: "button", onclick: () => nav("activity/archived") },
+        icon("archive"), "Archived conversations", chev()));
       find.hidden = !anything;                        // nothing to search yet: no box
       if (rows.length) {
         if (!list.isConnected) view.querySelector(".blank").replaceWith(list);
@@ -3083,6 +3100,10 @@ async function thread(id, people) {
     popMenu(moreBtn, [
       { icon: "pin", label: st.pinned ? "Unpin" : "Pin to top", run: () => set({ pinned: !st.pinned }, st.pinned ? "Unpinned" : "Pinned to the top of Activity") },
       { icon: "muted", label: st.muted ? "Unmute" : "Mute", run: () => set({ muted: !st.muted }, st.muted ? "Unmuted" : "Muted. No notifications from it; requests for your OK still reach you.") },
+      { icon: "archive", label: st.archived ? "Move back to Activity" : "Archive", run: async () => {
+        await set({ archived: !st.archived }, st.archived ? "Back in Activity" : "Archived. Something new said there brings it back.");
+        if (!st.archived && !WIDE) nav("activity", { replace: true });      // it's off the list: back to the list
+      } },
     ]);
   });
   const top = head(title, canPost ? null : "Sign in as yourself to reply.", h("div", { class: "headright" }, faces, moreBtn));

@@ -46,6 +46,9 @@ async function seed() {
   const weekly = await api("POST", "/messages", { channel: "direct", text: "@claude every Friday: a short report on what we posted", mentions: ["claude"] }, K);
   await api("POST", "/messages", { reply_to: weekly.id, text: "Will do. First one this Friday." }, tok.claude);
   await api("PUT", `/threads/${weekly.thread}/mark`, { pinned: true }, K);
+  const oldjob = await api("POST", "/messages", { channel: "direct", text: "@codex resize last week's thumbnails", mentions: ["codex"] }, K);
+  await api("POST", "/messages", { reply_to: oldjob.id, text: "Done: 12 thumbnails at 1280×720." }, tok.codex);
+  await api("PUT", `/threads/${oldjob.thread}/mark`, { archived: true }, K);
   // a saved key, and an agent waiting for kobby's OK to use it
   const key = await api("POST", "/keys", { name: "instagram", hosts: ["graph.facebook.com"], secret: "IGQVJ-sample-not-real-0000" }, K);
   mcp(tok.codex, "call_api", { key: "instagram", method: "POST", url: "https://graph.facebook.com/v21.0/me/media",
@@ -79,7 +82,7 @@ async function seed() {
     ["add", "/app#add", "K", true], ["add-claude", "/app#add/claude_app", "K", false], ["add-chatgpt", "/app#add/chatgpt", "K", false],
     ["add-codex", "/app#add/codex", "K", false], ["add-person", "/app#add/person", "K", false],
     ["activity", "/app#activity", "K", true], ["activity-all", "/app#activity", "K", true], ["thread", `/app#activity/${s.thread}`, "K", true],
-    ["thread-menu", `/app#activity/${s.thread}`, "K", true], ["new-message", "/app#activity/new", "K", false],
+    ["thread-menu", `/app#activity/${s.thread}`, "K", true], ["archived", "/app#activity/archived", "K", true], ["new-message", "/app#activity/new", "K", false],
     ["approve", s.approval ? `/app#approve/${s.approval}` : null, "K", true], ["invite-ask", s.ask ? `/app#ask/${s.ask}` : null, "K", false],
     ["me", "/app#me", "K", true], ["apps", "/app#me/apps", "K", false], ["passkeys", "/app#me/passkeys", "K", false], ["notify", "/app#me/notify", "K", true], ["health", "/app#me/health", "K", true], ["account", "/app#me/account", "K", true], ["account-person", "/app#me/account", "AMA", false], ["people", "/app#me/people", "K", true], ["agents-friend", "/app#agents", "AMA", false],
     ["keys", "/app#me/keys", "K", true], ["key-new", "/app#me/keys/new", "K", false], ["key", `/app#me/keys/${s.key}`, "K", false],
