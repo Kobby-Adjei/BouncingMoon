@@ -1684,13 +1684,14 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
     # One request at a time per open app, answered the moment something that person would see changes, instead
     # of the app asking for everything every few seconds. It waits on the event loop, not a worker thread, so a
     # hundred open apps hold no threads.
-    live_waiters: set = set()
-    live_loop: dict = {"loop": None}
+    live_waiters: set = set()                    # (its event loop, its event): each woken on its own loop
 
     def live_wake() -> None:
-        loop = live_loop["loop"]
-        if loop and live_waiters:
-            loop.call_soon_threadsafe(lambda: [e.set() for e in list(live_waiters)])
+        for loop, ev in list(live_waiters):
+            try:
+                loop.call_soon_threadsafe(ev.set)
+            except RuntimeError:                 # that loop has closed
+                live_waiters.discard((loop, ev))
     store.on_write.append(live_wake)
 
     def live_state(me: dict) -> str:
@@ -1715,11 +1716,11 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
     async def changes(since: str = Query("", max_length=32), wait: float = Query(25, ge=0, le=30), me: dict = Depends(auth)):
         """Answers as soon as something you'd see has changed since `since` (or after `wait` seconds) with
         the new `state`; pass that back next time. The first call (no `since`) answers at once."""
-        live_loop["loop"] = asyncio.get_running_loop()
+        loop = asyncio.get_running_loop()
         deadline = time.monotonic() + wait
         while True:
             woke = asyncio.Event()
-            live_waiters.add(woke)               # listening before looking: a write in between isn't missed
+            live_waiters.add((loop, woke))       # listening before looking: a write in between isn't missed
             try:
                 state = await asyncio.to_thread(live_state, me)
                 left = deadline - time.monotonic()
@@ -1731,7 +1732,7 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
                     pass
                 await asyncio.sleep(0.25)         # a burst of writes (an agent streaming) is looked at once
             finally:
-                live_waiters.discard(woke)
+                live_waiters.discard((loop, woke))
 
     PINS_EACH = 10
 

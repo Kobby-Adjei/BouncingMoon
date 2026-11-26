@@ -131,7 +131,7 @@ def test_a_desktop_is_one_sidebar_with_everything_one_click_away():
     js = open(os.path.join(WEB, "app.js")).read()
     html = open(os.path.join(WEB, "app.html")).read()
     assert 'railItem("agents", "Agents"), railItem("activity", "Activity", waiting), person ? railItem("me/keys", "Keys")' in js
-    assert 'class: "railme press"' in js and "every(shell, count, 15000)" in js       # you at the bottom; the count stays fresh
+    assert 'class: "railme press"' in js and "liveOn(shell, count, 60000)" in js       # you at the bottom; the count stays fresh (live)
     assert "body:has(.shell) #bar { display: none; }" in html                          # no top bar above the app
 
 
