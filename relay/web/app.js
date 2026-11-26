@@ -1526,6 +1526,39 @@ function convRow(t, by) {
       h("div", { class: "s preview", text: line })));
 }
 
+// Pin, mute, archive from the list itself: long-press a row (a phone), right-click it (a computer), or the
+// keyboard's menu key. The same three as the ⋯ menu inside a conversation.
+function rowMenu(row, t, after) {
+  const open = (e) => {
+    if (e) e.preventDefault();
+    const set = async (body, said, undo) => {
+      try { await api("PUT", `/threads/${t.thread || t.id}/mark`, body); toast(said, undo); after(); } catch (x) { toast(x.message); }
+    };
+    const id = t.thread || t.id;
+    popMenu(row, [
+      { icon: "pin", label: t.pinned ? "Unpin" : "Pin to top", run: () => set({ pinned: !t.pinned }, t.pinned ? "Unpinned" : "Pinned to the top") },
+      { icon: "muted", label: t.muted ? "Unmute" : "Mute", run: () => set({ muted: !t.muted }, t.muted ? "Unmuted" : "Muted. Requests for your OK still come through.") },
+      { icon: "archive", label: t.archived ? "Move back to Activity" : "Archive", run: () => t.archived ? set({ archived: false }, "Back in Activity")
+        : set({ archived: true }, t.pinned ? "Archived and unpinned" : "Archived",
+          async () => { try { await api("PUT", `/threads/${id}/mark`, { archived: false, pinned: !!t.pinned }); after(); } catch {} }) },
+    ]);
+  };
+  row.setAttribute("aria-haspopup", "menu");
+  row.addEventListener("contextmenu", open);                 // right-click, Android's long-press, the menu key
+  // iPhone fires no contextmenu on a long-press: time it ourselves, and swallow the tap that ends it
+  let timer = null, x0 = 0, y0 = 0, fired = false;
+  row.addEventListener("pointerdown", (e) => {
+    if (e.pointerType !== "touch") return;
+    fired = false; x0 = e.clientX; y0 = e.clientY;
+    timer = setTimeout(() => { fired = true; if (navigator.vibrate) navigator.vibrate(10); open(); }, 500);
+  });
+  const cancel = () => { clearTimeout(timer); timer = null; };
+  row.addEventListener("pointermove", (e) => { if (timer && Math.hypot(e.clientX - x0, e.clientY - y0) > 8) cancel(); });
+  row.addEventListener("pointerup", cancel); row.addEventListener("pointercancel", cancel);
+  row.addEventListener("click", (e) => { if (fired) { e.preventDefault(); e.stopImmediatePropagation(); fired = false; } }, true);
+  return row;
+}
+
 // Archived: off Activity, kept here. Something new said in one brings it back by itself.
 async function archivedScreen() {
   const tk = ticket();
@@ -1534,7 +1567,8 @@ async function archivedScreen() {
   if (!fresh(tk)) return;
   const by = Object.fromEntries(ags.map((a) => [a.handle, a]));
   screen("archived", tk, head("Archived", "Something new said in one brings it back to Activity. Muted ones come back only when someone mentions you."),
-    convs.length ? h("div", { class: "group conv" }, ...convs.map((t) => convRow(t, by)))
+    convs.length ? h("div", { class: "group conv" }, ...convs.map((t) => rowMenu(convRow(t, by), { ...t, archived: true },
+      () => nav("activity/archived", { replace: true }))))
       : blank("Nothing archived", "Archive a conversation from its ⋯ menu to take it off Activity."));
 }
 
@@ -2849,7 +2883,7 @@ async function activity() {
           const about = t.first && t.first.from !== "relay" ? topic(t.first.text) : "";
           const title = about || names(others) || "Relay";
           const line = about ? `${names(others)}${t.count > 1 ? " · " + who + gist(last.text) : ""}` : who + gist(last.text);
-          rows.push(h("button", { class: "cell press" + (t.unread ? " unread" : ""), type: "button", "data-key": `activity/${t.id}`,
+          const row = (h("button", { class: "cell press" + (t.unread ? " unread" : ""), type: "button", "data-key": `activity/${t.id}`,
               "aria-label": [title, t.pinned ? "pinned" : "", t.muted ? "muted" : "", t.unread ? "new" : ""].filter(Boolean).join(", "), onclick: () => nav(`activity/${t.id}`, { data: others }) },
             h("span", { class: "stackav" }, ...faces),
             h("div", { class: "grow" },
@@ -2857,6 +2891,7 @@ async function activity() {
                 h("span", { class: "when tnum" }, t.unread ? h("span", { class: "newdot", "aria-hidden": "true" }) : null,
                   t.muted ? h("span", { class: "mutedmark", title: "Muted" }, icon("muted")) : null, whenShort(last.time))),
               h("div", { class: "s preview", text: line }))));
+          rows.push(ME.role === "human" ? rowMenu(row, t, () => { first = false; refresh(); }) : row);
         }
       }
       const anything = needs.length || sorted.length;
