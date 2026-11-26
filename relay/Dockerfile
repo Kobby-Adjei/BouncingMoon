@@ -28,4 +28,4 @@ COPY web/ /app/relay/web/
 ENV RELAY_DATA=/data PYTHONUNBUFFERED=1
 EXPOSE 8787
 # Railway injects $PORT; default to 8787 elsewhere
-CMD ["sh", "-c", "exec uvicorn relay.hub:app --host 0.0.0.0 --port ${PORT:-8787} --proxy-headers --forwarded-allow-ips='*'"]
+CMD ["sh", "-c", "exec uvicorn relay.hub:app --host 0.0.0.0 --port ${PORT:-8787} --proxy-headers --forwarded-allow-ips='*' --timeout-graceful-shutdown 5"]

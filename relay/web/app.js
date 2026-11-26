@@ -84,7 +84,17 @@ async function api(method, path, body, key = KEY) {
   // keep a copy for offline only when you chose to stay signed in on this device (the sign-in is in localStorage)
   if (key && method === "GET" && store.kept(key)) headers["X-Relay-Keep"] = "1";
   let r;
-  try { r = await fetch(path, { method, headers, body: body === undefined ? undefined : JSON.stringify(body), cache: "no-store" }); }
+  // While Relay restarts for an update (a few seconds), its host answers 502/503 or drops the line.
+  // Reading and setting things can safely go again; sending can't (it may have gone through), so it says so.
+  const again = method !== "POST";
+  try {
+    for (const pause of again ? [1500, 4000, 0] : [0]) {
+      try { r = await fetch(path, { method, headers, body: body === undefined ? undefined : JSON.stringify(body), cache: "no-store" }); }
+      catch (e) { if (!pause || navigator.onLine === false) throw e; await new Promise(ok => setTimeout(ok, pause)); continue; }
+      if (!pause || ![502, 503, 504].includes(r.status) || path.startsWith("/health")) break;
+      await new Promise(ok => setTimeout(ok, pause));
+    }
+  }
   catch {                                   // no network, and nothing kept on this device for this
     offline(true);
     const e = new Error(method === "GET" ? "You're offline. Relay catches up when you're back." : "You're offline, so that wasn't sent. Try again when you're back.");
@@ -95,7 +105,9 @@ async function api(method, path, body, key = KEY) {
   let data = null;
   try { data = await r.json(); } catch {}
   if (!r.ok) {
-    const e = new Error((data && typeof data.detail === "string") ? data.detail : `Something went wrong (${r.status})`);
+    const e = new Error((data && typeof data.detail === "string") ? data.detail
+      : [502, 503, 504].includes(r.status) ? (again ? "Relay is restarting for an update. Try again in a moment." : "Relay is restarting for an update. Check whether that went through, then try again in a moment.")
+      : `Something went wrong (${r.status})`);
     e.status = r.status;
     if (r.status === 401 && key && key === KEY) signOut(key.startsWith("rly_sess_") ? "Your session ended. Sign in again." : undefined);
     throw e;
@@ -1320,6 +1332,20 @@ const APPS = [
   { id: "person", label: "Person", sub: "teammate", provider: null, style: "person", name: "" },
 ];
 
+// These are set up in a terminal or an editor. On a phone, say so first and hand this page to the computer;
+// the phone keeps watching and turns to Connected when it's done there.
+const COMPUTER_ONLY = new Set(["claude_code", "codex", "gemini", "cursor"]);
+const onPhone = () => matchMedia("(hover: none) and (pointer: coarse)").matches;
+function sendToComputer(a) {
+  const link = `${ORIGIN}/app#add/${a.id}`;
+  const b = h("button", { class: "btn press", type: "button" }, navigator.share ? "Send to my computer" : "Copy link for my computer");
+  b.addEventListener("click", () => navigator.share
+    ? navigator.share({ title: `Add Relay to ${a.label}`, url: link }).catch(() => {})
+    : copy(link, b, "Copy link for my computer"));
+  return h("div", { class: "plainask computernote" },
+    h("p", null, h("b", { text: `${a.label} runs on a computer.` }), " Send this page there to finish. This screen turns to Connected when it's done."), b);
+}
+
 // Add an app the way you add Gmail: Relay's address, Connect, Allow. The Allow page names the agent.
 function allowGuide(a) {
   const tk = ticket();
@@ -1371,7 +1397,7 @@ function allowGuide(a) {
         a.via === "invite" ? "Set up instant replies" : "Use a token instead")));
   const hello = h("div", { class: "hellobox" });
   const view = screen("allow", tk, h("div", { class: "hero" }, orb, h("h1", { class: "title", text: `Add Relay to ${a.label}` })),
-    h("div", { class: "stack" }, status, list, hello, done, isOwner() ? adv : null));
+    h("div", { class: "stack" }, onPhone() && COMPUTER_ONLY.has(a.id) ? sendToComputer(a) : null, status, list, hello, done, isOwner() ? adv : null));
   let seen = null;
   const t = every(view, async () => {
     try {

@@ -292,9 +292,12 @@ connecting a second. What a hub held before this update counts as seen.
 conversations, then for a minute runs every person's app at its real pace, 25 helpers long-polling, 25
 chat apps reading and answering through /mcp, new conversations and searches, all at once, and reports
 the median, 95th and 99th percentile and slowest time for each kind of request, and any failures.
-`--pace 1` runs the apps three times faster than real. On 4 cores: no failures; medians 10-100 ms; the
-slowest one in twenty under 1 s. A hub starts on 100,000 messages (building its search and conversation
-indexes the first time) in about a second.
+`--pace 1` runs the apps three times faster than real. Measured on 4 cores, with the test itself on the
+same machine: no failures; medians 8-100 ms; the slowest one in twenty under 0.1 s for reading people,
+approvals and posting answers, 0.25-0.9 s for search, an open conversation and the conversation list, and
+1.3-1.8 s for asking and checking answers through /mcp (a helper's `/inbox?wait` time includes waiting for
+news, so it isn't a delay). A hub starts on 100,000 messages (building its search and conversation indexes
+the first time) in about a second.
 
 ## Checking the screens
 

@@ -429,3 +429,32 @@ def test_a_new_chat_is_told_about_answers_held_for_an_earlier_chat_that_went_qui
     got = call(c, t["claude"], "check_replies", {"thread": asked["asked"]}, session="chat-B")["messages"]
     assert [m["text"] for m in got] == ["New drop."]                       # opening it brings it here
     assert call(c, t["claude"], "check_replies", session="chat-B")["waiting_conversations"] == []
+
+
+def test_chatgpt_answers_go_to_the_chat_that_asked(hub):
+    """ChatGPT shares one connection (one Mcp-Session-Id) across a person's chats, and names
+    the chat on each call in _meta["openai/session"]."""
+    c, rec, t = hub
+    H = {"Authorization": f"Bearer {t['claude']}", "Mcp-Session-Id": "rs_shared"}
+
+    def mcp(name, args, chat=None, headers=H):
+        params = {"name": name, "arguments": args}
+        if chat:
+            params["_meta"] = {"openai/session": chat}
+        r = c.post("/mcp", headers=headers, json={"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": params})
+        return r.json()["result"]["structuredContent"]
+
+    a = mcp("ask", {"to": "muse", "message": "from chat one", "wait_seconds": 0}, "v1/chat-one")
+    b = mcp("ask", {"to": "muse", "message": "from chat two", "wait_seconds": 0}, "v1/chat-two")
+    call(c, t["muse"], "check_replies", session="m")
+    call(c, t["muse"], "reply", {"message_id": a["asked"], "text": "for one"}, "m")
+    call(c, t["muse"], "reply", {"message_id": b["asked"], "text": "for two"}, "m")
+    assert [m["text"] for m in mcp("check_replies", {}, headers={**H, "x-openai-session": "v1/chat-two"})["messages"]] == ["for two"]
+    assert [m["text"] for m in mcp("check_replies", {}, "v1/chat-one")["messages"]] == ["for one"]
+    # an app that names its own session (X-Relay-Session) keeps it
+    own = {**H, "X-Relay-Session": "mine"}
+    d = mcp("ask", {"to": "muse", "message": "from mine", "wait_seconds": 0}, "v1/chat-one", headers=own)
+    call(c, t["muse"], "check_replies", session="m")
+    call(c, t["muse"], "reply", {"message_id": d["asked"], "text": "for mine"}, "m")
+    assert mcp("check_replies", {}, "v1/chat-one")["messages"] == []
+    assert [m["text"] for m in mcp("check_replies", {}, headers=own)["messages"]] == ["for mine"]

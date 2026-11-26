@@ -24,6 +24,7 @@ newer version is answered with the newest of these, as the spec allows.
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 import re
 import time
@@ -873,8 +874,8 @@ def mount(app, hub) -> None:
             if asked and asked not in PROTOCOL_VERSIONS:
                 return Response(f"This server speaks MCP {PROTOCOL_VERSIONS[-1]} and earlier. Start with initialize.",
                                 status_code=400, media_type="text/plain")
-        session = hub.check_session(request.headers.get("x-relay-session")
-                                    or request.headers.get("mcp-session-id"))
+        own = hub.check_session(request.headers.get("x-relay-session"))
+        session = own or hub.check_session(request.headers.get("mcp-session-id"))
         issued = None
         if not session and any(isinstance(m, dict) and m.get("method") == "initialize" for m in msgs):
             # a chat starting up: give it its own id, which MCP clients send back on every later call
@@ -882,10 +883,21 @@ def mount(app, hub) -> None:
         headers = {"Mcp-Session-Id": issued} if issued else None
         names = sorted(request.headers.keys())                # names only: values may be secrets
         from starlette.concurrency import run_in_threadpool   # `ask` may wait; keep the event loop free
+        def chat(m):
+            # ChatGPT keeps one connection for all of a person's chats but names the chat on each call
+            # (`_meta["openai/session"]`, or an `x-openai-session` header). Use that, so an answer goes
+            # back to the chat that asked. Hashed: only the caller's own sessions are ever compared.
+            if own:
+                return own
+            meta = m.get("params", {}).get("_meta") if isinstance(m, dict) and isinstance(m.get("params"), dict) else None
+            named = (meta.get("openai/session") if isinstance(meta, dict) else None) or request.headers.get("x-openai-session")
+            if isinstance(named, str) and named.strip():
+                return "oai_" + hashlib.sha256(named.strip().encode()).hexdigest()[:32]
+            return session
         if isinstance(body, list):
-            out = [r for r in [await run_in_threadpool(handle, m, me, session, names, hub.origin(request)) for m in body] if r is not None]
+            out = [r for r in [await run_in_threadpool(handle, m, me, chat(m), names, hub.origin(request)) for m in body] if r is not None]
             return JSONResponse(out, headers=headers) if out else Response(status_code=202, headers=headers)
-        out = await run_in_threadpool(handle, body, me, session, names, hub.origin(request))
+        out = await run_in_threadpool(handle, body, me, chat(body), names, hub.origin(request))
         return JSONResponse(out, headers=headers) if out is not None else Response(status_code=202, headers=headers)
 
     @app.get("/mcp", include_in_schema=False)
