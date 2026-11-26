@@ -124,6 +124,12 @@
 .wapp { display: inline-flex; align-items: center; gap: 5px; color: var(--ink); font-weight: 600; }
 .wapp img, .wapp svg { width: 16px; height: 16px; }
 .doorhint { font-size: 13px; color: var(--ink2); flex: none; }
+.doorhint.bad { color: var(--red); font-weight: 600; }
+.morb .mh.hbad { color: var(--red); }
+.hcheck { align-items: flex-start; }
+.hcheck .hdot { flex: none; width: 10px; height: 10px; border-radius: 50%; margin: 6px 2px 0 4px; background: var(--green); }
+.hcheck.bad .hdot { background: var(--red); box-shadow: 0 0 0 4px var(--red-soft); }
+.hcheck .btn { align-self: center; }
 .page[data-page=friend] .facts { margin-top: 26px; }
 .title.clamp2 { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; }
 .title.longtitle { font-size: 24px; line-height: 1.15; }

@@ -1938,6 +1938,10 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
             except Exception as e:                 # a backup that fails must never take the hub down
                 log.warning("backup failed: %s", e)
             try:
+                app.state.alert_health()           # a failed backup, a key turned away, a disk filling up
+            except Exception as e:
+                log.warning("health check failed: %s", e)
+            try:
                 media_svc.tidy()                   # half-finished uploads and leftovers from restarts
             except Exception as e:
                 log.warning("tidying up failed: %s", e)
@@ -2068,6 +2072,99 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
         return {"local": {"name": local[-1], "time": os.path.getmtime(os.path.join(folder, local[-1]))} if local else None,
                 "offsite": {"on": bool(offsite), "name": st.get("name"), "ok": st.get("ok"), "error": st.get("error"),
                             "failed": st.get("failed")}}
+
+    # ---------------------------------------------------------------- health: told when something breaks
+    HEALTH_GAP = 20 * 3600                     # the same problem taps you at most once a day
+    STARTED = time.time()
+
+    def site_of(url: str) -> str:
+        host = (urllib.parse.urlsplit(url).hostname or url).lower()
+        for name, hosts in (("Instagram", ("instagram.com", "facebook.com")), ("YouTube", ("youtube.com", "googleapis.com")),
+                            ("TikTok", ("tiktok.com", "tiktokapis.com")), ("X", ("x.com", "twitter.com"))):
+            if any(host == x or host.endswith("." + x) for x in hosts):
+                return name
+        return host
+
+    def health_for(h: str) -> list:
+        """What's fine and what isn't, for this person: their saved keys; for the owner also backups and storage.
+        Problems first. Each: id, ok, title, detail and, where there's something to do, where to do it."""
+        out = []
+        with store.ro() as c:
+            owner = first_owner(c) == h
+            keys = c.execute("SELECT id, name FROM vault_keys WHERE owner=? ORDER BY name", (h,)).fetchall()
+            refused = []
+            for k in keys:                     # the newest answer a website gave with this key
+                r = c.execute("SELECT result_status, url FROM vault_calls WHERE key_id=? AND status='done'"
+                              " ORDER BY finished DESC LIMIT 1", (k["id"],)).fetchone()
+                if r and r["result_status"] in (401, 403):
+                    refused.append((k, r))
+        for k, r in refused:
+            out.append({"id": f"key:{k['id']}", "ok": False, "title": f"{site_of(r['url'])} turned away your {k['name']} key",
+                        "detail": "It may have expired or been changed there. Paste a new one in Keys.", "url": f"me/keys/{k['id']}"})
+        if keys and not refused:
+            out.append({"id": "keys", "ok": True, "title": "Your keys work",
+                        "detail": f"{len(keys)} saved; no website has turned one away", "url": None})
+        if owner and os.environ.get("RELAY_BACKUPS", "1") != "0":
+            folder = os.path.join(store.dir, "backups")
+            local = sorted(f for f in os.listdir(folder) if f.endswith(".zip")) if os.path.isdir(folder) else []
+            age = time.time() - os.path.getmtime(os.path.join(folder, local[-1])) if local else None
+            if age is not None and age > 36 * 3600:
+                out.append({"id": "backup", "ok": False, "title": f"No backup for {int(age // 86400) or 1} day{'s' if age >= 2 * 86400 else ''}",
+                            "detail": "The nightly copy didn't happen. The hub may be short of space; see Storage.", "url": None})
+            elif age is None and time.time() - STARTED > 3 * 3600:
+                out.append({"id": "backup", "ok": False, "title": "No backup yet",
+                            "detail": "The nightly copy hasn't run. The hub may be short of space; see Storage.", "url": None})
+            else:
+                out.append({"id": "backup", "ok": True, "title": "Backed up every night",
+                            "detail": "The first copy is on its way" if age is None else "Last copy today" if age < 86400 else "Last copy yesterday",
+                            "url": None})
+            if offsite:
+                st = offsite_mod.status(store.dir)
+                if st.get("error") and not (st.get("ok") and st.get("ok", 0) > st.get("failed", 0)):
+                    out.append({"id": "offsite", "ok": False, "title": "The off-site copy failed",
+                                "detail": str(st["error"])[:200], "url": None})
+                else:
+                    out.append({"id": "offsite", "ok": True, "title": "A copy is kept off this server",
+                                "detail": "Encrypted, the last 7 nights", "url": None})
+        if owner:
+            free, total = media_mod.disk(store.dir)
+            used = round(100 * (1 - free / total)) if total else 0
+            stop = round(100 * (1 - media_mod.KEEP_FREE))
+            if total and used >= stop - 5:
+                out.append({"id": "storage", "ok": False, "title": f"Storage is {used}% full",
+                            "detail": f"New files stop at {stop}%. Remove old videos, or give the volume more room in Railway.", "url": None})
+            else:
+                out.append({"id": "storage", "ok": True, "title": "Room to spare", "detail": f"Storage {used}% used", "url": None})
+        return sorted(out, key=lambda x: x["ok"])
+
+    def alert_health(h: str) -> int:
+        """Tap this person on the shoulder about each problem, once a day while it lasts. Returns how many."""
+        sent = 0
+        now = time.time()
+        problems = [x for x in health_for(h) if not x["ok"]]
+        with store.tx() as c:
+            known = {r["key"][6:]: float(r["value"] or 0) for r in c.execute(
+                "SELECT key, value FROM prefs WHERE handle=? AND key LIKE 'alert:%'", (h,))}
+            for x in problems:
+                if now - known.get(x["id"], 0) >= HEALTH_GAP:
+                    pusher.notify(h, "approvals", x["title"], x["detail"], f"/app#{x['url'] or 'me/health'}", tag=x["id"], urgent=True)
+                    set_pref(c, h, f"alert:{x['id']}", str(now))
+                    sent += 1
+            for gone in set(known) - {x["id"] for x in problems}:     # fixed: a new break later taps again
+                c.execute("DELETE FROM prefs WHERE handle=? AND key=?", (h, f"alert:{gone}"))
+        return sent
+
+    def alert_everyone() -> int:
+        with store.ro() as c:
+            who = {first_owner(c)} | {r["owner"] for r in c.execute("SELECT DISTINCT owner FROM vault_keys")}
+        return sum(alert_health(h) for h in who if h)
+    app.state.alert_health = alert_everyone
+
+    @app.get("/me/health")
+    def my_health(me: dict = Depends(auth)):
+        if me["role"] != "human":
+            raise HTTPException(403, "Sign in as yourself.")
+        return {"checks": health_for(me["handle"])}
 
     @app.get("/backup", include_in_schema=False)
     def download_backup(me: dict = Depends(auth)):
@@ -2383,6 +2480,7 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
         pusher.notify(owner, "approvals", f"{agent} wants to {VERBS.get(method, method)}",
                       f"With your {key_name} key, on {host}. Tap to review.", f"/app#approve/{cid}", tag=cid, urgent=True)
     vault.on_waiting = ok_needed
+    vault.on_refused = alert_health                 # a website turned a key away: say so now, not tomorrow
 
     def waiting_for(person: str) -> int:
         """What waits for this person: OKs to give, and for the owner, people asking to join."""
@@ -2448,6 +2546,7 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
             n = unread_for(c, h)
         if n:
             lines.append(f"{n} conversation{'s have' if n != 1 else ' has'} something new")
+        lines += [x["title"] for x in health_for(h) if not x["ok"]][:3]
         return lines
 
     def send_digests() -> int:

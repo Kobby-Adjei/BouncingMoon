@@ -405,7 +405,7 @@ function known(r) {
   if (top === "activity") return !x || (x === "new" && !y) || (x === "to" && !!y) || (/^\d+$/.test(x) && !y);
   if (top === "add") return isOwner() ? (!y || (y === "withkey" && !!x))
     : !!ME && ME.role === "human" && !y && (!x || APPS.some((a) => a.id === x && a.style === "allow"));
-  if (top === "me") return (!x || ((x === "apps" || x === "passkeys" || x === "delete" || x === "friend" || x === "notify" || (x === "people" && isOwner())) && !y) || (x === "keys" && (!y || y === "new" || /^k_[0-9a-f]{12}$/.test(y))))
+  if (top === "me") return (!x || ((x === "apps" || x === "passkeys" || x === "delete" || x === "friend" || x === "notify" || x === "health" || (x === "people" && isOwner())) && !y) || (x === "keys" && (!y || y === "new" || /^k_[0-9a-f]{12}$/.test(y))))
     && !!ME && ME.role !== "admin";
   if (top === "approve") return !!ME && ME.role === "human" && /^c_[0-9a-f]{16}$/.test(x || "") && !y;
   if (top === "ask") return isOwner() && /^ir_[0-9a-f]{12}$/.test(x || "") && !y;
@@ -444,6 +444,7 @@ function screenFor(r) {
   if (p[0] === "me" && p[1] === "apps") return [appsScreen];
   if (p[0] === "me" && p[1] === "passkeys") return [passkeysScreen];
   if (p[0] === "me" && p[1] === "notify") return [notifyScreen];
+  if (p[0] === "me" && p[1] === "health") return [healthScreen];
   if (p[0] === "me" && p[1] === "people") return [peopleScreen];
   if (p[0] === "me" && p[1] === "delete") return [deleteScreen];
   if (p[0] === "me" && p[1] === "friend") return [friendScreen];
@@ -1459,6 +1460,7 @@ async function meScreen() {
         h("span", { class: "grow" }, h("b", { text: "People" })), chev()) : null,
       ME.role === "human" ? h("button", { class: "door press", type: "button", onclick: () => nav("me/notify") },
         bellOrb(40), h("span", { class: "grow" }, h("b", { text: "Notifications" })), notifyHint(), chev()) : null,
+      ME.role === "human" ? healthDoor() : null,
       WIDE ? null : h("button", { class: "door press", type: "button", onclick: () => nav("me/keys") },
         keyOrb("", 40), h("span", { class: "grow" }, h("b", { text: "Keys" })), chev()),
       !ME.owner && ME.role === "human" ? friendDoor() : null,
@@ -1679,7 +1681,7 @@ async function peopleScreen() {
 // ------------------------------------------------------------------ notifications: when something needs you
 // Web Push from the hub itself. Android and computers: Allow, done. iPhone and iPad only allow it for a web
 // app added to the Home Screen (iOS 16.4+), so there the screen says how, first.
-const PUSH_KINDS = [["approvals", "An agent wants to use one of your keys", "So it isn't left waiting a day"],
+const PUSH_KINDS = [["approvals", "Something needs you", "An agent asking to use a key, or something that broke"],
   ["answers", "An agent answers you", "At most one a minute per conversation"],
   ["invites", "Someone asks to join", null]];
 const pushable = () => "serviceWorker" in navigator && "PushManager" in window && "Notification" in window;
@@ -1838,6 +1840,44 @@ function since(t) {           // when something happened, in words
   if (s < 3600) return `${Math.floor(s / 60)} min ago`;
   if (s < 86400) return `${Math.floor(s / 3600)} h ago`;
   return new Date(t * 1000).toLocaleDateString(undefined, { month: "short", day: "numeric" });
+}
+
+// ------------------------------------------------------------------ health: is everything working?
+function healthOrb(size, bad) {   // a tick on your half when things are fine, "!" when something needs fixing
+  return h("span", { class: "morb", style: `--s:${size}px`, "aria-hidden": "true" },
+    h("span", { class: "mh l" + (bad ? " hbad" : "") }, svg("0 0 24 24", [{ d: bad ? "M12 6.5v7M12 17.5h.01" : "M5.5 12.5l4 4 9-9", ...stroke, "stroke-width": bad ? "2.8" : "2.4" }])),
+    h("span", { class: "mh r dark" }, h("i", { class: "mk" })));
+}
+// In Me: "All good", or how many things need fixing. Hidden when there's nothing to check yet.
+function healthDoor() {
+  const hint = h("span", { class: "doorhint" });
+  const door = h("button", { class: "door press", type: "button", hidden: "", onclick: () => nav("me/health") },
+    healthOrb(40), h("span", { class: "grow" }, h("b", { text: "Health" })), hint, chev());
+  api("GET", "/me/health").then(({ checks }) => {
+    if (!checks.length) return;
+    const bad = checks.filter((x) => !x.ok).length;
+    hint.textContent = bad ? `${bad} to fix` : "All good";
+    hint.classList.toggle("bad", !!bad);
+    door.setAttribute("aria-label", `Health, ${hint.textContent}`);
+    door.hidden = false;
+  }).catch(() => {});
+  return door;
+}
+async function healthScreen() {
+  const tk = ticket();
+  let checks = [];
+  try { ({ checks } = await api("GET", "/me/health")); } catch (x) { if (!fresh(tk)) return; return screen("health", tk, head("Health"), blank("Couldn't check", x.message)); }
+  if (!fresh(tk)) return;
+  const bad = checks.filter((x) => !x.ok);
+  const row = (x) => h("div", { class: "cell hcheck" + (x.ok ? "" : " bad") },
+    h("span", { class: "hdot", "aria-hidden": "true" }),
+    h("div", { class: "grow" }, h("div", { class: "t", text: x.title }), x.detail ? h("div", { class: "s", text: x.detail }) : null),
+    x.url ? h("button", { class: "btn small press", type: "button", onclick: () => nav(x.url) }, "Fix") : null);
+  screen("health", tk, heroHead(healthOrb(72, bad.length > 0), "Health",
+      !checks.length ? "Nothing to check yet." : bad.length ? (bad.length === 1 ? "One thing needs fixing." : `${bad.length} things need fixing.`)
+        : "Everything is working."),
+    checks.length ? h("div", { class: "group info" }, ...checks.map(row)) : null,
+    h("p", { class: "hint", text: "If something breaks, Relay tells you once a day until it's fixed, with your other notifications." }));
 }
 
 // ------------------------------------------------------------------ leaving: your half pulls away
