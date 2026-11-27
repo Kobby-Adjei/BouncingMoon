@@ -13,7 +13,7 @@ RUN apt-get update \
  && test -f /usr/share/fonts/opentype/montserrat/Montserrat-ExtraBold.otf \
  && test -f /usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf
 
-RUN pip install --no-cache-dir fastapi==0.164.0 uvicorn==0.54.0 cryptography==50.0.1 faster-whisper==1.2.1
+RUN pip install --no-cache-dir fastapi==0.164.0 uvicorn==0.54.0 cryptography==50.0.1 faster-whisper==1.2.1 fpdf2==2.9.0
 
 # The English speech model, baked into the image outside /data (the volume would hide it) so the first
 # transcript isn't slow and nothing is downloaded at run time. The build stops if it doesn't load.

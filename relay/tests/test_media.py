@@ -513,3 +513,76 @@ def test_a_document_reads_well_on_its_page_and_nothing_in_it_runs(hub, tmp_path)
     process(media)
     assert "<th class=num>cost</th>" in c.get(path_of(media.link(nums["id"]))).text
     assert "</script> here" not in txt.split("id=doctext>")[1].split("</script>")[0]            # can't close the data block
+
+
+# ------------------------------------------------------------------ PDFs from text, versions, and who may send files
+@pytest.mark.skipif(not shutil.which("pdftotext"), reason="needs poppler")
+def test_an_agent_sends_a_real_pdf_written_as_markdown(hub):
+    c, t, media = hub
+    md = "# Q3 report\n\nViews are **up 18%**.\n\n| Week | Views |\n| --- | --- |\n| 1 | 8,900 |\n| 2 | 10,400 |\n"
+    ok(call(c, t["claude"], "ask", {"to": "muse", "message": "Report attached", "wait_seconds": 0,
+                                    "files": [{"name": "Q3 report.pdf", "content": md}]}, "A"))
+    process(media)
+    got = ok(call(c, t["muse"], "check_replies", session="m"))
+    card = got["structuredContent"]["messages"][0]["media"][0]
+    m = media.get(card["id"])
+    assert m["kind"] == "document" and m["digest"]["doc"] == "pdf" and m["digest"]["pages"] == 1
+    assert "Q3 report" in media.doc_text(card["id"]) and "10,400" in media.doc_text(card["id"])
+    original = c.get(path_of(media.link(card["id"])) + "/original")
+    assert original.content[:5] == b"%PDF-"
+    page = c.get(path_of(media.link(card["id"]))).text
+    assert "Save as PDF" not in page and "/page/1'" in page                    # already a PDF: shown as its page
+
+
+def test_a_text_document_can_be_saved_as_a_pdf(hub):
+    c, t, media = hub
+    m = media.from_text("muse", "plan.md", "# Plan\n\n- Film\n- Edit\n\n| a | b |\n| --- | --- |\n| 1 | 2 |\n")
+    process(media)
+    page = c.get(path_of(media.link(m["id"]))).text
+    assert "Save as PDF" in page and "<table><thead><tr><th>a</th>" in page    # tables in Markdown are tables
+    pdf = c.get(path_of(media.link(m["id"])) + "/pdf")
+    assert pdf.status_code == 200 and pdf.content[:5] == b"%PDF-" and "plan.pdf" in pdf.headers["content-disposition"]
+    assert c.get(path_of(media.link(m["id"])) + "/pdf").content == pdf.content           # made once, kept
+
+
+def test_a_document_sent_again_under_its_name_is_a_new_version(hub):
+    c, t, media = hub
+    first = ok(call(c, t["claude"], "ask", {"to": "muse", "message": "draft", "wait_seconds": 0,
+                                            "files": [{"name": "plan.md", "content": "# Plan v1\n"}]}, "A"))
+    thread = first["structuredContent"]["asked"]
+    again = ok(call(c, t["claude"], "reply", {"message_id": thread, "text": "updated",
+                                              "files": [{"name": "plan.md", "content": "# Plan v2\n"}]}, "A"))
+    process(media)
+    v1, v2 = media.get(first["structuredContent"]["media"][0] if first["structuredContent"].get("media") else
+                       media.of_message(thread)[0]), media.get(again["structuredContent"]["media"][0])
+    assert v1["version"] == 1 and v2["version"] == 2 and v2["prev"] == v1["id"]
+    assert media.doc_text(v1["id"]) == "# Plan v1\n"                           # the first is never replaced
+    assert f"version 2; the earlier one is {v1['id']}" in media.card(v2)
+    page = c.get(path_of(media.link(v2["id"]))).text
+    assert "Version 2" in page and "See version 1" in page
+    other = ok(call(c, t["claude"], "ask", {"to": "muse", "message": "new topic", "wait_seconds": 0, "new_topic": True,
+                                            "files": [{"name": "plan.md", "content": "# Different\n"}]}, "B"))
+    assert media.get(media.of_message(other["structuredContent"]["asked"])[0])["version"] == 1    # another conversation
+
+
+def test_a_persons_agent_can_be_stopped_from_sending_files(tmp_path):
+    app = create_app(data_dir=str(tmp_path / "hub"), admin_token=ADMIN, caption_threads=False, media_threads=False)
+    c, media = TestClient(app), app.state.media
+    H = lambda tok: {"Authorization": f"Bearer {tok}"}
+    kobby = c.post("/owner", headers=H(ADMIN), json={"handle": "kobby"}).json()["token"]
+    inv = c.post("/invites", headers=H(kobby), json={"handle": "ama", "role": "human"}).json()
+    ama = c.post("/invites/claim", json={"code": inv["code"]}).json()["token"]
+    claude = c.post("/agents", headers=H(kobby), json={"handle": "claude"}).json()["token"]
+    assert c.put("/agents/claude/files", headers=H(ama), json={"on": False}).status_code == 403   # not ama's agent
+    assert c.put("/agents/claude/files", headers=H(kobby), json={"on": False}).status_code == 200
+    assert next(a for a in c.get("/agents", headers=H(kobby)).json() if a["handle"] == "claude")["files"] is False
+    res = call(c, claude, "ask", {"to": "kobby", "message": "here", "wait_seconds": 0, "files": [{"name": "a.md", "content": "x"}]})
+    assert res["isError"] and "switched off" in res["content"][0]["text"]
+    ok(call(c, claude, "ask", {"to": "kobby", "message": "words still go", "wait_seconds": 0}))
+    art = c.post("/artifacts", params={"name": "a.txt"}, content=b"hi", headers=H(claude)).json()["id"]
+    mid = c.post("/media", headers=H(claude), json={"artifact": art}).json()["id"]
+    r = c.post("/messages", headers=H(claude), json={"channel": "direct", "text": "x", "mentions": ["kobby"], "media": [mid]})
+    assert r.status_code == 403                                                # the REST way too
+    c.put("/agents/claude/files", headers=H(kobby), json={"on": True})
+    ok(call(c, claude, "ask", {"to": "kobby", "message": "now", "wait_seconds": 0, "new_topic": True,
+                               "files": [{"name": "a.md", "content": "x"}]}))

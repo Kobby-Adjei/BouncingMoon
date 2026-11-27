@@ -1663,6 +1663,21 @@ async function profile(handle) {
     (a.caps || []).length ? h("div", { class: "cell" }, h("div", { class: "grow t plain" }, "Does work"), h("span", { class: "v", text: a.caps.join(", ") })) : null,
     a.role === "human" && isOwner() && (AUTH.email || a.email) ? emailRow(a) : null,
     a.client ? h("div", { class: "cell" }, h("div", { class: "grow t plain" }, "Connected from"), h("span", { class: "v", text: a.client })) : null);
+  // what this agent may do with files: its person (or the hub's owner) decides
+  const filesRow = a.role !== "human" && (isOwner() || a.person === ME.handle) ? (() => {
+    const box = h("input", { type: "checkbox", role: "switch", checked: a.files !== false, "aria-label": "Can send files" });
+    const s2 = h("div", { class: "s" });
+    const say2 = () => { s2.textContent = box.checked ? "Documents, pictures and videos, into its conversations. It never deletes or replaces anyone's file."
+      : "It can still read what's shared with it, but can't send files."; };
+    say2();
+    box.addEventListener("change", async () => {
+      say2();
+      try { await api("PUT", `/agents/${enc(a.handle)}/files`, { on: box.checked }); a.files = box.checked; toast(box.checked ? `${a.handle} can send files` : `${a.handle} can't send files now`); }
+      catch (x) { box.checked = !box.checked; say2(); toast(x.message); }
+    });
+    return h("div", { class: "group" }, h("label", { class: "cell switchrow" }, h("div", { class: "grow" }, h("div", { class: "t", text: "Can send files" }), s2),
+      box, h("span", { class: "switch", "aria-hidden": "true" })));
+  })() : null;
   const danger = isOwner() && a.handle !== ME.handle ? h("div", { class: "spread danger-row" },
     h("button", { class: "link sm press", type: "button", onclick: () => newKey(a) }, a.role === "human" ? "New recovery code" : "Reset its connection"),
     h("button", { class: "link sm red press", type: "button", onclick: async () => {
@@ -1680,7 +1695,8 @@ async function profile(handle) {
     h("div", { class: "group conv" }, h("div", { class: "empty", text: "Loading…" })));
   const view = screen("profile", tk,
     h("div", { class: "profile" }, avatar(a, 88), h("h1", { class: "title", text: a.handle }), sub, quick),
-    h("div", { class: "stack" }, talks, h("section", { class: "facts" }, h("h2", { class: "label", text: "Details" }), info), danger));
+    h("div", { class: "stack" }, talks, h("section", { class: "facts" }, h("h2", { class: "label", text: "Details" }), info),
+      filesRow ? h("section", { class: "facts" }, h("h2", { class: "label", text: "Allowed" }), filesRow) : null, danger));
   let shown = 5;
   async function fill() {
     let convs = [], ags = [];
@@ -3266,7 +3282,8 @@ function fileCard(f) {
     : f.status === "failed" ? (doc ? "Couldn't be read" : "Couldn't be watched") : f.status === "removed" ? "Removed"
     : doc ? "Reading…" : "Watching…";
   const body = [h("span", { class: "poster" + (doc ? " docpage" : tall ? " tall" : "") + (f.poster ? "" : " plain") }, pic),
-    h("span", { class: "meta" }, h("b", { text: f.name || f.kind }), facts ? h("span", { text: facts }) : null,
+    h("span", { class: "meta" }, h("span", { class: "fname" }, h("b", { text: f.name || f.kind }),
+      f.version > 1 ? h("span", { class: "vchip", text: `v${f.version}`, title: `Version ${f.version}` }) : null), facts ? h("span", { text: facts }) : null,
       h("span", { class: "seen" + (f.status === "ready" ? " ok" : ""), text: seen }))];
   return f.page ? h("a", { class: "filecard press", href: f.page, target: "_blank", rel: "noopener" }, ...body)
     : h("span", { class: "filecard" }, ...body);

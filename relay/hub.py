@@ -237,6 +237,8 @@ class Store:
                     c.execute(f"ALTER TABLE agents ADD COLUMN {col}")
             if "provider_source" not in agent_cols:  # 'invite' | 'detected' | 'owner'
                 c.execute("ALTER TABLE agents ADD COLUMN provider_source TEXT")
+            if "files_ok" not in agent_cols:         # its person can stop it sending files (on unless switched off)
+                c.execute("ALTER TABLE agents ADD COLUMN files_ok INTEGER NOT NULL DEFAULT 1")
             if "last_read" not in agent_cols:        # when the agent last read its inbox (wake-up checks)
                 c.execute("ALTER TABLE agents ADD COLUMN last_read REAL")
                 # reads were never recorded before: a fire that got through says nothing yet, so start at
@@ -715,6 +717,14 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
         o = c.execute("SELECT handle FROM agents WHERE owner=1 ORDER BY created, handle LIMIT 1").fetchone()
         return o["handle"] if o else None
 
+    FILES_OFF = ("Sending files is switched off for {who}: its person turned it off in Relay (the agent's page, "
+                 "Can send files). Send the words without the file.")
+
+    def files_ok(c, h: str) -> bool:
+        """May `h` send files? People always; an agent unless its person switched it off."""
+        r = c.execute("SELECT role, files_ok FROM agents WHERE handle=?", (h,)).fetchone()
+        return not r or r["role"] == "human" or bool(r["files_ok"])
+
     def person_of(c, h: str) -> Optional[str]:
         """Who `h` works for: itself for a person; the person who connected an agent, else the owner."""
         r = c.execute("SELECT role, person FROM agents WHERE handle=?", (h,)).fetchone()
@@ -897,6 +907,8 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
         for m in media:
             if not c.execute("SELECT 1 FROM media WHERE id=?", (m,)).fetchone():
                 raise HTTPException(400, f"unknown media {m}")
+        if (media or artifacts) and sender != SYSTEM and not files_ok(c, sender):
+            raise HTTPException(403, FILES_OFF.format(who=sender))
         cur = c.execute(
             "INSERT INTO messages(sender,idem,channel,thread,reply_to,time,text,mentions,artifacts,job,origin_session)"
             " VALUES (?,?,?,?,?,?,?,?,?,?,?)",
@@ -913,6 +925,16 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
             c.execute("UPDATE messages SET thread=? WHERE id=?", (mid, mid))
         c.execute("INSERT INTO convs(thread,last,n) VALUES (?,?,1) ON CONFLICT(thread) DO UPDATE SET last=excluded.last, n=n+1",
                   (thread, mid))
+        for m in dict.fromkeys(media):     # a document sent again under the same name here: the next version of it
+            r = c.execute("SELECT name, version FROM media WHERE id=?", (m,)).fetchone()
+            if not r or r["version"] or os.path.splitext(r["name"] or "")[1].lower() not in media_mod.VERSIONED:
+                continue
+            before = c.execute(
+                "SELECT md.id, COALESCE(md.version, 1) AS v FROM message_media mm JOIN messages x ON x.id=mm.msg"
+                " JOIN media md ON md.id=mm.media WHERE x.thread=? AND x.id<? AND md.name=? AND md.id!=? AND md.revoked IS NULL"
+                " ORDER BY x.id DESC LIMIT 1", (thread, mid, r["name"], m)).fetchone()
+            version, prev = (before["v"] + 1, before["id"]) if before else (1, None)
+            c.execute("UPDATE media SET version=?, prev=? WHERE id=?", (version, prev, m))
         if sender != SYSTEM and not text.startswith("\U0001F511"):     # an agent answered (a key note has its own)
             row = c.execute("SELECT role FROM agents WHERE handle=?", (sender,)).fetchone()
             if row and row["role"] == "agent":
@@ -1462,6 +1484,21 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
                       " WHERE claimed_by=? AND status='claimed'", (handle,))
         return {"removed": handle}
 
+    @app.put("/agents/{handle}/files")
+    def set_files(handle: str, body: dict, me: dict = Depends(auth)):
+        """Can this agent send files? Its person decides; the hub's owner can too."""
+        on = body.get("on")
+        if not isinstance(on, bool):
+            raise HTTPException(400, "send {\"on\": true} or {\"on\": false}")
+        with store.tx() as c:
+            r = c.execute("SELECT role FROM agents WHERE handle=?", (handle,)).fetchone()
+            if not r or r["role"] == "human":
+                raise HTTPException(404, f"no agent @{handle}")
+            if not (me["role"] == "admin" or me.get("owner") or person_of(c, handle) == me["handle"]):
+                raise HTTPException(403, "only the agent's person or the hub's owner can change this")
+            c.execute("UPDATE agents SET files_ok=? WHERE handle=?", (int(on), handle))
+        return {"handle": handle, "files": on}
+
     @app.put("/agents/{handle}/provider")
     def set_provider(handle: str, body: dict, me: dict = Depends(auth)):
         """Admin: say which provider an agent runs on (display only)."""
@@ -1654,6 +1691,7 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
                      "provider": r["provider"], "client": r["client"], "last_seen": r["last_seen"],
                      "owner": bool(r["owner"]), "listener": listener_out(r),
                      "email": emails.get(r["handle"]), "answers": answers(r), "person": works_for(r),
+                     "files": r["role"] == "human" or bool(r["files_ok"]),
                      "joined": joined.get(r["handle"])}
                     for r in rows]
 
@@ -2898,7 +2936,7 @@ def create_app(data_dir: Optional[str] = None, admin_token: Optional[str] = None
     from . import connector
     connector.mount(app, SimpleNamespace(
         store=store, auth=auth, post=post, inbox_for=inbox_for, ack_to=ack_to,
-        take=take, seen_by=seen_by, check_session=check_session, CONVERSATION=CONVERSATION, media=media_svc, origin=origin, here=own_origin, no_session=no_session, start_session=start_session,
+        take=take, seen_by=seen_by, check_session=check_session, files_ok=files_ok, FILES_OFF=FILES_OFF, CONVERSATION=CONVERSATION, media=media_svc, origin=origin, here=own_origin, no_session=no_session, start_session=start_session,
         mark_read=mark_read, msg_out=msg_out, with_context=with_context, now=_now, loads=_loads, handle_re=HANDLE_RE,
         session_state=session_state,
         vault=vault))

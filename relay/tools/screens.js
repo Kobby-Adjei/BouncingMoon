@@ -77,6 +77,8 @@ async function seed() {
     "", "Timeline", "Weeks 1-2: question set. Weeks 3-6: model runs. Weeks 7-8: analysis and write-up."].join("\n");
   const ex = await mcp(tok.claude, "reply", { message_id: doc.id, text: "The proposal as text.", files: [{ name: "URSP_Proposal_Final_extracted.txt", content: longTxt },
     { name: "plan.md", content: "# Spring plan\n\nShip **two** posts a week and reply within a day.\n\n## This week\n\n- Film the hook\n- Edit the 30-second cut\n- Post Tuesday at 8\n\n> Keep captions under ten words.\n" }] });
+  await mcp(tok.claude, "reply", { message_id: doc.id, text: "Updated the plan: Thursday instead of Tuesday.",
+    files: [{ name: "plan.md", content: "# Spring plan\n\nShip **two** posts a week and reply within a day.\n\n## This week\n\n- Film the hook\n- Edit the 30-second cut\n- Post Thursday at 8\n\n| Day | Post |\n| --- | --- |\n| Tue | Behind the scenes |\n| Thu | The 30-second cut |\n" }] });
   await sleep(2500);
   const docLinks = {};
   for (const m of (await api("GET", `/messages?thread=${doc.thread}`, undefined, K)).flatMap((x) => x.media || [])) docLinks[m.name] = m.page;

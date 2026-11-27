@@ -97,10 +97,10 @@ TOOLS = [
                            "description": "Videos, images, audio or files to send with it: links (https://…) "
                                           "or media ids (m_…). The hub fetches links and watches videos itself."},
                 "files": {"type": "array", "maxItems": 5, "items": {"type": "object", "properties": {
-                    "name": {"type": "string", "description": "File name with its type, e.g. plan.md, budget.csv, notes.txt"},
-                    "content": {"type": "string", "description": "The whole text of the file"}},
+                    "name": {"type": "string", "description": "File name with its type, e.g. plan.md, budget.csv, notes.txt, or report.pdf for a real PDF"},
+                    "content": {"type": "string", "description": "The whole text of the file. For a .pdf, write Markdown (headings, lists, tables): Relay lays it out as a PDF"}},
                     "required": ["name", "content"], "additionalProperties": False},
-                    "description": "Documents you wrote, sent as real files (Markdown, text, CSV, JSON, HTML…), "
+                    "description": "Documents you wrote, sent as real files (PDF, Markdown, text, CSV, JSON, HTML…), "
                                    "not pasted into the message. People see a file they can open and download; "
                                    "agents read it with view_media. Use this for anything longer than a few "
                                    "paragraphs, or anything meant to be saved."},
@@ -150,10 +150,10 @@ TOOLS = [
                            "description": "Videos, images, audio or files to send with it: links (https://…) "
                                           "or media ids (m_…). The hub fetches links and watches videos itself."},
                 "files": {"type": "array", "maxItems": 5, "items": {"type": "object", "properties": {
-                    "name": {"type": "string", "description": "File name with its type, e.g. plan.md, budget.csv, notes.txt"},
-                    "content": {"type": "string", "description": "The whole text of the file"}},
+                    "name": {"type": "string", "description": "File name with its type, e.g. plan.md, budget.csv, notes.txt, or report.pdf for a real PDF"},
+                    "content": {"type": "string", "description": "The whole text of the file. For a .pdf, write Markdown (headings, lists, tables): Relay lays it out as a PDF"}},
                     "required": ["name", "content"], "additionalProperties": False},
-                    "description": "Documents you wrote, sent as real files (Markdown, text, CSV, JSON, HTML…), "
+                    "description": "Documents you wrote, sent as real files (PDF, Markdown, text, CSV, JSON, HTML…), "
                                    "not pasted into the message. People see a file they can open and download; "
                                    "agents read it with view_media. Use this for anything longer than a few "
                                    "paragraphs, or anything meant to be saved."},
@@ -412,6 +412,10 @@ def mount(app, hub) -> None:
     def attachments(me, args) -> list:
         """attach: links (fetched and watched by the hub), media ids the caller may see, or hub file ids."""
         items = args.get("attach") or []
+        if (items or args.get("files")):
+            with store.ro() as c:
+                if not hub.files_ok(c, me):
+                    raise ToolError(hub.FILES_OFF.format(who=me))
         if not isinstance(items, list) or len(items) > 5:
             raise ToolError("attach takes up to 5 links or media ids.")
         out = []
@@ -438,7 +442,10 @@ def mount(app, hub) -> None:
         if len(out) + len(files) > 10:
             raise ToolError("Up to 10 attachments and files per message.")
         for f in files:
-            out.append(hub.media.from_text(me, str(f["name"]), f["content"])["id"])
+            try:
+                out.append(hub.media.from_text(me, str(f["name"]), f["content"])["id"])
+            except Exception as e:
+                raise ToolError(f"Couldn't make {str(f['name'])[:60]}: {e}")
         return out
 
     def tool_ask(me, args, session=None):

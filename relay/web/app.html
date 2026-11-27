@@ -209,6 +209,10 @@ button.hcheck { appearance: none; border: 0; background: none; width: 100%; text
 .filecard .meta { display: grid; gap: 1px; min-width: 0; font-size: 13px; font-variant-numeric: tabular-nums; }
 .filecard .meta b { font-size: 14px; font-weight: 600; opacity: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .filecard .seen.ok { color: var(--green-ink); font-weight: 500; }
+.filecard .fname { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.filecard .fname b { min-width: 0; }
+.vchip { flex: none; font: 700 11px/1 var(--font); padding: 3px 6px; border-radius: 6px; background: var(--accent-soft); color: var(--accent-ink, var(--accent)); }
+.msg.mine .vchip { background: color-mix(in srgb, var(--on-accent) 22%, transparent); color: inherit; }
 .msg.mine .filecard .seen.ok { color: inherit; }
 .sysmsg { justify-self: center; font-size: 12px; color: var(--ink2); padding: 4px 12px; margin: 12px 0;
   max-width: 92%; text-align: center; overflow-wrap: anywhere; animation: fade .4s var(--ease) both; }

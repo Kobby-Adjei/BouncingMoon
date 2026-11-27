@@ -377,9 +377,18 @@ def _inline(t: str) -> str:
 
 def markdown_html(text: str) -> str:
     """A small, safe Markdown: headings, lists, quotes, code blocks, paragraphs. Everything is escaped first."""
-    out, para, items, kind, code = [], [], [], None, None
+    out, para, items, kind, code, table = [], [], [], None, None, []
+    cells = lambda l: [c.strip() for c in l.strip().strip("|").split("|")]
     def flush():
-        nonlocal para, items, kind
+        nonlocal para, items, kind, table
+        if table:                                   # | a | b | rows: a table when the second row is | --- | --- |
+            if len(table) >= 2 and all(re.fullmatch(r":?-{3,}:?", c) for c in cells(table[1])):
+                head = "".join(f"<th>{_inline(c)}</th>" for c in cells(table[0]))
+                body = "".join("<tr>" + "".join(f"<td>{_inline(c)}</td>" for c in cells(r)) + "</tr>" for r in table[2:])
+                out.append(f"<table><thead><tr>{head}</tr></thead><tbody>{body}</tbody></table>")
+            else:
+                para.extend(table)
+            table = []
         if para:
             out.append("<p>" + "<br>".join(_inline(x) for x in para) + "</p>")
         if items:
@@ -395,6 +404,12 @@ def markdown_html(text: str) -> str:
             continue
         if line.strip().startswith("```"):
             flush(); code = []; continue
+        if line.strip().startswith("|") and line.strip().endswith("|") and line.count("|") >= 2:
+            if not table:
+                flush()
+            table.append(line); continue
+        if table:
+            flush()
         m = re.match(r"(#{1,6})\s+(.*)", line)
         if m:
             flush(); level = min(len(m.group(1)) + 1, 4)
@@ -487,9 +502,61 @@ def document_html(doc: str, name: str, text: str) -> str:
     return "".join(out)
 
 
+PDF_FONTS = ("/usr/share/fonts/truetype/liberation/LiberationSans-{}.ttf", "/usr/share/fonts/truetype/dejavu/DejaVuSans{}.ttf")
+PDF_TEXT_MAX = 400_000           # characters of text a PDF is made from
+
+
+def text_to_pdf(name: str, text: str) -> bytes:
+    """A real PDF from a document's text (Markdown formatted, CSV as a table, prose in paragraphs). Small and quick:
+    fpdf2, pure Python, with the fonts already on the hub. Raises MediaError when it can't."""
+    try:
+        from fpdf import FPDF
+        from fpdf.fonts import FontFace
+    except ImportError:
+        raise MediaError("Making PDFs isn't available on this hub.")
+    ext = os.path.splitext(name or "")[1].lower()
+    text = text[:PDF_TEXT_MAX]
+    if ext in (".md", ".markdown", ".pdf", ""):
+        body = markdown_html(text)                    # a .pdf an agent writes: its text is Markdown
+    else:
+        body = document_html("slides" if ext == ".pptx" else "text", name, text)
+    body = re.sub(r"</?(?:section|div|article)[^>]*>", "", body)        # layout wrappers the PDF doesn't need
+    body = re.sub(r"<(h\d|th|td|tr|table|thead|tbody|p)\s+class=[^>]*>", r"<\1>", body)
+    pdf = FPDF(format="Letter")
+    pdf.set_margins(22, 20, 22)
+    pdf.set_auto_page_break(True, 18)
+    pdf.set_title(os.path.splitext(name or "Document")[0])
+    pdf.set_creator("Relay")
+    family = "Helvetica"
+    for pattern, names in ((PDF_FONTS[0], ("Regular", "Bold", "Italic", "BoldItalic")), (PDF_FONTS[1], ("", "-Bold", "-Oblique", "-BoldOblique"))):
+        paths = [pattern.format(n) for n in names]
+        if all(os.path.exists(p) for p in paths):
+            for style, path in zip(("", "B", "I", "BI"), paths):
+                pdf.add_font("Body", style, path)
+            family = "Body"
+            break
+    if family == "Helvetica":                        # the PDF core font knows Latin-1 only
+        body = body.encode("latin-1", "replace").decode("latin-1")
+    pdf.add_page()
+    pdf.set_font(family, size=11)
+    ink = (24, 23, 29)
+    styles = {"h1": FontFace(emphasis="BOLD", size_pt=20, color=ink), "h2": FontFace(emphasis="BOLD", size_pt=16, color=ink),
+              "h3": FontFace(emphasis="BOLD", size_pt=13, color=ink), "h4": FontFace(emphasis="BOLD", size_pt=11.5, color=ink),
+              "a": FontFace(color=(79, 68, 224), emphasis="UNDERLINE"), "blockquote": FontFace(color=(107, 105, 114)),
+              "code": FontFace(family="Courier", size_pt=10, color=ink), "pre": FontFace(family="Courier", size_pt=9.5, color=ink)}
+    try:
+        pdf.write_html(body or "<p></p>", font_family=family, tag_styles=styles, li_prefix_color=ink)
+        return bytes(pdf.output())
+    except Exception as e:                           # a shape the converter can't lay out: say so, don't crash
+        raise MediaError(f"Couldn't make a PDF of this: {str(e)[:200]}")
+
+
 def title_html(name: str) -> str:
     """A file name that breaks at its _ - . instead of in the middle of a word."""
     return re.sub(r"([_.\-])", r"\1<wbr>", html.escape(name))
+
+
+VERSIONED = set(TEXT_TYPES) | set(OFFICE) | {".pdf"}     # sent again under the same name: a new version, never a replacement
 
 
 def excerpt(text: str, n: int = 300) -> str:
@@ -640,8 +707,12 @@ class Media:
             for stmt in SCHEMA.split(";"):
                 if stmt.strip():
                     c.execute(stmt)
-            if "origin_artifact" not in {r["name"] for r in c.execute("PRAGMA table_info(media)")}:
+            mcols = {r["name"] for r in c.execute("PRAGMA table_info(media)")}
+            if "origin_artifact" not in mcols:
                 c.execute("ALTER TABLE media ADD COLUMN origin_artifact TEXT")   # the hub file it was made from
+            if "version" not in mcols:          # a document sent again under the same name in a conversation: v2, v3…
+                c.execute("ALTER TABLE media ADD COLUMN version INTEGER")
+                c.execute("ALTER TABLE media ADD COLUMN prev TEXT")
 
 
     def also_accept(self, secret: str) -> None:
@@ -693,9 +764,10 @@ class Media:
         name = safe_name(name, "note.txt")
         if not os.path.splitext(name)[1]:
             name += ".txt"
+        data = text_to_pdf(name, text) if name.lower().endswith(".pdf") else text.encode("utf-8")   # .pdf: made from the text
         fd, tmp = tempfile.mkstemp(dir=self.tmp)
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            f.write(text)
+        with os.fdopen(fd, "wb") as f:
+            f.write(data)
         aid, size = self._store(tmp, name, by, None, "upload", "application/octet-stream")
         with self.store.tx() as c:
             mid = self._new(c, by, name, artifact=aid, size=size, origin_artifact=aid)
@@ -769,7 +841,7 @@ class Media:
         d = json.loads(r["digest"] or "{}")
         return {"id": r["id"], "kind": r["kind"], "name": r["name"], "size": r["size"], "status": r["status"],
                 "stage": r["stage"], "error": r["error"], "from": r["created_by"], "created": r["created"],
-                "revoked": bool(r["revoked"]), "digest": d,
+                "revoked": bool(r["revoked"]), "digest": d, "version": r["version"] or 1, "prev": r["prev"],
                 "has": {k: bool(r[k]) for k in ("playable", "poster", "sheet", "preview")}}
 
     def brief(self, mid: str) -> dict:
@@ -781,7 +853,8 @@ class Media:
                "duration": d.get("duration"), "width": d.get("width"), "height": d.get("height"),
                "shots": len(d["shots"]) + 1 if d.get("shots") is not None else None,
                "transcribed": bool(d.get("transcript")),
-               "doc": d.get("doc"), "pages": d.get("pages"), "words": d.get("words"), "read": bool(d.get("text"))}
+               "doc": d.get("doc"), "pages": d.get("pages"), "words": d.get("words"), "read": bool(d.get("text")),
+               "version": m["version"]}
         if m["revoked"]:
             return {**out, "status": "removed"}
         token = self.link(mid)[len(self.public_url or ""):]
@@ -815,7 +888,8 @@ class Media:
         """The few lines an agent reads in a conversation: what it is and what is in it."""
         d, kind = m["digest"], m["kind"] or "media"
         icon = {"video": "📹", "audio": "🎧", "image": "🖼", "file": "📄", "document": "📄"}.get(kind, "📎")
-        head = [f"{icon} {m['id']} · {m['name'] or kind}"]
+        head = [f"{icon} {m['id']} · {m['name'] or kind}"
+                + (f" (version {m['version']}; the earlier one is {m['prev']})" if m.get("version", 1) > 1 and m.get("prev") else "")]
         if d.get("duration"):
             head.append(hms(d["duration"]))
         if d.get("width"):
@@ -1349,6 +1423,23 @@ class Media:
                 return None
         return out
 
+    def as_pdf(self, mid: str) -> Optional[str]:
+        """A text document (Markdown, text, Word, slides, CSV) as a PDF, made once on request and kept."""
+        r = self.row(mid)
+        d = json.loads(r["digest"] or "{}")
+        if r["kind"] != "document" or d.get("doc") == "pdf" or not d.get("text"):
+            return None
+        folder = os.path.join(self.tmp, "pages", r["artifact"])
+        out = os.path.join(folder, "as.pdf")
+        if not os.path.exists(out):
+            os.makedirs(folder, exist_ok=True)
+            data = text_to_pdf(r["name"] or "document.txt", self.doc_text(mid))
+            tmp = out + "." + uuid.uuid4().hex[:8]
+            with open(tmp, "wb") as f:
+                f.write(data)
+            os.replace(tmp, out)
+        return out
+
     def doc_text(self, mid: str) -> str:
         """A document's text as read, or ''."""
         p = self.blob((self.get(mid)["digest"] or {}).get("text"))
@@ -1433,10 +1524,11 @@ audio{display:block;width:100%}
  font:600 13px/1 var(--font);font-variant-numeric:tabular-nums;padding:6px 10px;min-width:4.4em;text-align:center;transition:transform .3s var(--spring)}
 .t button:active{transform:scale(.94)}
 .sheet{display:block;width:100%;border-radius:14px}
+.meta a.prev{color:var(--accent);font-weight:600;text-decoration:none}
 .wide .title.long{font-size:22px;letter-spacing:-.025em;line-height:1.15}
 .btn.ghost{background:var(--fill);color:var(--ink);box-shadow:none}.btn.ghost:hover{background:var(--edge)}
 .btn.done{background:var(--green);color:#fff}
-.actions.two{display:flex;gap:10px;flex-wrap:wrap}
+.actions.two,.actions.three{display:flex;gap:10px;flex-wrap:wrap}
 /* a document, read on the page itself: no box to scroll inside a page that scrolls */
 .doc{margin-top:26px;font:17px/1.62 var(--font);letter-spacing:-.008em;overflow-wrap:break-word;text-wrap:pretty}
 .doc p{margin:0 0 .95em}.doc h2,.doc h3,.doc h4{font-family:var(--display);letter-spacing:-.025em;line-height:1.2;margin:1.5em 0 .5em}
@@ -1454,11 +1546,13 @@ audio{display:block;width:100%}
 .tablewrap th,.tablewrap td{padding:9px 14px;text-align:left;white-space:nowrap;border-bottom:1px solid var(--edge)}
 .tablewrap th{font-weight:650;background:var(--fill);position:sticky;top:0}.tablewrap tr:last-child td{border-bottom:0}
 .tablewrap .num{text-align:right}
+.doc table{border-collapse:collapse;width:100%;margin:0 0 .95em;font-size:15px;display:block;overflow-x:auto}
+.doc th,.doc td{padding:8px 12px;text-align:left;border-bottom:1px solid var(--edge)}.doc th{background:var(--fill);font-weight:650}
 /* a PDF: its own pages, one under the other */
 .pages{margin-top:26px;display:grid;gap:14px}
 .pdfpage{display:block;width:100%;height:auto;aspect-ratio:8.5/11;object-fit:contain;background:#fff;border-radius:6px;
  box-shadow:0 0 0 .5px var(--edge),0 18px 36px -26px rgba(24,23,29,.55)}
-@media (max-width:520px){.actions .btn{display:flex;width:100%}.actions.two .btn{flex:1 1 0;width:auto;padding:0 14px}.wide .title{font-size:24px}.wide .title.long{font-size:20px}.doc{font-size:16.5px}}
+@media (max-width:520px){.actions .btn{display:flex;width:100%}.actions.two .btn,.actions.three .btn{flex:1 1 0;width:auto;padding:0 14px}.actions.three .btn:first-child{flex-basis:100%}.wide .title{font-size:24px}.wide .title.long{font-size:20px}.doc{font-size:16.5px}}
 @media (prefers-reduced-motion:reduce){*,*:before,*:after{animation-duration:.01ms!important;animation-delay:0s!important;transition-duration:.01ms!important}}
 :focus-visible{outline:2px solid var(--accent);outline-offset:3px}
 """
@@ -1473,6 +1567,8 @@ TICK = ("<svg viewBox='0 0 30 30' fill=none><path d='M8 15.5l4.6 4.6L22.5 10' st
 DOWN = ("<svg viewBox='0 0 24 24' fill=none stroke=currentColor stroke-width=2 stroke-linecap=round stroke-linejoin=round aria-hidden=true>"
         "<path d='M12 4v11M7 10.5l5 5 5-5M5 19.5h14'/></svg>")
 
+PDF_ICON = ("<svg viewBox='0 0 24 24' fill=none stroke=currentColor stroke-width=2 stroke-linecap=round stroke-linejoin=round aria-hidden=true>"
+            "<path d='M7 3h7l5 5v13H7zM14 3v5h5'/><path d='M10 14.5h4M10 17.5h2.5'/></svg>")
 COPY = ("<svg viewBox='0 0 24 24' fill=none stroke=currentColor stroke-width=2 stroke-linecap=round stroke-linejoin=round aria-hidden=true>"
         "<rect x='8.5' y='8.5' width='11' height='11' rx='2.5'/><path d='M15.5 8.5V6.5a2 2 0 0 0-2-2h-7a2 2 0 0 0-2 2v7a2 2 0 0 0 2 2h2'/></svg>")
 
@@ -1603,6 +1699,8 @@ def mount(app, hub, media: Media) -> dict:
             pages = (f"{d['pages']} {'slides' if d.get('doc') == 'slides' else 'pages' if d['pages'] != 1 else 'page'}"
                      if d.get("pages") else None)
             bits = [x for x in (pages, words, *bits) if x]
+        if m.get("version", 1) > 1:
+            bits.insert(0, f"Version {m['version']}")
         long = " long" if len(m["name"] or "") > 26 else ""
         out = [f"<div class='shell wide'>{BRAND}<h1 class='title{long}'>{title_html(m['name'] or kind or 'Media')}</h1>"
                f"<p class=meta>{html.escape(' · '.join(bits))}</p>"]
@@ -1620,7 +1718,17 @@ def mount(app, hub, media: Media) -> dict:
         if m["status"] == "ready":
             copy = (f"<button class='btn ghost' type=button id=copytext>{COPY}Copy text</button>"
                     if doc_text and len(doc_text) <= 200_000 else "")
-            out.append(f"<p class='actions{' two' if copy else ''}'><a class=btn href='{base}/original'>{DOWN}Download</a>{copy}</p>")
+            aspdf = (f"<a class='btn ghost' href='{base}/pdf'>{PDF_ICON}Save as PDF</a>"
+                     if doc_text and d.get("doc") != "pdf" else "")
+            n = 1 + bool(copy) + bool(aspdf)
+            out.append(f"<p class='actions{' two' if n == 2 else ' three' if n == 3 else ''}'>"
+                       f"<a class=btn href='{base}/original'>{DOWN}Download</a>{aspdf}{copy}</p>")
+            if m.get("version", 1) > 1 and m.get("prev"):
+                try:
+                    earlier = media.link(m["prev"])[len(media.public_url or ""):]
+                    out.append(f"<p class=meta><a class=prev href='{earlier}'>See version {m['version'] - 1}</a></p>")
+                except Exception:
+                    pass
         if kind == "document" and m["status"] == "ready":
             if d.get("doc") == "pdf" and d.get("pages"):
                 shown = min(d["pages"], VIEW_PAGES_MAX)
@@ -1664,6 +1772,20 @@ def mount(app, hub, media: Media) -> dict:
             name = os.path.splitext(name)[0] + os.path.splitext((a["name"] if a else "") or ".mp4")[1]
         return FileResponse(path, media_type=mime if inline else "application/octet-stream", filename=name,
                             content_disposition_type="inline" if inline else "attachment",
+                            headers={**headers(), "Cache-Control": "private, max-age=3600"})
+
+    @app.get("/m/{token}/pdf", include_in_schema=False)
+    def view_as_pdf(token: str):
+        r = opened(token)
+        try:
+            path = media.as_pdf(r["id"]) if r["status"] == "ready" else None
+        except MediaError as e:
+            return HTMLResponse(page("Couldn't make a PDF", f"<div class=shell>{BRAND}<h1 class=title>{html.escape(str(e))}</h1></div>", ""),
+                                status_code=422, headers=headers())
+        if not path:
+            raise HTTPException(404, "not found")
+        name = os.path.splitext(r["name"] or "document")[0] + ".pdf"
+        return FileResponse(path, media_type="application/pdf", filename=name, content_disposition_type="attachment",
                             headers={**headers(), "Cache-Control": "private, max-age=3600"})
 
     @app.get("/m/{token}/page/{n}", include_in_schema=False)
