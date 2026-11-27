@@ -70,7 +70,16 @@ async function seed() {
     body: "# November\n\nMore behind-the-scenes. Two posts a week." }).then((r) => r.json());
   const briefMedia = await api("POST", "/media", { artifact: brief.id }, K);
   await api("POST", "/messages", { reply_to: doc.id, text: "", mentions: ["claude"], media: [briefMedia.id] }, K);
-  await sleep(1500);
+  // a long text an agent extracted, with a long file name (as ChatGPT sends them)
+  const longTxt = ["Project summary", "", "This proposal studies how small vision-language models report what they hear and see in short clips. Earlier tests showed contradictory answers when visual information was added or hidden.",
+    "", "First, I will rebuild the 41-question set with clear answer keys, so each run is scored the same way. Second, I will compare three local models using existing scripts and the lab's computers. Earlier tests took 14 to 23 minutes each, including setup.",
+    "", "Third, I will classify response patterns using rules fixed before testing: contradictory reporting, changes caused by adding or hiding visual information, reports of absent sounds, and timing errors despite correct naming.",
+    "", "Timeline", "Weeks 1-2: question set. Weeks 3-6: model runs. Weeks 7-8: analysis and write-up."].join("\n");
+  const ex = await mcp(tok.claude, "reply", { message_id: doc.id, text: "The proposal as text.", files: [{ name: "URSP_Proposal_Final_extracted.txt", content: longTxt },
+    { name: "plan.md", content: "# Spring plan\n\nShip **two** posts a week and reply within a day.\n\n## This week\n\n- Film the hook\n- Edit the 30-second cut\n- Post Tuesday at 8\n\n> Keep captions under ten words.\n" }] });
+  await sleep(2500);
+  const docLinks = {};
+  for (const m of (await api("GET", `/messages?thread=${doc.thread}`, undefined, K)).flatMap((x) => x.media || [])) docLinks[m.name] = m.page;
   // one conversation muted, one pinned: they show a mark in the list
   const noisy = await api("POST", "/messages", { channel: "direct", text: "@muse three caption ideas for the cut", mentions: ["muse"] }, K);
   await api("POST", "/messages", { reply_to: noisy.id, text: "1. New drop. 2. Out now. 3. Link in bio." }, tok.muse);
@@ -98,7 +107,7 @@ async function seed() {
   const card = msgs.flatMap((m) => m.media || [])[0];
   return { K, AMA, thread: first.thread, docThread: doc.thread, key: key.id, approval: approval && approval.id, ask: asks[0] && asks[0].id,
     client: client.client_id, upload: up && up.result && up.result.structuredContent && up.result.structuredContent.upload_url,
-    mediaPage: card && card.page };
+    mediaPage: card && card.page, docLinks };
 }
 
 (async () => {
@@ -120,7 +129,9 @@ async function seed() {
     ["me", "/app#me", "K", true], ["apps", "/app#me/apps", "K", false], ["passkeys", "/app#me/passkeys", "K", false], ["notify", "/app#me/notify", "K", true], ["health", "/app#me/health", "K", true], ["account", "/app#me/account", "K", true], ["account-person", "/app#me/account", "AMA", false], ["people", "/app#me/people", "K", true], ["agents-friend", "/app#agents", "AMA", false],
     ["keys", "/app#me/keys", "K", true], ["key-new", "/app#me/keys/new", "K", false], ["key", `/app#me/keys/${s.key}`, "K", false],
     ["me-person", "/app#me", "AMA", false], ["friend", "/app#me/friend", "AMA", false], ["delete", "/app#me/delete", "AMA", false],
-    ["allow", auth, "K", true], ["media-page", s.mediaPage, null, true], ["upload-page", upload, null, false],
+    ["allow", auth, "K", true], ["media-page", s.mediaPage, null, true],
+    ["doc-pdf", s.docLinks["October report.pdf"], null, true], ["doc-text", s.docLinks["URSP_Proposal_Final_extracted.txt"], null, true],
+    ["doc-md", s.docLinks["plan.md"], null, false], ["doc-csv", s.docLinks["october.csv"], null, false], ["upload-page", upload, null, false],
   ].filter((x) => x[1]);
   const VARIANTS = [["phone-light", { width: 390, height: 844 }, "light"], ["phone-dark", { width: 390, height: 844 }, "dark"],
     ["desktop", { width: 1280, height: 800 }, "light"]];

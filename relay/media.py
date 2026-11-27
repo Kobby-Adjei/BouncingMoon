@@ -360,6 +360,138 @@ def read_document(src: str, name: str, work: str) -> Optional[dict]:
     return {"doc": "text", "mime": TEXT_TYPES.get(ext, "text/plain"), "text": text}
 
 
+VIEW_TEXT_MAX = 60_000           # characters of a document shown on its viewer page
+VIEW_PAGES_MAX = 40              # pages of a PDF shown as pictures on its viewer page
+CODE_EXT = {".py", ".js", ".ts", ".sql", ".ini", ".toml", ".yaml", ".yml", ".xml", ".html", ".htm", ".log", ".tex", ".json"}
+
+
+def _inline(t: str) -> str:
+    """Escaped text with **bold**, *italic*, `code` and [links](https://…) (web links only)."""
+    t = html.escape(t)
+    t = re.sub(r"`([^`]+)`", r"<code>\1</code>", t)
+    t = re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", t)
+    t = re.sub(r"(?<![\w*])\*(?!\s)(.+?)(?<!\s)\*(?![\w*])", r"<i>\1</i>", t)
+    return re.sub(r"\[([^\]]+)\]\((https?://[^\s)]+)\)",
+                  lambda m: f"<a href='{m.group(2)}' rel='noopener noreferrer nofollow' target=_blank>{m.group(1)}</a>", t)
+
+
+def markdown_html(text: str) -> str:
+    """A small, safe Markdown: headings, lists, quotes, code blocks, paragraphs. Everything is escaped first."""
+    out, para, items, kind, code = [], [], [], None, None
+    def flush():
+        nonlocal para, items, kind
+        if para:
+            out.append("<p>" + "<br>".join(_inline(x) for x in para) + "</p>")
+        if items:
+            out.append(f"<{kind}>" + "".join(f"<li>{_inline(x)}</li>" for x in items) + f"</{kind}>")
+        para, items, kind = [], [], None
+    for line in text.splitlines():
+        if code is not None:
+            if line.strip().startswith("```"):
+                out.append("<pre>" + html.escape("\n".join(code)) + "</pre>")
+                code = None
+            else:
+                code.append(line)
+            continue
+        if line.strip().startswith("```"):
+            flush(); code = []; continue
+        m = re.match(r"(#{1,6})\s+(.*)", line)
+        if m:
+            flush(); level = min(len(m.group(1)) + 1, 4)
+            out.append(f"<h{level}>{_inline(m.group(2))}</h{level}>"); continue
+        m = re.match(r"\s*(?:[-*+]|(\d+)[.)])\s+(.*)", line)
+        if m:
+            k = "ol" if m.group(1) else "ul"
+            if para or (items and kind != k):
+                flush()
+            kind = k; items.append(m.group(2)); continue
+        if line.startswith(">"):
+            flush(); out.append("<blockquote>" + _inline(line.lstrip("> ")) + "</blockquote>"); continue
+        if re.fullmatch(r"\s*(-{3,}|\*{3,})\s*", line):
+            flush(); out.append("<hr>"); continue
+        if not line.strip():
+            flush(); continue
+        if items:
+            flush()
+        para.append(line)
+    if code is not None:
+        out.append("<pre>" + html.escape("\n".join(code)) + "</pre>")
+    flush()
+    return "".join(out)
+
+
+def table_html(text: str, sep: str) -> str:
+    import csv, io
+    rows = []
+    for i, row in enumerate(csv.reader(io.StringIO(text), delimiter=sep)):
+        if i >= 300:
+            break
+        rows.append(row[:30])
+    if not rows:
+        return ""
+    numeric = lambda v: bool(re.fullmatch(r"\s*[-+$€£]?\s*[\d,]*\.?\d+\s*%?\s*", v))
+    cols = max(len(r) for r in rows)
+    num = [bool(rows[1:]) and all(numeric(r[i]) for r in rows[1:] if i < len(r) and r[i].strip()) for i in range(cols)]
+    cell = lambda tag, i, v: f"<{tag}{' class=num' if i < len(num) and num[i] else ''}>{html.escape(v)}</{tag}>"
+    head = "".join(cell("th", i, c) for i, c in enumerate(rows[0]))
+    body = "".join("<tr>" + "".join(cell("td", i, c) for i, c in enumerate(r)) + "</tr>" for r in rows[1:])
+    return f"<div class=tablewrap><table><thead><tr>{head}</tr></thead><tbody>{body}</tbody></table></div>"
+
+
+def table_size(text: str, sep: str) -> str:
+    """'12 rows · 3 columns' for a CSV: what a table's length is, instead of a word count."""
+    import csv, io
+    rows = [r for r in csv.reader(io.StringIO(text), delimiter=sep) if any(c.strip() for c in r)]
+    if not rows:
+        return ""
+    n, cols = len(rows) - 1, max(len(r) for r in rows)
+    return f"{n:,} {'row' if n == 1 else 'rows'} · {cols} {'column' if cols == 1 else 'columns'}"
+
+
+def document_html(doc: str, name: str, text: str) -> str:
+    """A document's text as a page people read: formatted Markdown, a CSV as a table, slides by slide, prose in paragraphs."""
+    ext = os.path.splitext(name or "")[1].lower()
+    if ext in (".md", ".markdown"):
+        return markdown_html(text)
+    if ext in (".csv", ".tsv"):
+        return table_html(text, "\t" if ext == ".tsv" else ",") or "<p></p>"
+    if ext == ".json":
+        try:
+            text = json.dumps(json.loads(text), indent=2, ensure_ascii=False)
+        except ValueError:
+            pass
+    if ext in CODE_EXT:
+        return "<pre>" + html.escape(text) + "</pre>"
+    if doc == "slides":
+        parts = re.split(r"(?m)^(Slide \d+)$", text)
+        out = []
+        for i in range(1, len(parts), 2):
+            body = "".join(f"<p>{html.escape(l)}</p>" for l in parts[i + 1].splitlines() if l.strip())
+            out.append(f"<section class=slide><h2>{html.escape(parts[i])}</h2>{body}</section>")
+        return "".join(out)
+    blocks = re.split(r"\n\s*\n", text)          # prose: blank lines make paragraphs, single lines stay lines
+    if len(blocks) == 1:                            # one line per paragraph (Word, and most extracted text)
+        blocks = text.splitlines()
+    # a short line with no closing punctuation that starts a block reads as a heading ("Timeline", "1. Methods")
+    heading = lambda l: 0 < len(l) <= 60 and not re.search(r"[.,;:!?…)\"'”]$", l) and len(l.split()) <= 8
+    out = []
+    for b in blocks:
+        lines = [l.strip() for l in b.strip().splitlines() if l.strip()]
+        if not lines:
+            continue
+        if heading(lines[0]) and (len(lines) > 1 or len(blocks) > 1):
+            out.append(f"<h2 class=sub>{html.escape(lines[0])}</h2>")
+            lines = lines[1:]
+        if lines:
+            out.append("<p>" + "<br>".join(html.escape(l) for l in lines) + "</p>")
+    return "".join(out)
+
+
+def title_html(name: str) -> str:
+    """A file name that breaks at its _ - . instead of in the middle of a word."""
+    return re.sub(r"([_.\-])", r"\1<wbr>", html.escape(name))
+
+
 def excerpt(text: str, n: int = 300) -> str:
     """The start of a document on one line, for a card."""
     one = " ".join(text.split())
@@ -1195,6 +1327,28 @@ class Media:
         self._set(mid, status="ready", stage=None, kind="document", mime=doc["mime"], digest=json.dumps(d),
                   poster=self._keep(poster, "page1.jpg", by, artifact, "poster", "image/jpeg") if poster else None)
 
+    def page_image(self, mid: str, n: int) -> Optional[str]:
+        """Page n of a PDF as a picture for its viewer page, drawn once and kept beside the hub's other temp files."""
+        r = self.row(mid)
+        d = json.loads(r["digest"] or "{}")
+        if r["kind"] != "document" or d.get("doc") != "pdf" or not (1 <= n <= min(d.get("pages") or 0, VIEW_PAGES_MAX)):
+            return None
+        src = self.blob(r["artifact"])
+        if not src:
+            return None
+        folder = os.path.join(self.tmp, "pages", r["artifact"])
+        out = os.path.join(folder, f"{n}.jpg")
+        if not os.path.exists(out):
+            os.makedirs(folder, exist_ok=True)
+            stem = os.path.join(folder, f"{n}-{uuid.uuid4().hex[:8]}")
+            try:
+                _run(["pdftoppm", "-q", "-jpeg", "-jpegopt", "quality=82", "-f", str(n), "-l", str(n), "-scale-to", "1400",
+                      "-singlefile", src, stem], 60)
+                os.replace(stem + ".jpg", out)
+            except (RuntimeError, OSError, subprocess.TimeoutExpired):
+                return None
+        return out
+
     def doc_text(self, mid: str) -> str:
         """A document's text as read, or ''."""
         p = self.blob((self.get(mid)["digest"] or {}).get("text"))
@@ -1279,8 +1433,32 @@ audio{display:block;width:100%}
  font:600 13px/1 var(--font);font-variant-numeric:tabular-nums;padding:6px 10px;min-width:4.4em;text-align:center;transition:transform .3s var(--spring)}
 .t button:active{transform:scale(.94)}
 .sheet{display:block;width:100%;border-radius:14px}
-.doctext{white-space:pre-wrap;overflow-wrap:anywhere;font:15px/1.55 var(--font);background:var(--card);border-radius:14px;padding:16px 18px;margin:0;max-height:70vh;overflow:auto;box-shadow:0 0 0 1px var(--edge)}
-@media (max-width:520px){.actions .btn{display:flex;width:100%}.wide .title{font-size:24px}}
+.wide .title.long{font-size:22px;letter-spacing:-.025em;line-height:1.15}
+.btn.ghost{background:var(--fill);color:var(--ink);box-shadow:none}.btn.ghost:hover{background:var(--edge)}
+.btn.done{background:var(--green);color:#fff}
+.actions.two{display:flex;gap:10px;flex-wrap:wrap}
+/* a document, read on the page itself: no box to scroll inside a page that scrolls */
+.doc{margin-top:26px;font:17px/1.62 var(--font);letter-spacing:-.008em;overflow-wrap:break-word;text-wrap:pretty}
+.doc p{margin:0 0 .95em}.doc h2,.doc h3,.doc h4{font-family:var(--display);letter-spacing:-.025em;line-height:1.2;margin:1.5em 0 .5em}
+.doc h2{font-size:24px}.doc h2.sub{font-size:19px;margin-top:1.2em}.doc h3{font-size:20px}.doc h4{font-size:17px}.doc>:first-child{margin-top:0}
+.doc ul,.doc ol{margin:0 0 .95em;padding-left:1.3em}.doc li{margin:.25em 0}
+.doc blockquote{margin:0 0 .95em;padding:2px 0 2px 14px;border-left:3px solid var(--edge);color:var(--ink2)}
+.doc code{font:14.5px ui-monospace,SFMono-Regular,Menlo,monospace;background:var(--fill);border-radius:5px;padding:1px 5px}
+.doc pre{font:13.5px/1.55 ui-monospace,SFMono-Regular,Menlo,monospace;white-space:pre-wrap;overflow-wrap:anywhere;background:var(--card);
+ border-radius:14px;padding:14px 16px;margin:0 0 .95em;box-shadow:0 0 0 1px var(--edge)}
+.doc a{color:var(--accent)}.doc hr{border:0;border-top:1px solid var(--edge);margin:1.6em 0}
+.doc .slide{background:var(--card);border-radius:16px;padding:16px 18px 6px;margin:0 0 12px;box-shadow:0 0 0 1px var(--edge)}
+.doc .slide h2{margin:0 0 .4em;font-size:13px;letter-spacing:.02em;text-transform:uppercase;color:var(--ink2)}
+.tablewrap{overflow-x:auto;border-radius:14px;box-shadow:0 0 0 1px var(--edge);background:var(--card)}
+.tablewrap table{border-collapse:collapse;font:14.5px/1.4 var(--font);font-variant-numeric:tabular-nums;min-width:100%}
+.tablewrap th,.tablewrap td{padding:9px 14px;text-align:left;white-space:nowrap;border-bottom:1px solid var(--edge)}
+.tablewrap th{font-weight:650;background:var(--fill);position:sticky;top:0}.tablewrap tr:last-child td{border-bottom:0}
+.tablewrap .num{text-align:right}
+/* a PDF: its own pages, one under the other */
+.pages{margin-top:26px;display:grid;gap:14px}
+.pdfpage{display:block;width:100%;height:auto;aspect-ratio:8.5/11;object-fit:contain;background:#fff;border-radius:6px;
+ box-shadow:0 0 0 .5px var(--edge),0 18px 36px -26px rgba(24,23,29,.55)}
+@media (max-width:520px){.actions .btn{display:flex;width:100%}.actions.two .btn{flex:1 1 0;width:auto;padding:0 14px}.wide .title{font-size:24px}.wide .title.long{font-size:20px}.doc{font-size:16.5px}}
 @media (prefers-reduced-motion:reduce){*,*:before,*:after{animation-duration:.01ms!important;animation-delay:0s!important;transition-duration:.01ms!important}}
 :focus-visible{outline:2px solid var(--accent);outline-offset:3px}
 """
@@ -1294,6 +1472,9 @@ TICK = ("<svg viewBox='0 0 30 30' fill=none><path d='M8 15.5l4.6 4.6L22.5 10' st
         "stroke-linecap=round stroke-linejoin=round /></svg>")
 DOWN = ("<svg viewBox='0 0 24 24' fill=none stroke=currentColor stroke-width=2 stroke-linecap=round stroke-linejoin=round aria-hidden=true>"
         "<path d='M12 4v11M7 10.5l5 5 5-5M5 19.5h14'/></svg>")
+
+COPY = ("<svg viewBox='0 0 24 24' fill=none stroke=currentColor stroke-width=2 stroke-linecap=round stroke-linejoin=round aria-hidden=true>"
+        "<rect x='8.5' y='8.5' width='11' height='11' rx='2.5'/><path d='M15.5 8.5V6.5a2 2 0 0 0-2-2h-7a2 2 0 0 0-2 2v7a2 2 0 0 0 2 2h2'/></svg>")
 
 UPLOAD_JS = r"""
 const box=document.getElementById('files'),pick=document.getElementById('pick'),drop=document.getElementById('drop'),orb=document.getElementById('orb');
@@ -1320,6 +1501,11 @@ drop.addEventListener('dragover',e=>{e.preventDefault()});drop.addEventListener(
 
 VIEW_JS = r"""
 const v=document.querySelector('video,audio');document.querySelectorAll('[data-t]').forEach(b=>b.addEventListener('click',()=>{if(v){v.currentTime=+b.dataset.t;v.play()}}));
+const cb=document.getElementById('copytext'),dt=document.getElementById('doctext');
+if(cb&&dt){const label=cb.innerHTML;cb.addEventListener('click',async()=>{const t=JSON.parse(dt.textContent);
+try{await navigator.clipboard.writeText(t)}catch(e){const a=document.createElement('textarea');a.value=t;a.style.position='fixed';a.style.opacity='0';document.body.append(a);a.select();try{document.execCommand('copy')}catch(_){}a.remove()}
+cb.textContent='Copied';cb.classList.add('done');setTimeout(()=>{cb.innerHTML=label;cb.classList.remove('done')},1600)})}
+document.querySelectorAll('img.pdfpage').forEach(i=>i.addEventListener('load',()=>{i.style.aspectRatio=i.naturalWidth+'/'+i.naturalHeight}));
 """
 
 
@@ -1410,7 +1596,16 @@ def mount(app, hub, media: Media) -> dict:
         bits = [x for x in (hms(d["duration"]) if d.get("duration") else None,
                             f"{d['width']}×{d['height']}" if d.get("width") else None,
                             size_text(m["size"]) if m.get("size") else None, f"shared by {m['from']}") if x]
-        out = [f"<div class='shell wide'>{BRAND}<h1 class=title>{name}</h1><p class=meta>{html.escape(' · '.join(bits))}</p>"]
+        if kind == "document":
+            ext = os.path.splitext(m["name"] or "")[1].lower()
+            words = (table_size(media.doc_text(r["id"]), "\t" if ext == ".tsv" else ",") if ext in (".csv", ".tsv")
+                     else f"{d.get('words', 0):,} words" if d.get("words") else None)
+            pages = (f"{d['pages']} {'slides' if d.get('doc') == 'slides' else 'pages' if d['pages'] != 1 else 'page'}"
+                     if d.get("pages") else None)
+            bits = [x for x in (pages, words, *bits) if x]
+        long = " long" if len(m["name"] or "") > 26 else ""
+        out = [f"<div class='shell wide'>{BRAND}<h1 class='title{long}'>{title_html(m['name'] or kind or 'Media')}</h1>"
+               f"<p class=meta>{html.escape(' · '.join(bits))}</p>"]
         if m["status"] != "ready":
             out.append("<p class=wait>" + ("Still being processed. Refresh in a moment." if m["status"] in ("queued", "working")
                                            else html.escape("Couldn't be processed: " + (m["error"] or ""))) + "</p>")
@@ -1421,20 +1616,31 @@ def mount(app, hub, media: Media) -> dict:
             out.append(f"<div class=stage><audio controls preload=metadata src='{base}/file'></audio></div>")
         elif kind == "image":
             out.append(f"<div class=stage><img class=full src='{base}/file' alt='{name}'></div>")
-        elif kind == "document" and m["has"]["poster"]:
-            out.append(f"<div class=stage><img class=full src='{base}/poster' alt='First page of {name}'></div>")
+        doc_text = media.doc_text(r["id"]) if kind == "document" and m["status"] == "ready" and d.get("text") else ""
         if m["status"] == "ready":
-            out.append(f"<p class=actions><a class=btn href='{base}/original'>{DOWN}Download</a></p>")
+            copy = (f"<button class='btn ghost' type=button id=copytext>{COPY}Copy text</button>"
+                    if doc_text and len(doc_text) <= 200_000 else "")
+            out.append(f"<p class='actions{' two' if copy else ''}'><a class=btn href='{base}/original'>{DOWN}Download</a>{copy}</p>")
+        if kind == "document" and m["status"] == "ready":
+            if d.get("doc") == "pdf" and d.get("pages"):
+                shown = min(d["pages"], VIEW_PAGES_MAX)
+                out.append("<div class=pages>" + "".join(
+                    f"<img class=pdfpage loading=lazy src='{base}/page/{i}' alt='Page {i} of {shown}'>" for i in range(1, shown + 1)) + "</div>")
+                if d["pages"] > shown:
+                    out.append(f"<p class=meta>The first {shown} pages. Download for all {d['pages']}.</p>")
+            elif doc_text:
+                cut = len(doc_text) > VIEW_TEXT_MAX
+                out.append("<article class=doc>" + document_html(d.get("doc"), m["name"] or "", doc_text[:VIEW_TEXT_MAX]) + "</article>")
+                if cut:
+                    out.append("<p class=meta>That's the first part. Download for all of it.</p>")
+            elif not d.get("text"):
+                out.append("<p class=meta>No text inside (a scan or pictures only). Download to see it.</p>")
+            if doc_text and len(doc_text) <= 200_000:      # what Copy text copies: data, never run
+                out.append("<script type=application/json id=doctext>" + json.dumps(doc_text).replace("</", "<\\/") + "</script>")
         if d.get("transcript"):
             rows = "".join(f"<div class=t><button data-t='{x['t']}'>{clock(x['t'])}</button><span>{html.escape(x['text'])}</span></div>"
                            for x in d["transcript"])
             out.append(f"<section class=sect><h2>Transcript</h2>{rows}</section>")
-        if kind == "document" and d.get("text"):
-            text = media.doc_text(r["id"])
-            more = len(text) > 6000
-            out.append("<section class=sect><h2>Text</h2><pre class=doctext>" + html.escape(text[:6000])
-                       + ("\n…" if more else "") + "</pre>"
-                       + ("<p class=meta>The start of it. Download for the whole document.</p>" if more else "") + "</section>")
         if m["has"]["sheet"]:
             out.append(f"<section class=sect><h2>Shots</h2><img class=sheet src='{base}/sheet' alt='contact sheet'></section>")
         out.append("</div>")
@@ -1459,6 +1665,14 @@ def mount(app, hub, media: Media) -> dict:
         return FileResponse(path, media_type=mime if inline else "application/octet-stream", filename=name,
                             content_disposition_type="inline" if inline else "attachment",
                             headers={**headers(), "Cache-Control": "private, max-age=3600"})
+
+    @app.get("/m/{token}/page/{n}", include_in_schema=False)
+    def view_page(token: str, n: int):
+        r = opened(token)
+        path = media.page_image(r["id"], n) if r["status"] == "ready" else None
+        if not path:
+            raise HTTPException(404, "not found")
+        return FileResponse(path, media_type="image/jpeg", headers={**headers(), "Cache-Control": "private, max-age=3600"})
 
     @app.get("/m/{token}/file", include_in_schema=False)
     def view_file(token: str, download: int = 0):

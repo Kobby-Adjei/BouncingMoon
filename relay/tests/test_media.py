@@ -368,7 +368,11 @@ def test_a_pdf_is_read_and_the_other_agent_can_read_all_of_it(hub, tmp_path):
     brief = media.brief(mid)
     assert brief["kind"] == "document" and brief["pages"] == 2 and brief["read"] and brief["poster"]
     page = c.get(path_of(media.link(mid)))
-    assert "Page two: hire a designer" in page.text and "First page of" in page.text
+    assert "2 pages" in page.text and "/page/1'" in page.text and "/page/2'" in page.text   # its real pages
+    assert "Copy text" in page.text and "Page two: hire a designer" in page.text          # what Copy text copies
+    one = c.get(path_of(media.link(mid)) + "/page/1")
+    assert one.status_code == 200 and one.headers["content-type"] == "image/jpeg" and one.content[:3] == b"\xff\xd8\xff"
+    assert c.get(path_of(media.link(mid)) + "/page/3").status_code == 404
     poster = c.get(path_of(media.link(mid)) + "/poster")
     assert poster.headers["content-type"] == "image/jpeg"                      # shown, not downloaded
     f = c.get(path_of(media.link(mid)) + "/file")
@@ -481,3 +485,31 @@ def test_an_agent_that_pastes_a_document_is_told_to_send_files(hub):
     for name in ("ask", "reply"):
         tool = next(x for x in tools if x["name"] == name)
         assert "`files`" in tool["description"] and "files" in tool["inputSchema"]["properties"]
+
+
+def test_a_document_reads_well_on_its_page_and_nothing_in_it_runs(hub, tmp_path):
+    c, t, media = hub
+    (tmp_path / "plan.md").write_text("# Spring plan\n\nShip **two** posts a week.\n\n- Film\n- Edit\n\n"
+                                      "[guide](https://example.com/g) [bad](javascript:alert(1)) <script>alert(2)</script>\n")
+    (tmp_path / "views.csv").write_text("month,views\nJan,1200\nFeb,<b>1800</b>\n")
+    (tmp_path / "URSP_Proposal_Final_extracted.txt").write_text("First paragraph line.\nSecond line.\n\nNext paragraph </script> here.")
+    ids = {n: media.from_artifact("muse", upload(c, t["muse"], tmp_path / n))["id"]
+           for n in ("plan.md", "views.csv", "URSP_Proposal_Final_extracted.txt")}
+    process(media)
+    md = c.get(path_of(media.link(ids["plan.md"]))).text
+    assert "<h2>Spring plan</h2>" in md and "<b>two</b>" in md and "<li>Film</li>" in md
+    assert "href='https://example.com/g'" in md and "href='javascript" not in md and "[bad](javascript:alert(1))" in md   # stays words
+    assert "<script>alert(2)</script>" not in md and "&lt;script&gt;" in md
+    csv = c.get(path_of(media.link(ids["views.csv"]))).text
+    assert "<th>month</th>" in csv and "<td>&lt;b&gt;1800&lt;/b&gt;</td>" in csv and "2 rows · 2 columns" in csv
+    txt = c.get(path_of(media.link(ids["URSP_Proposal_Final_extracted.txt"]))).text
+    assert "URSP_<wbr>Proposal_<wbr>Final_<wbr>extracted.<wbr>txt" in txt                      # breaks at _ and .
+    assert "<p>First paragraph line.<br>Second line.</p>" in txt
+    m = media.from_text("muse", "notes.txt", "Project summary\n\nWe test models.\n\nTimeline\nWeeks 1-2: data.\nWeeks 3-6: runs.")
+    process(media)
+    notes = c.get(path_of(media.link(m["id"]))).text
+    assert "<h2 class=sub>Project summary</h2><p>We test models.</p><h2 class=sub>Timeline</h2><p>Weeks 1-2: data.<br>Weeks 3-6: runs.</p>" in notes
+    nums = media.from_text("muse", "n.csv", "item,cost\nads,$400\nfilm,1,200.50\n")
+    process(media)
+    assert "<th class=num>cost</th>" in c.get(path_of(media.link(nums["id"]))).text
+    assert "</script> here" not in txt.split("id=doctext>")[1].split("</script>")[0]            # can't close the data block
